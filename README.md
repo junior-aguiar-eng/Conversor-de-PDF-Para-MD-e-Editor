@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Boni - Conversor de PDF para Markdown
 
 Aplicativo de uso manual para converter PDFs em arquivos `.md` localmente. Não monitora diretórios, não agenda tarefas e não altera os PDFs originais.
@@ -28,3 +29,7 @@ Cada conversão gera um `.md`. As imagens ficam em `images/Nome-do-PDF/`, com li
 Após a conversão, selecione um PDF na lista e clique em **Abrir Markdown selecionado** para abrir o resultado diretamente no aplicativo padrão do Windows.
 
 PyMuPDF4LLM é distribuído sob AGPL ou licença comercial. Verifique a compatibilidade da licença antes de redistribuir o aplicativo.
+=======
+# PDF-para-Markdown
+Conversor de PDF para MD
+>>>>>>> 904fc6fd49a04d6c1fb3cc0a90bde7ff6960ecb5
