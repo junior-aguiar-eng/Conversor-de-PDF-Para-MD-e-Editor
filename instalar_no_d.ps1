@@ -16,7 +16,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 New-Item -ItemType Directory -Force -Path $Destino | Out-Null
-Copy-Item -Path (Join-Path $origem "app.py"), (Join-Path $origem "requirements.txt"), (Join-Path $origem "iniciar.bat"), (Join-Path $origem "iniciar.vbs") -Destination $Destino -Force
+Copy-Item -Path (Join-Path $origem "app.py"), (Join-Path $origem "requirements.txt"), (Join-Path $origem "requirements.lock.txt"), (Join-Path $origem "iniciar.bat"), (Join-Path $origem "iniciar.vbs") -Destination $Destino -Force
 
 $python = Join-Path $Destino ".venv\Scripts\python.exe"
 if ($RecriarAmbiente -and (Test-Path (Join-Path $Destino ".venv"))) {
@@ -27,8 +27,9 @@ if (-not (Test-Path $python)) {
 } else {
     Write-Host "Reutilizando o ambiente Python existente em $Destino\.venv"
 }
-# Instala a versão fixada e todas as dependências transitivas do Marker 1.x.
-& uv pip install --python $python -r (Join-Path $Destino "requirements.txt")
+
+# Instala versões fixadas para manter o ambiente reproduzível.
+& uv pip install --python $python -r (Join-Path $Destino "requirements.lock.txt")
 if ($LASTEXITCODE -ne 0) {
     throw "Não foi possível sincronizar as dependências do conversor."
 }
