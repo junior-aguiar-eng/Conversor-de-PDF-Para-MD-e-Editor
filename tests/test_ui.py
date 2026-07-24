@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import ui
+from constants import MAX_PAGE_COUNT
 from models import BatchConversionSummary, ConversionFailure, ConversionResult
 
 
@@ -81,6 +82,30 @@ class AppFlowTests(unittest.TestCase):
         self.assertEqual(len(summary.failures), 1)
         self.assertEqual(summary.successes[0].source, Path("bom.pdf"))
         self.assertEqual(summary.failures[0].source, Path("ruim.pdf"))
+
+    def test_converter_rejects_pdf_above_page_limit(self) -> None:
+        class FakeDocument:
+            page_count = MAX_PAGE_COUNT + 1
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        fake_pymupdf = SimpleNamespace(open=lambda _source: FakeDocument())
+
+        converter = ui.PdfMarkdownConverter.__new__(ui.PdfMarkdownConverter)
+        converter._pymupdf = fake_pymupdf
+        converter._to_markdown = lambda *_args, **_kwargs: "não deveria converter"
+
+        with self.assertRaisesRegex(ValueError, "limite do aplicativo"):
+            converter.convert(
+                source=Path("grande.pdf"),
+                output_dir=Path("saida"),
+                split_output=False,
+                max_chunk_characters=1000,
+            )
 
     @staticmethod
     def _convert_side_effect(results: list[object]):

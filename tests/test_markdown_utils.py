@@ -4,7 +4,12 @@ import shutil
 import unittest
 from pathlib import Path
 
-from markdown_utils import available_output_path, finalize_markdown, split_markdown_by_headings
+from markdown_utils import (
+    asset_directory_name,
+    available_output_path,
+    finalize_markdown,
+    split_markdown_by_headings,
+)
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parent / "_sandbox"
@@ -46,10 +51,16 @@ class MarkdownUtilsTests(unittest.TestCase):
 
         self.assertEqual(next_path, output_dir / "arquivo (2).md")
 
+    def test_asset_directory_name_is_short_and_portable(self) -> None:
+        name = asset_directory_name("DIREITO CONSTITUCIONAL - E-BOOK 2026 [versão final]")
+
+        self.assertLessEqual(len(name), 49)
+        self.assertRegex(name, r"^[A-Za-z0-9_-]+$")
+
     def test_finalize_markdown_creates_chunk_files_with_relative_image_paths(self) -> None:
         markdown = (
             "# Parte 1\n\n"
-            "![img](images/documento/pagina-1.png)\n\n"
+            f"![img](images/{asset_directory_name('documento')}/pagina-1.png)\n\n"
             + "A" * 40
             + "\n\n## Parte 2\n\n"
             + "B" * 40
@@ -73,7 +84,10 @@ class MarkdownUtilsTests(unittest.TestCase):
 
         first_chunk = output_dir / "documento_partes" / "parte_001.md"
         self.assertTrue(first_chunk.exists())
-        self.assertIn("../images/documento/", first_chunk.read_text(encoding="utf-8"))
+        self.assertIn(
+            f"../images/{asset_directory_name('documento')}/",
+            first_chunk.read_text(encoding="utf-8"),
+        )
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
 
 Aplicativo de uso manual para converter PDFs em arquivos `.md` localmente. Não monitora diretórios, não agenda tarefas e não altera os PDFs originais.
 
+Esta pasta é a base oficial do projeto. O executável Windows deve ser gerado a partir daqui.
+
 ## Instalação no disco D
 
 1. Tenha o [uv](https://docs.astral.sh/uv/) e o Python 3.13 disponíveis. Se necessário, execute `uv python install 3.13`.
@@ -28,5 +30,19 @@ Selecione um ou mais PDFs digitais com texto selecionável, escolha a pasta de s
 Cada conversão gera um `.md`. As imagens ficam em `images/Nome-do-PDF/`, com links relativos que funcionam no Obsidian e em leitores Markdown comuns. A opção de partes cria `Nome-do-PDF_partes/parte_001.md`, respeitando títulos `#` e `##` quando o arquivo ultrapassa o limite escolhido. **Pausar** suspende a fila antes do próximo PDF e **Parar** encerra a fila depois de concluir o PDF em andamento, preservando os resultados já produzidos.
 
 Após a conversão, selecione um PDF na lista e clique em **Abrir Markdown selecionado** para abrir o resultado diretamente no aplicativo padrão do Windows.
+
+O aplicativo limita a conversão a PDFs com até 1.000 páginas por arquivo e usa nomes curtos e seguros para a pasta de imagens extraídas, evitando caminhos frágeis em leitores Markdown e builds Windows.
+
+## Release Windows
+
+Para criar uma versão executável em pasta, execute `.\build_release.ps1`. O script tenta nesta ordem:
+
+1. Reutilizar o `PyInstaller` já instalado na `.venv`, se existir.
+2. Reutilizar o `pyinstaller` disponível no `PATH` do Windows.
+3. Só como fallback, pedir ao `uv` para baixar e executar o `pyinstaller`.
+
+O resultado fica em `release/dist/Boni Conversor PDF Markdown/`. O executável principal fica em `release/dist/Boni Conversor PDF Markdown/Boni Conversor PDF Markdown.exe`.
+
+Depois, `.\criar_atalho.ps1` cria um atalho com ícone na Área de Trabalho. Essa distribuição não inclui modelos de IA nem requer Docker ou GPU.
 
 PyMuPDF4LLM é distribuído sob AGPL ou licença comercial. Verifique a compatibilidade da licença antes de redistribuir o aplicativo.

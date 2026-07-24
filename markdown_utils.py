@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import re
+from hashlib import sha1
 from pathlib import Path
 
 from models import ConversionResult
 
 
 HEADING_PATTERN = re.compile(r"(?m)^#{1,2}\s+.+?\s*$")
+ASSET_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
 
 
 def split_markdown_by_headings(markdown: str, max_characters: int) -> list[str]:
@@ -52,9 +54,15 @@ def available_output_path(output_dir: Path, stem: str) -> Path:
     return candidate
 
 
+def asset_directory_name(stem: str) -> str:
+    """Gera um nome curto e seguro para os recursos extraídos do PDF."""
+    normalized = ASSET_NAME_PATTERN.sub("_", stem).strip("_-") or "documento"
+    return f"{normalized[:40]}-{sha1(stem.encode('utf-8')).hexdigest()[:8]}"
+
+
 def output_paths(output_dir: Path, source: Path) -> tuple[Path, Path]:
     markdown_path = available_output_path(output_dir, source.stem)
-    return markdown_path, output_dir / "images" / markdown_path.stem
+    return markdown_path, output_dir / "images" / asset_directory_name(markdown_path.stem)
 
 
 def finalize_markdown(
