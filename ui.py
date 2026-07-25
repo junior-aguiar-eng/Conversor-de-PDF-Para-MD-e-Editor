@@ -16,7 +16,7 @@ from converter import PdfMarkdownConverter, validate_runtime_dependencies
 from models import BatchConversionSummary, ConversionFailure, ConversionResult
 
 
-EventKind: TypeAlias = Literal["status", "file_error", "done", "stopped", "error"]
+EventKind: TypeAlias = Literal["status", "progress", "file_error", "done", "stopped", "error"]
 UiEvent: TypeAlias = tuple[EventKind, object]
 
 
@@ -37,6 +37,7 @@ class App:
         self.resume_processing = threading.Event()
         self.resume_processing.set()
         self.is_paused = False
+        self.total_files = 0
         self._build()
         self.root.after(120, self._process_events)
 
@@ -117,8 +118,10 @@ class App:
             state="disabled",
         )
         self.open_result_button.pack(side="left", padx=(8, 0))
-        self.progress = ttk.Progressbar(actions, mode="indeterminate", length=160)
+        self.progress = ttk.Progressbar(actions, mode="determinate", length=160, maximum=100)
         self.progress.pack(side="left", padx=12)
+        self.progress_label = StringVar(value="0%")
+        ttk.Label(actions, textvariable=self.progress_label, width=5).pack(side="left")
         self.status = StringVar(value="Selecione um ou mais PDFs para começar.")
         ttk.Label(actions, textvariable=self.status).pack(side="left")
 
@@ -212,7 +215,8 @@ class App:
         self.cancel_requested.clear()
         self.resume_processing.set()
         self.is_paused = False
-        self.progress.start(10)
+        self.total_files = len(self.files)
+        self._set_progress(0, self.total_files)
         self.status.set("Preparando o conversor local...")
         thread = threading.Thread(
             target=self._convert_in_background,
@@ -231,12 +235,12 @@ class App:
             self.resume_processing.set()
             self.is_paused = False
             self.pause_button.configure(text="Pausar")
-            self.status.set("Conversão retomada.")
+            self.status.set(f"Conversão retomada ({self.progress_label.get()}).")
         else:
             self.resume_processing.clear()
             self.is_paused = True
             self.pause_button.configure(text="Retomar")
-            self.status.set("Pausa solicitada: será aplicada antes do próximo PDF.")
+            self.status.set(f"Pausa solicitada: será aplicada antes do próximo PDF ({self.progress_label.get()}).")
 
     def request_stop(self) -> None:
         if not messagebox.askyesno(
@@ -248,7 +252,7 @@ class App:
         self.resume_processing.set()
         self.pause_button.configure(state="disabled", text="Pausar")
         self.stop_button.configure(state="disabled")
-        self.status.set("Parada solicitada: concluindo o PDF atual...")
+        self.status.set(f"Parada solicitada: concluindo o PDF atual ({self.progress_label.get()}).")
 
     def _convert_in_background(
         self, files: list[Path], output_dir: Path, split_output: bool, max_chunk_characters: int
@@ -257,6 +261,7 @@ class App:
             converter = PdfMarkdownConverter()
             successes: list[ConversionResult] = []
             failures: list[ConversionFailure] = []
+            total = len(files)
             for index, source in enumerate(files, start=1):
                 if self.cancel_requested.is_set():
                     self.events.put(("stopped", BatchConversionSummary(successes, failures)))
@@ -277,8 +282,10 @@ class App:
                         )
                     )
                     self.events.put(("file_error", failures[-1]))
+                    self.events.put(("progress", (len(successes) + len(failures), total)))
                     continue
                 successes.append(result)
+                self.events.put(("progress", (len(successes) + len(failures), total)))
             summary = BatchConversionSummary(successes, failures)
             if self.cancel_requested.is_set():
                 self.events.put(("stopped", summary))
@@ -293,6 +300,9 @@ class App:
                 kind, payload = self.events.get_nowait()
                 if kind == "status":
                     self.status.set(str(payload))
+                elif kind == "progress":
+                    completed, total = payload
+                    self._set_progress(completed, total)
                 elif kind == "file_error":
                     failure = payload
                     self.failures_by_source[failure.source] = failure
@@ -334,7 +344,6 @@ class App:
             self.write_log(f"ERRO  {failure.source.name}: {failure.error_message}")
 
     def _finish(self) -> None:
-        self.progress.stop()
         self.convert_button.configure(state="normal")
         self.pause_button.configure(state="disabled", text="Pausar")
         self.stop_button.configure(state="disabled")
@@ -354,7 +363,7 @@ class App:
 
     def _set_batch_status(self, prefix: str, summary: BatchConversionSummary) -> None:
         self.status.set(
-            f"{prefix}: {len(summary.successes)} convertido(s), {len(summary.failures)} com erro."
+            f"{prefix}: {len(summary.successes)} convertido(s), {len(summary.failures)} com erro ({self.progress_label.get()})."
         )
 
     def _build_summary_message(self, title: str, summary: BatchConversionSummary) -> str:
@@ -372,6 +381,11 @@ class App:
             if len(summary.failures) > 10:
                 message.append(f"... e mais {len(summary.failures) - 10} arquivo(s).")
         return "\n".join(message)
+
+    def _set_progress(self, completed: int, total: int) -> None:
+        percent = 0 if total <= 0 else round((completed / total) * 100)
+        self.progress.configure(maximum=max(total, 1), value=completed)
+        self.progress_label.set(f"{percent}%")
 
     def write_log(self, message: str) -> None:
         self.log.configure(state="normal")

@@ -74,14 +74,28 @@ class AppFlowTests(unittest.TestCase):
         self.assertEqual(received_events[0], ("status", "Convertendo 1/2: ruim.pdf"))
         self.assertEqual(received_events[1][0], "file_error")
         self.assertIsInstance(received_events[1][1], ConversionFailure)
-        self.assertEqual(received_events[2], ("status", "Convertendo 2/2: bom.pdf"))
-        self.assertEqual(received_events[3][0], "done")
+        self.assertEqual(received_events[2], ("progress", (1, 2)))
+        self.assertEqual(received_events[3], ("status", "Convertendo 2/2: bom.pdf"))
+        self.assertEqual(received_events[4], ("progress", (2, 2)))
+        self.assertEqual(received_events[5][0], "done")
 
-        summary = received_events[3][1]
+        summary = received_events[5][1]
         self.assertEqual(len(summary.successes), 1)
         self.assertEqual(len(summary.failures), 1)
         self.assertEqual(summary.successes[0].source, Path("bom.pdf"))
         self.assertEqual(summary.failures[0].source, Path("ruim.pdf"))
+
+    def test_set_progress_updates_percentage_label_and_bar(self) -> None:
+        app = ui.App.__new__(ui.App)
+        progress_state: dict[str, int] = {}
+        app.progress = SimpleNamespace(configure=lambda **kwargs: progress_state.update(kwargs))
+        app.progress_label = SimpleNamespace(set=lambda value: progress_state.update(label=value), get=lambda: progress_state.get("label", "0%"))
+
+        app._set_progress(2, 5)
+
+        self.assertEqual(progress_state["maximum"], 5)
+        self.assertEqual(progress_state["value"], 2)
+        self.assertEqual(progress_state["label"], "40%")
 
     def test_converter_rejects_pdf_above_page_limit(self) -> None:
         class FakeDocument:
