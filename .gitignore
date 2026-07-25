@@ -1,4 +1,5 @@
 .venv/
+.uv-cache/
 __pycache__/
 *.py[cod]
 release/
@@ -7,3 +8,4 @@ tests/__pycache__/
 tests/_sandbox/
 tests/.tmp/
 .pytest_cache/
+PDFs Convertidos/

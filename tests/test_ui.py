@@ -8,11 +8,17 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import ui
-from constants import MAX_PAGE_COUNT
+from constants import DEFAULT_MAX_CHUNK_CHARACTERS, DEFAULT_OUTPUT_DIR, MAX_PAGE_COUNT
 from models import BatchConversionSummary, ConversionFailure, ConversionResult
 
 
 class AppFlowTests(unittest.TestCase):
+    def test_default_output_dir_points_to_pdfs_convertidos(self) -> None:
+        self.assertEqual(DEFAULT_OUTPUT_DIR.name, "PDFs Convertidos")
+
+    def test_default_chunk_size_matches_current_ui_default(self) -> None:
+        self.assertEqual(DEFAULT_MAX_CHUNK_CHARACTERS, 60_000)
+
     def test_build_summary_message_includes_counts_output_and_failures(self) -> None:
         app = ui.App.__new__(ui.App)
         app.output_dir = SimpleNamespace(get=lambda: r"D:\Saida")

@@ -25,9 +25,11 @@ Para reconstruir o ambiente e remover dependências antigas, com o aplicativo fe
 
 Ao abrir o aplicativo, ele valida rapidamente se o ambiente foi instalado corretamente. Se faltar a dependência principal, a interface informa para executar `instalar_no_d.ps1`.
 
-Selecione um ou mais PDFs digitais com texto selecionável, escolha a pasta de saída e clique em **Converter para Markdown**. O aplicativo usa PyMuPDF4LLM sem OCR, sem modelos de IA, GPU, PyTorch ou Docker. PDFs escaneados, fórmulas e layouts muito complexos não são o objetivo deste conversor leve.
+Selecione um ou mais PDFs digitais com texto selecionável, escolha a pasta de saída e clique em **Converter para Markdown**. O aplicativo usa por padrão a pasta `PDFs Convertidos` dentro desta base oficial, mas você ainda pode trocar esse destino manualmente pela interface. O aplicativo usa PyMuPDF4LLM sem OCR, sem modelos de IA, GPU, PyTorch ou Docker. PDFs escaneados, fórmulas e layouts muito complexos não são o objetivo deste conversor leve.
 
-Cada conversão gera um `.md`. As imagens ficam em `images/Nome-do-PDF/`, com links relativos que funcionam no Obsidian e em leitores Markdown comuns. A opção de partes cria `Nome-do-PDF_partes/parte_001.md`, respeitando títulos `#` e `##` quando o arquivo ultrapassa o limite escolhido. **Pausar** suspende a fila antes do próximo PDF e **Parar** encerra a fila depois de concluir o PDF em andamento, preservando os resultados já produzidos.
+Cada conversão gera um `.md`. Se já existir um arquivo com o mesmo nome, o aplicativo cria uma nova versão com sufixo, como `Documento (2).md`, para não sobrescrever resultados anteriores. As imagens ficam dentro de `images/`, em uma subpasta curta e segura derivada do nome do PDF, com links relativos que funcionam no Obsidian e em leitores Markdown comuns. A opção de partes cria `Nome-do-PDF_partes/parte_001.md`, respeitando títulos `#` e `##` quando o arquivo ultrapassa o limite escolhido.
+
+O limite padrão para divisão em partes é de `60.000` caracteres. **Pausar** suspende a fila antes do próximo PDF e **Parar** encerra a fila depois de concluir o PDF em andamento, preservando os resultados já produzidos.
 
 Após a conversão, selecione um PDF na lista e clique em **Abrir Markdown selecionado** para abrir o resultado diretamente no aplicativo padrão do Windows.
 
@@ -45,4 +47,8 @@ O resultado fica em `release/dist/Boni Conversor PDF Markdown/`. O executável p
 
 Depois, `.\criar_atalho.ps1` cria um atalho com ícone na Área de Trabalho. Essa distribuição não inclui modelos de IA nem requer Docker ou GPU.
 
-PyMuPDF4LLM é distribuído sob AGPL ou licença comercial. Verifique a compatibilidade da licença antes de redistribuir o aplicativo.
+## Observações
+
+- `PDFs Convertidos/` é uma pasta de saída local e agora fica fora do versionamento.
+- `release/`, `.venv/`, `.uv-cache/` e caches Python são tratados como artefatos locais.
+- PyMuPDF4LLM é distribuído sob AGPL ou licença comercial. Verifique a compatibilidade da licença antes de redistribuir o aplicativo.

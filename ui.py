@@ -6,18 +6,28 @@ import os
 import queue
 import threading
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
 from tkinter import BooleanVar, StringVar, Tk, filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Literal, TypeAlias
 
-from constants import APP_NAME
+from constants import APP_NAME, DEFAULT_MAX_CHUNK_CHARACTERS, DEFAULT_OUTPUT_DIR
 from converter import PdfMarkdownConverter, validate_runtime_dependencies
 from models import BatchConversionSummary, ConversionFailure, ConversionResult
 
 
 EventKind: TypeAlias = Literal["status", "progress", "file_error", "done", "stopped", "error"]
 UiEvent: TypeAlias = tuple[EventKind, object]
+MIN_CHUNK_CHARACTERS = 1_000
+
+
+@dataclass(frozen=True)
+class ConversionRequest:
+    files: list[Path]
+    output_dir: Path
+    split_output: bool
+    max_chunk_characters: int
 
 
 class App:
@@ -29,15 +39,14 @@ class App:
         self.files: list[Path] = []
         self.results_by_source: dict[Path, ConversionResult] = {}
         self.failures_by_source: dict[Path, ConversionFailure] = {}
-        self.output_dir = StringVar(value=str(Path.home() / "Documents" / "PDF para Markdown"))
+        self.output_dir = StringVar(value=str(DEFAULT_OUTPUT_DIR))
         self.split_output = BooleanVar(value=False)
-        self.max_chunk_characters = StringVar(value="60000")
+        self.max_chunk_characters = StringVar(value=str(DEFAULT_MAX_CHUNK_CHARACTERS))
         self.events: queue.Queue[UiEvent] = queue.Queue()
         self.cancel_requested = threading.Event()
         self.resume_processing = threading.Event()
         self.resume_processing.set()
         self.is_paused = False
-        self.total_files = 0
         self._build()
         self.root.after(120, self._process_events)
 
@@ -67,6 +76,7 @@ class App:
         scrollbar = ttk.Scrollbar(files_box, orient="vertical", command=self.file_list.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.file_list.configure(yscrollcommand=scrollbar.set)
+
         file_actions = ttk.Frame(files_box)
         file_actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         ttk.Button(file_actions, text="Adicionar PDFs", command=self.choose_files).pack(side="left")
@@ -93,7 +103,7 @@ class App:
         ttk.Entry(mode_box, width=8, textvariable=self.max_chunk_characters).grid(
             row=0, column=1, padx=(6, 4)
         )
-        ttk.Label(mode_box, text="caracteres (60.000 recomendado)").grid(
+        ttk.Label(mode_box, text=f"caracteres ({DEFAULT_MAX_CHUNK_CHARACTERS:,} recomendado)").grid(
             row=0, column=2, sticky="w"
         )
 
@@ -167,6 +177,7 @@ class App:
         if not selected:
             messagebox.showinfo(APP_NAME, "Selecione na lista o PDF cujo Markdown deseja abrir.")
             return
+
         source = self.files[int(selected[0])]
         result = self.results_by_source.get(source)
         if result is None:
@@ -179,55 +190,21 @@ class App:
                 return
             messagebox.showinfo(APP_NAME, "Esse PDF ainda não foi convertido nesta sessão.")
             return
+
         try:
             os.startfile(result.markdown_path)  # type: ignore[attr-defined]
         except OSError as error:
             messagebox.showerror(APP_NAME, f"Não foi possível abrir o Markdown:\n{error}")
 
     def start_conversion(self) -> None:
-        if not self.files:
-            messagebox.showwarning(APP_NAME, "Selecione pelo menos um PDF.")
-            return
         try:
-            validate_runtime_dependencies()
-        except RuntimeError as error:
-            messagebox.showerror(APP_NAME, str(error))
-            return
-        try:
-            max_chunk_characters = int(self.max_chunk_characters.get())
-            if max_chunk_characters < 1_000:
-                raise ValueError
+            request = self._build_conversion_request()
         except ValueError:
-            messagebox.showwarning(
-                APP_NAME,
-                "O limite das partes deve ser um número inteiro de pelo menos 1.000 caracteres.",
-            )
             return
-        output_dir = Path(self.output_dir.get()).expanduser()
-        try:
-            output_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as error:
-            messagebox.showerror(APP_NAME, f"Não foi possível criar a pasta de saída:\n{error}")
-            return
-        self.convert_button.configure(state="disabled")
-        self.pause_button.configure(state="normal", text="Pausar")
-        self.stop_button.configure(state="normal")
-        self.cancel_requested.clear()
-        self.resume_processing.set()
-        self.is_paused = False
-        self.total_files = len(self.files)
-        self._set_progress(0, self.total_files)
+
+        self._begin_conversion(request)
         self.status.set("Preparando o conversor local...")
-        thread = threading.Thread(
-            target=self._convert_in_background,
-            args=(
-                self.files.copy(),
-                output_dir,
-                self.split_output.get(),
-                max_chunk_characters,
-            ),
-            daemon=True,
-        )
+        thread = threading.Thread(target=self._convert_in_background, args=(request,), daemon=True)
         thread.start()
 
     def toggle_pause(self) -> None:
@@ -236,11 +213,14 @@ class App:
             self.is_paused = False
             self.pause_button.configure(text="Pausar")
             self.status.set(f"Conversão retomada ({self.progress_label.get()}).")
-        else:
-            self.resume_processing.clear()
-            self.is_paused = True
-            self.pause_button.configure(text="Retomar")
-            self.status.set(f"Pausa solicitada: será aplicada antes do próximo PDF ({self.progress_label.get()}).")
+            return
+
+        self.resume_processing.clear()
+        self.is_paused = True
+        self.pause_button.configure(text="Retomar")
+        self.status.set(
+            f"Pausa solicitada: será aplicada antes do próximo PDF ({self.progress_label.get()})."
+        )
 
     def request_stop(self) -> None:
         if not messagebox.askyesno(
@@ -248,44 +228,108 @@ class App:
             "Parar a fila? O PDF atualmente em processamento será finalizado; os próximos não serão convertidos.",
         ):
             return
+
         self.cancel_requested.set()
         self.resume_processing.set()
         self.pause_button.configure(state="disabled", text="Pausar")
         self.stop_button.configure(state="disabled")
-        self.status.set(f"Parada solicitada: concluindo o PDF atual ({self.progress_label.get()}).")
+        self.status.set(
+            f"Parada solicitada: concluindo o PDF atual ({self.progress_label.get()})."
+        )
+
+    def _build_conversion_request(self) -> ConversionRequest:
+        if not self.files:
+            messagebox.showwarning(APP_NAME, "Selecione pelo menos um PDF.")
+            raise ValueError("no files")
+
+        try:
+            validate_runtime_dependencies()
+        except RuntimeError as error:
+            messagebox.showerror(APP_NAME, str(error))
+            raise ValueError("runtime validation failed") from error
+
+        return ConversionRequest(
+            files=self.files.copy(),
+            output_dir=self._ensure_output_directory(),
+            split_output=self.split_output.get(),
+            max_chunk_characters=self._parse_max_chunk_characters(),
+        )
+
+    def _parse_max_chunk_characters(self) -> int:
+        try:
+            max_chunk_characters = int(self.max_chunk_characters.get())
+        except ValueError as error:
+            self._show_chunk_limit_warning()
+            raise ValueError("invalid chunk limit") from error
+
+        if max_chunk_characters < MIN_CHUNK_CHARACTERS:
+            self._show_chunk_limit_warning()
+            raise ValueError("chunk limit too small")
+        return max_chunk_characters
+
+    def _show_chunk_limit_warning(self) -> None:
+        messagebox.showwarning(
+            APP_NAME,
+            "O limite das partes deve ser um número inteiro de pelo menos 1.000 caracteres.",
+        )
+
+    def _ensure_output_directory(self) -> Path:
+        output_dir = Path(self.output_dir.get()).expanduser()
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            messagebox.showerror(APP_NAME, f"Não foi possível criar a pasta de saída:\n{error}")
+            raise ValueError("invalid output directory") from error
+        return output_dir
+
+    def _begin_conversion(self, request: ConversionRequest) -> None:
+        self.convert_button.configure(state="disabled")
+        self.pause_button.configure(state="normal", text="Pausar")
+        self.stop_button.configure(state="normal")
+        self.cancel_requested.clear()
+        self.resume_processing.set()
+        self.is_paused = False
+        self._set_progress(0, len(request.files))
 
     def _convert_in_background(
-        self, files: list[Path], output_dir: Path, split_output: bool, max_chunk_characters: int
+        self,
+        files: ConversionRequest | list[Path],
+        output_dir: Path | None = None,
+        split_output: bool | None = None,
+        max_chunk_characters: int | None = None,
     ) -> None:
+        current_request = self._normalize_request(
+            files,
+            output_dir,
+            split_output,
+            max_chunk_characters,
+        )
         try:
             converter = PdfMarkdownConverter()
             successes: list[ConversionResult] = []
             failures: list[ConversionFailure] = []
-            total = len(files)
-            for index, source in enumerate(files, start=1):
-                if self.cancel_requested.is_set():
-                    self.events.put(("stopped", BatchConversionSummary(successes, failures)))
+            total = len(current_request.files)
+            for index, source in enumerate(current_request.files, start=1):
+                if self._stop_requested(successes, failures):
                     return
-                while not self.resume_processing.wait(timeout=0.2):
-                    if self.cancel_requested.is_set():
-                        self.events.put(("stopped", BatchConversionSummary(successes, failures)))
-                        return
-                self.events.put(("status", f"Convertendo {index}/{len(files)}: {source.name}"))
-                try:
-                    result = converter.convert(source, output_dir, split_output, max_chunk_characters)
-                except Exception as error:
-                    failures.append(
-                        ConversionFailure(
-                            source=source,
-                            error_message=str(error),
-                            details=traceback.format_exc(),
-                        )
-                    )
-                    self.events.put(("file_error", failures[-1]))
-                    self.events.put(("progress", (len(successes) + len(failures), total)))
-                    continue
-                successes.append(result)
-                self.events.put(("progress", (len(successes) + len(failures), total)))
+                if self._wait_until_resumed(successes, failures):
+                    return
+
+                self.events.put(("status", f"Convertendo {index}/{total}: {source.name}"))
+                result = self._convert_single_file(
+                    converter,
+                    source,
+                    current_request.output_dir,
+                    current_request.split_output,
+                    current_request.max_chunk_characters,
+                )
+                if isinstance(result, ConversionFailure):
+                    failures.append(result)
+                    self.events.put(("file_error", result))
+                else:
+                    successes.append(result)
+                self._emit_progress(successes, failures, total)
+
             summary = BatchConversionSummary(successes, failures)
             if self.cancel_requested.is_set():
                 self.events.put(("stopped", summary))
@@ -294,39 +338,115 @@ class App:
         except Exception as error:
             self.events.put(("error", (error, traceback.format_exc())))
 
+    def _normalize_request(
+        self,
+        files: ConversionRequest | list[Path],
+        output_dir: Path | None,
+        split_output: bool | None,
+        max_chunk_characters: int | None,
+    ) -> ConversionRequest:
+        if isinstance(files, ConversionRequest):
+            return files
+        return ConversionRequest(
+            files=files,
+            output_dir=output_dir if output_dir is not None else Path(),
+            split_output=bool(split_output),
+            max_chunk_characters=(
+                max_chunk_characters
+                if max_chunk_characters is not None
+                else MIN_CHUNK_CHARACTERS
+            ),
+        )
+
+    def _stop_requested(
+        self,
+        successes: list[ConversionResult],
+        failures: list[ConversionFailure],
+    ) -> bool:
+        if not self.cancel_requested.is_set():
+            return False
+        self.events.put(("stopped", BatchConversionSummary(successes, failures)))
+        return True
+
+    def _wait_until_resumed(
+        self,
+        successes: list[ConversionResult],
+        failures: list[ConversionFailure],
+    ) -> bool:
+        while not self.resume_processing.wait(timeout=0.2):
+            if self._stop_requested(successes, failures):
+                return True
+        return False
+
+    def _convert_single_file(
+        self,
+        converter: PdfMarkdownConverter,
+        source: Path,
+        output_dir: Path,
+        split_output: bool,
+        max_chunk_characters: int,
+    ) -> ConversionResult | ConversionFailure:
+        try:
+            return converter.convert(source, output_dir, split_output, max_chunk_characters)
+        except Exception as error:
+            return ConversionFailure(
+                source=source,
+                error_message=str(error),
+                details=traceback.format_exc(),
+            )
+
+    def _emit_progress(
+        self,
+        successes: list[ConversionResult],
+        failures: list[ConversionFailure],
+        total: int,
+    ) -> None:
+        self.events.put(("progress", (len(successes) + len(failures), total)))
+
     def _process_events(self) -> None:
         try:
             while True:
                 kind, payload = self.events.get_nowait()
-                if kind == "status":
-                    self.status.set(str(payload))
-                elif kind == "progress":
-                    completed, total = payload
-                    self._set_progress(completed, total)
-                elif kind == "file_error":
-                    failure = payload
-                    self.failures_by_source[failure.source] = failure
-                    self.write_log(f"ERRO  {failure.source.name}: {failure.error_message}")
-                elif kind == "done":
-                    self._handle_batch_completion("Concluído", "Conversão concluída.", payload)
-                elif kind == "stopped":
-                    self._handle_batch_completion("Fila interrompida", "Fila interrompida.", payload)
-                    self.write_log("Fila interrompida pelo usuário; arquivos restantes não foram processados.")
-                elif kind == "error":
-                    error, details = payload
-                    self._finish()
-                    self.status.set("A conversão foi interrompida.")
-                    self.write_log(f"ERRO  {error}\n{details}")
-                    messagebox.showerror(
-                        APP_NAME,
-                        f"Não foi possível concluir a conversão:\n\n{error}\n\nConsulte o registro na janela.",
-                    )
+                self._handle_event(kind, payload)
         except queue.Empty:
             pass
         self.root.after(120, self._process_events)
 
+    def _handle_event(self, kind: EventKind, payload: object) -> None:
+        if kind == "status":
+            self.status.set(str(payload))
+            return
+        if kind == "progress":
+            completed, total = payload
+            self._set_progress(completed, total)
+            return
+        if kind == "file_error":
+            failure = payload
+            self.failures_by_source[failure.source] = failure
+            self.write_log(f"ERRO  {failure.source.name}: {failure.error_message}")
+            return
+        if kind == "done":
+            self._handle_batch_completion("Concluído", "Conversão concluída.", payload)
+            return
+        if kind == "stopped":
+            self._handle_batch_completion("Fila interrompida", "Fila interrompida.", payload)
+            self.write_log("Fila interrompida pelo usuário; arquivos restantes não foram processados.")
+            return
+
+        error, details = payload
+        self._finish()
+        self.status.set("A conversão foi interrompida.")
+        self.write_log(f"ERRO  {error}\n{details}")
+        messagebox.showerror(
+            APP_NAME,
+            f"Não foi possível concluir a conversão:\n\n{error}\n\nConsulte o registro na janela.",
+        )
+
     def _handle_batch_completion(
-        self, status_prefix: str, dialog_title: str, summary: BatchConversionSummary
+        self,
+        status_prefix: str,
+        dialog_title: str,
+        summary: BatchConversionSummary,
     ) -> None:
         self._finish()
         self._record_results(summary.successes)
