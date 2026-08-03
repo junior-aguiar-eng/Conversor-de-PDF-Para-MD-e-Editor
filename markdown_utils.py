@@ -8,7 +8,6 @@ from pathlib import Path
 
 from models import ConversionResult
 
-
 HEADING_PATTERN = re.compile(r"(?m)^#{1,2}\s+.+?\s*$")
 ASSET_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import converter as converter_module
 import ui
 from constants import DEFAULT_MAX_CHUNK_CHARACTERS, DEFAULT_OUTPUT_DIR, MAX_PAGE_COUNT
 from models import BatchConversionSummary, ConversionFailure, ConversionResult
@@ -95,7 +96,10 @@ class AppFlowTests(unittest.TestCase):
         app = ui.App.__new__(ui.App)
         progress_state: dict[str, int] = {}
         app.progress = SimpleNamespace(configure=lambda **kwargs: progress_state.update(kwargs))
-        app.progress_label = SimpleNamespace(set=lambda value: progress_state.update(label=value), get=lambda: progress_state.get("label", "0%"))
+        app.progress_label = SimpleNamespace(
+            set=lambda value: progress_state.update(label=value),
+            get=lambda: progress_state.get("label", "0%"),
+        )
 
         app._set_progress(2, 5)
 
@@ -126,6 +130,53 @@ class AppFlowTests(unittest.TestCase):
                 split_output=False,
                 max_chunk_characters=1000,
             )
+
+    def test_converter_converts_whole_document_in_a_single_call(self) -> None:
+        # Chamar to_markdown por página, isoladamente, faz os níveis de título
+        # (#/##) serem calculados por página em vez de pelo documento inteiro,
+        # deixando a estrutura de títulos inconsistente entre páginas.
+        class FakeDocument:
+            page_count = 3
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        calls: list[tuple[object, dict]] = []
+
+        def fake_to_markdown(doc, **kwargs):
+            calls.append((doc, kwargs))
+            return "conteudo"
+
+        fake_document = FakeDocument()
+        converter = ui.PdfMarkdownConverter.__new__(ui.PdfMarkdownConverter)
+        converter._pymupdf = SimpleNamespace(open=lambda _source: fake_document)
+        converter._to_markdown = fake_to_markdown
+
+        with (
+            patch.object(
+                converter_module,
+                "output_paths",
+                return_value=(
+                    Path.cwd() / "single-call-test.md",
+                    Path.cwd() / "assets" / "single-call-test",
+                ),
+            ),
+            patch.object(converter_module, "finalize_markdown"),
+        ):
+            converter.convert(
+                source=Path("documento.pdf"),
+                output_dir=Path.cwd(),
+                split_output=False,
+                max_chunk_characters=1000,
+            )
+
+        self.assertEqual(len(calls), 1)
+        called_doc, called_kwargs = calls[0]
+        self.assertIs(called_doc, fake_document)
+        self.assertNotIn("pages", called_kwargs)
 
     @staticmethod
     def _convert_side_effect(results: list[object]):

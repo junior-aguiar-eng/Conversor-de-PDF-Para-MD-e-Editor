@@ -10,15 +10,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import BooleanVar, StringVar, Tk, filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
-from typing import Literal, TypeAlias
+from typing import Literal
 
 from constants import APP_NAME, DEFAULT_MAX_CHUNK_CHARACTERS, DEFAULT_OUTPUT_DIR
 from converter import PdfMarkdownConverter, validate_runtime_dependencies
 from models import BatchConversionSummary, ConversionFailure, ConversionResult
 
-
-EventKind: TypeAlias = Literal["status", "progress", "file_error", "done", "stopped", "error"]
-UiEvent: TypeAlias = tuple[EventKind, object]
+type EventKind = Literal["status", "progress", "file_error", "done", "stopped", "error"]
+type UiEvent = tuple[EventKind, object]
 MIN_CHUNK_CHARACTERS = 1_000
 
 
@@ -35,7 +34,8 @@ class App:
         self.root = root
         self.root.title(APP_NAME)
         self.root.minsize(760, 620)
-        self.root.geometry("920x760")
+        self.root.geometry("960x780")
+        self._configure_style()
         self.files: list[Path] = []
         self.results_by_source: dict[Path, ConversionResult] = {}
         self.failures_by_source: dict[Path, ConversionFailure] = {}
@@ -50,22 +50,55 @@ class App:
         self._build()
         self.root.after(120, self._process_events)
 
+    def _configure_style(self) -> None:
+        background = "#F4F7FB"
+        surface = "#FFFFFF"
+        border = "#D8E0EA"
+        accent = "#176B87"
+        text = "#17324D"
+
+        self.root.configure(background=background)
+        style = ttk.Style(self.root)
+        style.configure("App.TFrame", background=background)
+        style.configure("Header.TFrame", background=background)
+        style.configure("Title.TLabel", background=background, foreground=text, font=("Segoe UI", 18, "bold"))
+        style.configure("Subtitle.TLabel", background=background, foreground="#5B6B7C", font=("Segoe UI", 10))
+        style.configure("Section.TLabelframe", background=background, bordercolor=border, relief="solid")
+        style.configure("Section.TLabelframe.Label", background=background, foreground=text, font=("Segoe UI", 10, "bold"))
+        style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"), padding=(14, 8))
+        style.configure("Secondary.TButton", padding=(11, 7))
+        style.configure(
+            "Treeview", background=surface, fieldbackground=surface, foreground=text, rowheight=30, font=("Segoe UI", 10)
+        )
+        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
+        style.map("Treeview", background=[("selected", "#D9EEF3")], foreground=[("selected", text)])
+        style.configure(
+            "Horizontal.TProgressbar",
+            troughcolor="#E1E8F0",
+            background=accent,
+            bordercolor="#E1E8F0",
+            lightcolor=accent,
+            darkcolor=accent,
+        )
+
     def _build(self) -> None:
-        frame = ttk.Frame(self.root, padding=16)
+        frame = ttk.Frame(self.root, padding=20, style="App.TFrame")
         frame.pack(fill="both", expand=True)
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(2, weight=4)
         frame.rowconfigure(6, weight=1)
 
-        ttk.Label(frame, text=APP_NAME, font=("Segoe UI", 16, "bold")).grid(
-            row=0, column=0, sticky="w"
-        )
+        header = ttk.Frame(frame, style="Header.TFrame")
+        header.grid(row=0, column=0, sticky="ew")
+        ttk.Label(header, text=APP_NAME, style="Title.TLabel").pack(anchor="w")
         ttk.Label(
-            frame,
-            text="Conversão local e leve de PDFs digitais. Os PDFs originais não são modificados.",
-        ).grid(row=1, column=0, sticky="w", pady=(2, 12))
+            header,
+            text="Conversão local de PDFs digitais para Markdown, sem alterar os originais.",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", pady=(3, 0))
+        ttk.Separator(frame, orient="horizontal").grid(row=1, column=0, sticky="ew", pady=(16, 14))
 
-        files_box = ttk.LabelFrame(frame, text="PDFs selecionados", padding=10)
+        files_box = ttk.LabelFrame(frame, text="PDFs selecionados", padding=12, style="Section.TLabelframe")
         files_box.grid(row=2, column=0, sticky="nsew")
         files_box.columnconfigure(0, weight=1)
         files_box.rowconfigure(0, weight=1)
@@ -77,24 +110,28 @@ class App:
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.file_list.configure(yscrollcommand=scrollbar.set)
 
-        file_actions = ttk.Frame(files_box)
-        file_actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        ttk.Button(file_actions, text="Adicionar PDFs", command=self.choose_files).pack(side="left")
-        ttk.Button(file_actions, text="Remover selecionados", command=self.remove_selected).pack(
+        file_actions = ttk.Frame(files_box, style="App.TFrame")
+        file_actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        self.add_files_button = ttk.Button(
+            file_actions, text="Adicionar PDFs", command=self.choose_files, style="Accent.TButton"
+        )
+        self.add_files_button.pack(side="left")
+        ttk.Button(file_actions, text="Remover selecionados", command=self.remove_selected, style="Secondary.TButton").pack(
             side="left", padx=8
         )
-        ttk.Button(file_actions, text="Limpar", command=self.clear_files).pack(side="left")
+        ttk.Button(file_actions, text="Limpar", command=self.clear_files, style="Secondary.TButton").pack(side="left")
 
-        destination = ttk.LabelFrame(frame, text="Pasta de saída", padding=10)
-        destination.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        destination = ttk.LabelFrame(frame, text="Pasta de saída", padding=12, style="Section.TLabelframe")
+        destination.grid(row=3, column=0, sticky="ew", pady=(14, 0))
         destination.columnconfigure(0, weight=1)
         ttk.Entry(destination, textvariable=self.output_dir).grid(row=0, column=0, sticky="ew")
-        ttk.Button(destination, text="Escolher pasta", command=self.choose_output).grid(
-            row=0, column=1, padx=(8, 0)
+        self.choose_output_button = ttk.Button(
+            destination, text="Escolher pasta", command=self.choose_output, style="Secondary.TButton"
         )
+        self.choose_output_button.grid(row=0, column=1, padx=(8, 0))
 
-        mode_box = ttk.LabelFrame(frame, text="Opções de saída", padding=10)
-        mode_box.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+        mode_box = ttk.LabelFrame(frame, text="Opções de saída", padding=12, style="Section.TLabelframe")
+        mode_box.grid(row=4, column=0, sticky="ew", pady=(14, 0))
         ttk.Checkbutton(
             mode_box,
             text="Gerar partes por títulos # e ## quando passar de",
@@ -107,18 +144,18 @@ class App:
             row=0, column=2, sticky="w"
         )
 
-        actions = ttk.Frame(frame)
-        actions.grid(row=5, column=0, sticky="ew", pady=(12, 0))
+        actions = ttk.Frame(frame, style="App.TFrame")
+        actions.grid(row=5, column=0, sticky="ew", pady=(14, 0))
         self.convert_button = ttk.Button(
-            actions, text="Converter para Markdown", command=self.start_conversion
+            actions, text="Converter para Markdown", command=self.start_conversion, style="Accent.TButton"
         )
         self.convert_button.pack(side="left")
         self.pause_button = ttk.Button(
-            actions, text="Pausar", command=self.toggle_pause, state="disabled"
+            actions, text="Pausar", command=self.toggle_pause, state="disabled", style="Secondary.TButton"
         )
         self.pause_button.pack(side="left", padx=(8, 0))
         self.stop_button = ttk.Button(
-            actions, text="Parar", command=self.request_stop, state="disabled"
+            actions, text="Parar", command=self.request_stop, state="disabled", style="Secondary.TButton"
         )
         self.stop_button.pack(side="left", padx=(8, 0))
         self.open_result_button = ttk.Button(
@@ -126,17 +163,31 @@ class App:
             text="Abrir Markdown selecionado",
             command=self.open_selected_result,
             state="disabled",
+            style="Secondary.TButton",
         )
         self.open_result_button.pack(side="left", padx=(8, 0))
-        self.progress = ttk.Progressbar(actions, mode="determinate", length=160, maximum=100)
-        self.progress.pack(side="left", padx=12)
+        self.progress = ttk.Progressbar(actions, mode="determinate", length=150, maximum=100)
+        self.progress.pack(side="left", padx=(16, 8))
         self.progress_label = StringVar(value="0%")
-        ttk.Label(actions, textvariable=self.progress_label, width=5).pack(side="left")
+        ttk.Label(actions, textvariable=self.progress_label, width=5, style="Subtitle.TLabel").pack(side="left")
         self.status = StringVar(value="Selecione um ou mais PDFs para começar.")
-        ttk.Label(actions, textvariable=self.status).pack(side="left")
+        ttk.Label(actions, textvariable=self.status, style="Subtitle.TLabel").pack(side="left", padx=(12, 0))
 
-        self.log = ScrolledText(frame, height=7, state="disabled", wrap="word")
-        self.log.grid(row=6, column=0, sticky="nsew", pady=(12, 0))
+        log_box = ttk.LabelFrame(frame, text="Atividade", padding=8, style="Section.TLabelframe")
+        log_box.grid(row=6, column=0, sticky="nsew", pady=(14, 0))
+        log_box.columnconfigure(0, weight=1)
+        log_box.rowconfigure(0, weight=1)
+        self.log = ScrolledText(
+            log_box,
+            height=7,
+            state="disabled",
+            wrap="word",
+            background="#FFFFFF",
+            foreground="#17324D",
+            relief="flat",
+            font=("Consolas", 10),
+        )
+        self.log.grid(row=0, column=0, sticky="nsew")
 
     def choose_files(self) -> None:
         paths = filedialog.askopenfilenames(title="Selecionar PDFs", filetypes=[("PDF", "*.pdf")])
@@ -286,6 +337,10 @@ class App:
         self.convert_button.configure(state="disabled")
         self.pause_button.configure(state="normal", text="Pausar")
         self.stop_button.configure(state="normal")
+        # Bloqueados durante a conversão: abrem diálogos nativos do Windows
+        # enquanto a thread de conversão muda o diretório de trabalho do processo.
+        self.add_files_button.configure(state="disabled")
+        self.choose_output_button.configure(state="disabled")
         self.cancel_requested.clear()
         self.resume_processing.set()
         self.is_paused = False
@@ -328,7 +383,7 @@ class App:
                     self.events.put(("file_error", result))
                 else:
                     successes.append(result)
-                self._emit_progress(successes, failures, total)
+                self._emit_progress(index, total)
 
             summary = BatchConversionSummary(successes, failures)
             if self.cancel_requested.is_set():
@@ -387,7 +442,12 @@ class App:
         max_chunk_characters: int,
     ) -> ConversionResult | ConversionFailure:
         try:
-            return converter.convert(source, output_dir, split_output, max_chunk_characters)
+            return converter.convert(
+                source,
+                output_dir,
+                split_output,
+                max_chunk_characters,
+            )
         except Exception as error:
             return ConversionFailure(
                 source=source,
@@ -397,11 +457,10 @@ class App:
 
     def _emit_progress(
         self,
-        successes: list[ConversionResult],
-        failures: list[ConversionFailure],
+        completed: int,
         total: int,
     ) -> None:
-        self.events.put(("progress", (len(successes) + len(failures), total)))
+        self.events.put(("progress", (completed, total)))
 
     def _process_events(self) -> None:
         try:
@@ -456,17 +515,20 @@ class App:
         messagebox.showinfo(APP_NAME, self._build_summary_message(dialog_title, summary))
 
     def _write_summary_log(self, summary: BatchConversionSummary) -> None:
+        # As falhas já são escritas em tempo real pelo evento "file_error";
+        # aqui só faltam os sucessos, que não têm evento próprio.
         for result in summary.successes:
             self.write_log(
-                f"OK  {result.source.name} -> {result.markdown_path} ({result.asset_count} imagem(ns), {result.chunk_count} parte(s))"
+                f"OK  {result.source.name} -> {result.markdown_path} "
+                f"({result.asset_count} imagem(ns), {result.chunk_count} parte(s))"
             )
-        for failure in summary.failures:
-            self.write_log(f"ERRO  {failure.source.name}: {failure.error_message}")
 
     def _finish(self) -> None:
         self.convert_button.configure(state="normal")
         self.pause_button.configure(state="disabled", text="Pausar")
         self.stop_button.configure(state="disabled")
+        self.add_files_button.configure(state="normal")
+        self.choose_output_button.configure(state="normal")
         self.is_paused = False
 
     def _record_results(self, results: list[ConversionResult]) -> None:

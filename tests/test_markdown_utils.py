@@ -11,7 +11,6 @@ from markdown_utils import (
     split_markdown_by_headings,
 )
 
-
 TEST_TMP_ROOT = Path(__file__).resolve().parent / "_sandbox"
 
 

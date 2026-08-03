@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-
 APP_NAME = "Boni - Conversor de PDF para Markdown"
 MAX_PAGE_COUNT = 1_000
 DEFAULT_MAX_CHUNK_CHARACTERS = 60_000
