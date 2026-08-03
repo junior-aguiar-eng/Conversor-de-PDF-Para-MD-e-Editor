@@ -40,8 +40,9 @@ O aplicativo limita a conversão a PDFs com até 1.000 páginas por arquivo e us
 Para criar uma versão executável em pasta, execute `.\build_release.ps1`. O script tenta nesta ordem:
 
 1. Reutilizar o `PyInstaller` já instalado na `.venv`, se existir.
-2. Reutilizar o `pyinstaller` disponível no `PATH` do Windows.
-3. Só como fallback, pedir ao `uv` para baixar e executar o `pyinstaller`.
+2. Pedir ao `uv` para executar o `PyInstaller` junto das dependências travadas do projeto.
+
+O gerador não usa um `PyInstaller` disponível globalmente no Windows: ele poderia pertencer a outro ambiente Python e produzir um executável sem as dependências do conversor. A pasta temporária de build é removida ao fim; use apenas o executável dentro de `release/dist/`.
 
 O resultado fica em `release/dist/Boni Conversor PDF Markdown/`. O executável principal fica em `release/dist/Boni Conversor PDF Markdown/Boni Conversor PDF Markdown.exe`.
 

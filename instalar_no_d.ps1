@@ -16,7 +16,17 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 New-Item -ItemType Directory -Force -Path $Destino | Out-Null
-Copy-Item -Path (Join-Path $origem "app.py"), (Join-Path $origem "requirements.txt"), (Join-Path $origem "requirements.lock.txt"), (Join-Path $origem "iniciar.bat"), (Join-Path $origem "iniciar.vbs") -Destination $Destino -Force
+$arquivosDoAplicativo = @(
+    "app.py",
+    "constants.py",
+    "converter.py",
+    "markdown_utils.py",
+    "models.py",
+    "ui.py",
+    "requirements.lock.txt",
+    "iniciar.vbs"
+)
+Copy-Item -Path ($arquivosDoAplicativo | ForEach-Object { Join-Path $origem $_ }) -Destination $Destino -Force
 
 $python = Join-Path $Destino ".venv\Scripts\python.exe"
 if ($RecriarAmbiente -and (Test-Path (Join-Path $Destino ".venv"))) {

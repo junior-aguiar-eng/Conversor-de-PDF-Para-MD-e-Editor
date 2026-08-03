@@ -25,6 +25,7 @@ try {
         "--collect-all", "pymupdf",
         "--distpath", $dist,
         "--workpath", $work,
+        "--specpath", $work,
         "app.py"
     )
 
@@ -36,14 +37,21 @@ try {
 
     if ($venvHasPyInstaller) {
         & $venvPython -m PyInstaller @arguments
-    } elseif (Get-Command pyinstaller -ErrorAction SilentlyContinue) {
-        & pyinstaller @arguments
     } else {
+        # Never use a PyInstaller from PATH: it may belong to another Python
+        # environment and omit this project's runtime dependencies.
         & uv run --with pyinstaller pyinstaller @arguments
     }
 
     if ($LASTEXITCODE -ne 0) {
         throw "A criação do executável falhou."
+    }
+    if ($LASTEXITCODE -eq 0) {
+        $bundledConverter = Join-Path $dist "Boni Conversor PDF Markdown\_internal\pymupdf4llm"
+        if (-not (Test-Path -LiteralPath $bundledConverter)) {
+            throw "A release foi criada sem a dependÃªncia principal do conversor."
+        }
+        Remove-Item -LiteralPath $work -Recurse -Force
     }
 } finally {
     Pop-Location
