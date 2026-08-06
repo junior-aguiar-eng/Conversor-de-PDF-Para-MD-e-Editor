@@ -215,6 +215,7 @@ def finalize_markdown(
     split_output: bool,
     max_chunk_characters: int,
     include_toc: bool = False,
+    extraction_seconds: float = 0.0,
 ) -> ConversionResult:
     # Reclassifica os níveis de título por conteúdo antes de qualquer outra
     # função consumir o texto: o corte em partes e o sumário devem ver a
@@ -233,4 +234,4 @@ def finalize_markdown(
         for index, chunk in enumerate(chunks, start=1):
             portable_chunk = chunk.replace("images/", "../images/")
             (chunks_dir / f"parte_{index:03}.md").write_text(portable_chunk, encoding="utf-8")
-    return ConversionResult(source, markdown_path, asset_count, len(chunks))
+    return ConversionResult(source, markdown_path, asset_count, len(chunks), extraction_seconds)

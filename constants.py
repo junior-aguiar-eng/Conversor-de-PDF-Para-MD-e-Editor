@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "Boni - Conversor de PDF para Markdown"
+APP_VERSION = "1.0.0"
 MAX_PAGE_COUNT = 1_000
 DEFAULT_MAX_CHUNK_CHARACTERS = 60_000
 

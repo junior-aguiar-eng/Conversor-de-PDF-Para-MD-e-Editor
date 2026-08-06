@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import multiprocessing
 import sys
+import time
 import traceback
 from pathlib import Path
 from tkinter import Tk, messagebox, ttk
@@ -33,6 +34,7 @@ def run_quick_convert(paths: list[str]) -> None:
         root.destroy()
         return
 
+    batch_start = time.perf_counter()
     converter = PdfMarkdownConverter()
     successes: list[ConversionResult] = []
     failures: list[ConversionFailure] = []
@@ -48,7 +50,8 @@ def run_quick_convert(paths: list[str]) -> None:
             )
 
     summary = BatchConversionSummary(successes, failures)
-    message = build_summary_message("Conversão concluída.", str(DEFAULT_OUTPUT_DIR), summary)
+    elapsed_seconds = time.perf_counter() - batch_start
+    message = build_summary_message("Conversão concluída.", str(DEFAULT_OUTPUT_DIR), summary, elapsed_seconds)
     if successes:
         messagebox.showinfo(APP_NAME, message)
     else:

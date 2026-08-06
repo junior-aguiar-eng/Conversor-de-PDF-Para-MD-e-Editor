@@ -12,6 +12,7 @@ class ConversionResult:
     markdown_path: Path
     asset_count: int
     chunk_count: int
+    extraction_seconds: float = 0.0
 
 
 @dataclass(frozen=True)

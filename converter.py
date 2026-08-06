@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 import traceback
 from pathlib import Path
 
@@ -60,6 +61,7 @@ class PdfMarkdownConverter:
                 # Converte o documento inteiro numa só chamada: os níveis de título
                 # (# / ##) são calculados a partir dos tamanhos de fonte de todas as
                 # páginas, e ficam inconsistentes se cada página for processada isolada.
+                extraction_start = time.perf_counter()
                 markdown = self._to_markdown(
                     document,
                     use_ocr=False,
@@ -69,6 +71,7 @@ class PdfMarkdownConverter:
                     header=False,
                     footer=False,
                 )
+                extraction_seconds = time.perf_counter() - extraction_start
         finally:
             os.chdir(previous_working_directory)
         asset_count = sum(1 for item in assets_dir.rglob("*") if item.is_file())
@@ -87,6 +90,7 @@ class PdfMarkdownConverter:
             split_output,
             max_chunk_characters,
             include_toc,
+            extraction_seconds,
         )
 
 

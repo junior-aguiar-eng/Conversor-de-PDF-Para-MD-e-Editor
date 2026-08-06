@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ class AppFlowTests(unittest.TestCase):
     def test_build_summary_message_includes_counts_output_and_failures(self) -> None:
         app = ui.App.__new__(ui.App)
         app.output_dir = SimpleNamespace(get=lambda: r"D:\Saida")
+        app._batch_start_time = time.perf_counter()
 
         summary = BatchConversionSummary(
             successes=[
@@ -32,6 +34,7 @@ class AppFlowTests(unittest.TestCase):
                     markdown_path=Path("ok.md"),
                     asset_count=0,
                     chunk_count=0,
+                    extraction_seconds=1.5,
                 )
             ],
             failures=[
@@ -47,8 +50,13 @@ class AppFlowTests(unittest.TestCase):
 
         self.assertIn("Convertidos: 1", message)
         self.assertIn("Com erro: 1", message)
+        self.assertIn("Tempo total:", message)
         self.assertIn(r"Arquivos salvos em:\nD:\Saida".replace(r"\n", "\n"), message)
         self.assertIn("- erro.pdf", message)
+
+    def test_format_duration_switches_to_minutes_after_sixty_seconds(self) -> None:
+        self.assertEqual(ui.format_duration(45), "45s")
+        self.assertEqual(ui.format_duration(125), "2m 5s")
 
     def test_convert_in_background_keeps_processing_after_single_file_failure(self) -> None:
         app = ui.App.__new__(ui.App)
@@ -146,6 +154,7 @@ class AppFlowTests(unittest.TestCase):
 
     def test_set_progress_updates_percentage_label_and_bar(self) -> None:
         app = ui.App.__new__(ui.App)
+        app._active_extractions = 0
         progress_state: dict[str, int] = {}
         app.progress = SimpleNamespace(configure=lambda **kwargs: progress_state.update(kwargs))
         app.progress_label = SimpleNamespace(

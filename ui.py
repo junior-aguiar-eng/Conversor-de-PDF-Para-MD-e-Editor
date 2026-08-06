@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import queue
+import subprocess
 import threading
+import time
 import traceback
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
@@ -14,7 +16,7 @@ from tkinter import BooleanVar, StringVar, Tk, filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Literal
 
-from constants import APP_NAME, DEFAULT_MAX_CHUNK_CHARACTERS, DEFAULT_OUTPUT_DIR
+from constants import APP_NAME, APP_VERSION, DEFAULT_MAX_CHUNK_CHARACTERS, DEFAULT_OUTPUT_DIR
 from converter import PdfMarkdownConverter, convert_worker, init_worker, validate_runtime_dependencies
 from models import BatchConversionSummary, ConversionFailure, ConversionResult
 
@@ -34,12 +36,26 @@ class ConversionRequest:
     include_toc: bool = False
 
 
-def build_summary_message(title: str, output_dir: str, summary: BatchConversionSummary) -> str:
+def format_duration(seconds: float) -> str:
+    total_seconds = round(seconds)
+    if total_seconds < 60:
+        return f"{total_seconds}s"
+    minutes, secs = divmod(total_seconds, 60)
+    return f"{minutes}m {secs}s"
+
+
+def build_summary_message(
+    title: str,
+    output_dir: str,
+    summary: BatchConversionSummary,
+    elapsed_seconds: float = 0.0,
+) -> str:
     message = [
         title,
         "",
         f"Convertidos: {len(summary.successes)}",
         f"Com erro: {len(summary.failures)}",
+        f"Tempo total: {format_duration(elapsed_seconds)}",
     ]
     if summary.successes:
         message.extend(["", f"Arquivos salvos em:\n{output_dir}"])
@@ -54,7 +70,7 @@ def build_summary_message(title: str, output_dir: str, summary: BatchConversionS
 class App:
     def __init__(self, root: Tk) -> None:
         self.root = root
-        self.root.title(APP_NAME)
+        self.root.title(f"{APP_NAME} — v{APP_VERSION}")
         self.root.minsize(760, 620)
         self.root.geometry("960x780")
         self._configure_style()
@@ -70,6 +86,8 @@ class App:
         self.resume_processing = threading.Event()
         self.resume_processing.set()
         self.is_paused = False
+        self._active_extractions = 0
+        self._batch_start_time = 0.0
         self._build()
         self.root.after(120, self._process_events)
 
@@ -116,7 +134,10 @@ class App:
         ttk.Label(header, text=APP_NAME, style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text="Conversão local de PDFs digitais para Markdown, sem alterar os originais.",
+            text=(
+                "Conversão local de PDFs digitais para Markdown, sem alterar os originais. "
+                f"(v{APP_VERSION})"
+            ),
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(3, 0))
         ttk.Separator(frame, orient="horizontal").grid(row=1, column=0, sticky="ew", pady=(16, 14))
@@ -155,22 +176,23 @@ class App:
 
         mode_box = ttk.LabelFrame(frame, text="Opções de saída", padding=12, style="Section.TLabelframe")
         mode_box.grid(row=4, column=0, sticky="ew", pady=(14, 0))
-        ttk.Checkbutton(
+        self.split_output_checkbox = ttk.Checkbutton(
             mode_box,
             text="Gerar partes por títulos # e ## quando passar de",
             variable=self.split_output,
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Entry(mode_box, width=8, textvariable=self.max_chunk_characters).grid(
-            row=0, column=1, padx=(6, 4)
         )
+        self.split_output_checkbox.grid(row=0, column=0, sticky="w")
+        self.max_chunk_entry = ttk.Entry(mode_box, width=8, textvariable=self.max_chunk_characters)
+        self.max_chunk_entry.grid(row=0, column=1, padx=(6, 4))
         ttk.Label(mode_box, text=f"caracteres ({DEFAULT_MAX_CHUNK_CHARACTERS:,} recomendado)").grid(
             row=0, column=2, sticky="w"
         )
-        ttk.Checkbutton(
+        self.include_toc_checkbox = ttk.Checkbutton(
             mode_box,
             text="Incluir sumário automático (índice a partir dos títulos # e ##)",
             variable=self.include_toc,
-        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        )
+        self.include_toc_checkbox.grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         actions = ttk.Frame(frame, style="App.TFrame")
         actions.grid(row=5, column=0, sticky="ew", pady=(14, 0))
@@ -194,6 +216,14 @@ class App:
             style="Secondary.TButton",
         )
         self.open_result_button.pack(side="left", padx=(8, 0))
+        self.open_folder_button = ttk.Button(
+            actions,
+            text="Abrir pasta do arquivo convertido",
+            command=self.open_containing_folder,
+            state="disabled",
+            style="Secondary.TButton",
+        )
+        self.open_folder_button.pack(side="left", padx=(8, 0))
         self.progress = ttk.Progressbar(actions, mode="determinate", length=150, maximum=100)
         self.progress.pack(side="left", padx=(16, 8))
         self.progress_label = StringVar(value="0%")
@@ -249,13 +279,14 @@ class App:
         self.results_by_source.clear()
         self.failures_by_source.clear()
         self.open_result_button.configure(state="disabled")
+        self.open_folder_button.configure(state="disabled")
         self.refresh_files()
 
-    def open_selected_result(self) -> None:
+    def _resolve_selected_result(self) -> ConversionResult | None:
         selected = self.file_list.selection()
         if not selected:
             messagebox.showinfo(APP_NAME, "Selecione na lista o PDF cujo Markdown deseja abrir.")
-            return
+            return None
 
         source = self.files[int(selected[0])]
         result = self.results_by_source.get(source)
@@ -266,14 +297,30 @@ class App:
                     APP_NAME,
                     f"Esse PDF falhou nesta sessão:\n\n{failure.error_message}",
                 )
-                return
-            messagebox.showinfo(APP_NAME, "Esse PDF ainda não foi convertido nesta sessão.")
+            else:
+                messagebox.showinfo(APP_NAME, "Esse PDF ainda não foi convertido nesta sessão.")
+            return None
+        return result
+
+    def open_selected_result(self) -> None:
+        result = self._resolve_selected_result()
+        if result is None:
             return
 
         try:
             os.startfile(result.markdown_path)  # type: ignore[attr-defined]
         except OSError as error:
             messagebox.showerror(APP_NAME, f"Não foi possível abrir o Markdown:\n{error}")
+
+    def open_containing_folder(self) -> None:
+        result = self._resolve_selected_result()
+        if result is None:
+            return
+
+        try:
+            subprocess.run(["explorer", "/select,", str(result.markdown_path)])
+        except OSError as error:
+            messagebox.showerror(APP_NAME, f"Não foi possível abrir a pasta:\n{error}")
 
     def start_conversion(self) -> None:
         try:
@@ -371,9 +418,17 @@ class App:
         # enquanto a thread de conversão muda o diretório de trabalho do processo.
         self.add_files_button.configure(state="disabled")
         self.choose_output_button.configure(state="disabled")
+        # Bloqueados porque o valor já foi lido e congelado em
+        # ConversionRequest no instante do clique em "Converter" — mudá-los
+        # agora não teria efeito nenhum na conversão em andamento.
+        self.split_output_checkbox.configure(state="disabled")
+        self.include_toc_checkbox.configure(state="disabled")
+        self.max_chunk_entry.configure(state="disabled")
         self.cancel_requested.clear()
         self.resume_processing.set()
         self.is_paused = False
+        self._active_extractions = 0
+        self._batch_start_time = time.perf_counter()
         self._set_progress(0, len(request.files))
 
     def _convert_in_background(
@@ -569,9 +624,11 @@ class App:
     def _handle_event(self, kind: EventKind, payload: object) -> None:
         if kind == "status":
             self.status.set(str(payload))
+            self._enter_extraction()
             return
         if kind == "progress":
             completed, total = payload
+            self._exit_extraction()
             self._set_progress(completed, total)
             return
         if kind == "file_error":
@@ -615,7 +672,8 @@ class App:
         for result in summary.successes:
             self.write_log(
                 f"OK  {result.source.name} -> {result.markdown_path} "
-                f"({result.asset_count} imagem(ns), {result.chunk_count} parte(s))"
+                f"({result.asset_count} imagem(ns), {result.chunk_count} parte(s), "
+                f"{format_duration(result.extraction_seconds)})"
             )
 
     def _finish(self) -> None:
@@ -624,7 +682,16 @@ class App:
         self.stop_button.configure(state="disabled")
         self.add_files_button.configure(state="normal")
         self.choose_output_button.configure(state="normal")
+        self.split_output_checkbox.configure(state="normal")
+        self.include_toc_checkbox.configure(state="normal")
+        self.max_chunk_entry.configure(state="normal")
         self.is_paused = False
+        # Garante que a barra volte ao modo determinado mesmo se o lote
+        # terminar (erro, parada) enquanto ainda houvesse extração marcada
+        # como em andamento.
+        self._active_extractions = 0
+        self.progress.stop()
+        self.progress.configure(mode="determinate")
 
     def _record_results(self, results: list[ConversionResult]) -> None:
         self.results_by_source.update({result.source: result for result in results})
@@ -634,6 +701,7 @@ class App:
         self.file_list.selection_set(str(first_index))
         self.file_list.focus(str(first_index))
         self.open_result_button.configure(state="normal")
+        self.open_folder_button.configure(state="normal")
 
     def _record_failures(self, failures: list[ConversionFailure]) -> None:
         self.failures_by_source.update({failure.source: failure for failure in failures})
@@ -644,12 +712,34 @@ class App:
         )
 
     def _build_summary_message(self, title: str, summary: BatchConversionSummary) -> str:
-        return build_summary_message(title, self.output_dir.get(), summary)
+        elapsed_seconds = time.perf_counter() - self._batch_start_time
+        return build_summary_message(title, self.output_dir.get(), summary, elapsed_seconds)
+
+    def _enter_extraction(self) -> None:
+        # Um único pymupdf4llm.to_markdown() por arquivo é uma chamada
+        # bloqueante sem progresso real por página (ver comentário em
+        # converter.py) — a barra fica em modo indeterminado enquanto pelo
+        # menos um arquivo está sendo extraído, em vez de parecer travada.
+        self._active_extractions += 1
+        if self._active_extractions == 1:
+            self.progress.configure(mode="indeterminate")
+            self.progress.start()
+            self.progress_label.set("Processando...")
+
+    def _exit_extraction(self) -> None:
+        self._active_extractions = max(0, self._active_extractions - 1)
+        if self._active_extractions == 0:
+            self.progress.stop()
+            self.progress.configure(mode="determinate")
 
     def _set_progress(self, completed: int, total: int) -> None:
         percent = 0 if total <= 0 else round((completed / total) * 100)
         self.progress.configure(maximum=max(total, 1), value=completed)
-        self.progress_label.set(f"{percent}%")
+        # Enquanto outro arquivo do lote ainda está em extração (conversão
+        # paralela), mantém "Processando..." em vez de mostrar uma
+        # porcentagem que não reflete o que está acontecendo agora.
+        if self._active_extractions == 0:
+            self.progress_label.set(f"{percent}%")
 
     def write_log(self, message: str) -> None:
         self.log.configure(state="normal")
