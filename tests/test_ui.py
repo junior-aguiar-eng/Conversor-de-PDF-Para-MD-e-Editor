@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -65,14 +66,17 @@ class AppFlowTests(unittest.TestCase):
         )
 
         fake_converter = SimpleNamespace(convert=self._convert_side_effect([failure, success]))
+        request = ui.ConversionRequest(
+            files=[Path("ruim.pdf"), Path("bom.pdf")],
+            output_dir=Path("saida"),
+            split_output=False,
+            max_chunk_characters=1000,
+        )
 
         with patch.object(ui, "PdfMarkdownConverter", return_value=fake_converter):
-            app._convert_in_background(
-                files=[Path("ruim.pdf"), Path("bom.pdf")],
-                output_dir=Path("saida"),
-                split_output=False,
-                max_chunk_characters=1000,
-            )
+            # max_workers=1 força o caminho sequencial: um ProcessPoolExecutor
+            # real não dá pra mockar por cima de um PdfMarkdownConverter falso.
+            app._convert_in_background(request, max_workers=1)
 
         received_events = []
         while not app.events.empty():
@@ -91,6 +95,54 @@ class AppFlowTests(unittest.TestCase):
         self.assertEqual(len(summary.failures), 1)
         self.assertEqual(summary.successes[0].source, Path("bom.pdf"))
         self.assertEqual(summary.failures[0].source, Path("ruim.pdf"))
+
+    def test_convert_in_parallel_does_not_hang_when_stopped_before_any_submission(self) -> None:
+        # Regressão: se "Parar" já estiver marcado quando não há nenhum
+        # arquivo em andamento mas ainda restam arquivos não submetidos, o
+        # laço de _convert_in_parallel podia ficar preso para sempre.
+        app = ui.App.__new__(ui.App)
+        app.cancel_requested = threading.Event()
+        app.cancel_requested.set()
+        app.resume_processing = threading.Event()
+        app.resume_processing.set()
+        app.events = queue.Queue()
+
+        request = ui.ConversionRequest(
+            files=[Path("a.pdf"), Path("b.pdf"), Path("c.pdf")],
+            output_dir=Path("saida"),
+            split_output=False,
+            max_chunk_characters=1000,
+        )
+
+        thread = threading.Thread(target=app._convert_in_parallel, args=(request, 2))
+        thread.start()
+        thread.join(timeout=10)
+
+        self.assertFalse(thread.is_alive(), "conversão paralela travou ao ser parada antes de submeter qualquer arquivo")
+
+        received_events = []
+        while not app.events.empty():
+            received_events.append(app.events.get_nowait())
+        self.assertEqual(received_events[-1][0], "stopped")
+        summary = received_events[-1][1]
+        self.assertEqual(len(summary.successes), 0)
+        self.assertEqual(len(summary.failures), 0)
+
+    def test_resolve_worker_count_uses_a_single_worker_for_one_file(self) -> None:
+        app = ui.App.__new__(ui.App)
+
+        self.assertEqual(app._resolve_worker_count(1), 1)
+        self.assertEqual(app._resolve_worker_count(0), 1)
+
+    def test_resolve_worker_count_caps_at_max_parallel_workers_and_cpu_count(self) -> None:
+        app = ui.App.__new__(ui.App)
+
+        with patch.object(ui.os, "cpu_count", return_value=8):
+            self.assertEqual(app._resolve_worker_count(10), ui.MAX_PARALLEL_WORKERS)
+            self.assertEqual(app._resolve_worker_count(2), 2)
+
+        with patch.object(ui.os, "cpu_count", return_value=1):
+            self.assertEqual(app._resolve_worker_count(10), 1)
 
     def test_set_progress_updates_percentage_label_and_bar(self) -> None:
         app = ui.App.__new__(ui.App)
@@ -130,6 +182,19 @@ class AppFlowTests(unittest.TestCase):
                 split_output=False,
                 max_chunk_characters=1000,
             )
+
+    def test_build_conversion_request_threads_include_toc_checkbox(self) -> None:
+        app = ui.App.__new__(ui.App)
+        app.files = [Path("documento.pdf")]
+        app.split_output = SimpleNamespace(get=lambda: False)
+        app.include_toc = SimpleNamespace(get=lambda: True)
+        app.max_chunk_characters = SimpleNamespace(get=lambda: "60000")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app.output_dir = SimpleNamespace(get=lambda: tmp_dir)
+            request = app._build_conversion_request()
+
+        self.assertTrue(request.include_toc)
 
     def test_converter_converts_whole_document_in_a_single_call(self) -> None:
         # Chamar to_markdown por página, isoladamente, faz os níveis de título

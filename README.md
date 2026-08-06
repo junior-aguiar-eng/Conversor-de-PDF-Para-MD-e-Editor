@@ -6,7 +6,7 @@ Esta pasta é a base oficial do projeto. O executável Windows deve ser gerado a
 
 ## Instalação no disco D
 
-1. Tenha o [uv](https://docs.astral.sh/uv/) e o Python 3.13 disponíveis. Se necessário, execute `uv python install 3.13`.
+1. Tenha o [uv](https://docs.astral.sh/uv/) e o Python 3.14 disponíveis. Se necessário, execute `uv python install 3.14`.
 2. Abra o PowerShell na pasta deste projeto e execute:
 
    ```powershell
@@ -17,7 +17,7 @@ Esta pasta é a base oficial do projeto. O executável Windows deve ser gerado a
    Para usar outra pasta no D, informe-a: `.\instalar_no_d.ps1 -Destino "D:\Meus Programas\PDF para Markdown"`.
 3. Abra `D:\PDF para Markdown\iniciar.vbs`. Ele inicia somente a interface gráfica, sem janela de Prompt de Comando.
 
-O instalador cria um ambiente Python 3.13 isolado em `D:\PDF para Markdown\.venv` e instala dependências com versões travadas a partir de `requirements.lock.txt`. Não há download de modelos de IA, Docker, PyTorch ou uso de GPU.
+O instalador cria um ambiente Python 3.14 isolado em `D:\PDF para Markdown\.venv` e instala dependências com versões travadas a partir de `requirements.lock.txt`. Não há download de modelos de IA, Docker, PyTorch ou uso de GPU.
 
 Para reconstruir o ambiente e remover dependências antigas, com o aplicativo fechado, execute `.\instalar_no_d.ps1 -RecriarAmbiente`.
 
@@ -28,6 +28,8 @@ Ao abrir o aplicativo, ele valida rapidamente se o ambiente foi instalado corret
 Selecione um ou mais PDFs digitais com texto selecionável, escolha a pasta de saída e clique em **Converter para Markdown**. O aplicativo usa por padrão a pasta `PDFs Convertidos` dentro desta base oficial, mas você ainda pode trocar esse destino manualmente pela interface. O aplicativo usa PyMuPDF4LLM sem OCR, sem modelos de IA, GPU, PyTorch ou Docker. PDFs escaneados, fórmulas e layouts muito complexos não são o objetivo deste conversor leve.
 
 Cada conversão gera um `.md`. Se já existir um arquivo com o mesmo nome, o aplicativo cria uma nova versão com sufixo, como `Documento (2).md`, para não sobrescrever resultados anteriores. As imagens ficam dentro de `images/`, em uma subpasta curta e segura derivada do nome do PDF, com links relativos que funcionam no Obsidian e em leitores Markdown comuns. A opção de partes cria `Nome-do-PDF_partes/parte_001.md`, respeitando títulos `#` e `##` quando o arquivo ultrapassa o limite escolhido.
+
+A opção **Incluir sumário automático** adiciona um índice no topo do `.md` principal, com links para cada título `#`/`##` do documento (não entra nas partes geradas separadamente). Os links de âncora seguem a convenção do GitHub por melhor esforço: funcionam nos leitores mais comuns, mas nem todo visualizador de Markdown gera o mesmo id.
 
 O limite padrão para divisão em partes é de `60.000` caracteres. **Pausar** suspende a fila antes do próximo PDF e **Parar** encerra a fila depois de concluir o PDF em andamento, preservando os resultados já produzidos.
 
@@ -47,6 +49,10 @@ O gerador não usa um `PyInstaller` disponível globalmente no Windows: ele pode
 O resultado fica em `release/dist/Boni Conversor PDF Markdown/`. O executável principal fica em `release/dist/Boni Conversor PDF Markdown/Boni Conversor PDF Markdown.exe`.
 
 Depois, `.\criar_atalho.ps1` cria um atalho com ícone na Área de Trabalho. Essa distribuição não inclui modelos de IA nem requer Docker ou GPU.
+
+## Conversão pontual ("Enviar para")
+
+Depois de gerar a release, execute `.\criar_atalho_envio_rapido.ps1` para adicionar "Converter para Markdown" ao menu **Enviar para** do Windows Explorer (clique com o botão direito num ou mais PDFs). Esse modo converte direto para a pasta `PDFs Convertidos` da release e mostra só um resumo — sem abrir a janela principal do aplicativo. É pensado para conversões rápidas e avulsas; para escolher pasta de saída, dividir em partes ou usar a fila com pausa/parada, abra o aplicativo normalmente.
 
 ## Observações
 

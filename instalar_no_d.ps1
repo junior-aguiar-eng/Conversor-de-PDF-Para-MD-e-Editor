@@ -10,9 +10,9 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     throw "uv não foi encontrado. Instale o uv e execute este instalador novamente."
 }
 
-& uv python find 3.13
+& uv python find 3.14
 if ($LASTEXITCODE -ne 0) {
-    throw "Python 3.13 não foi encontrado pelo uv. Instale-o com: uv python install 3.13"
+    throw "Python 3.14 não foi encontrado pelo uv. Instale-o com: uv python install 3.14"
 }
 
 New-Item -ItemType Directory -Force -Path $Destino | Out-Null
@@ -33,7 +33,7 @@ if ($RecriarAmbiente -and (Test-Path (Join-Path $Destino ".venv"))) {
     Remove-Item -LiteralPath (Join-Path $Destino ".venv") -Recurse -Force
 }
 if (-not (Test-Path $python)) {
-    & uv venv --python 3.13 (Join-Path $Destino ".venv")
+    & uv venv --python 3.14 (Join-Path $Destino ".venv")
 } else {
     Write-Host "Reutilizando o ambiente Python existente em $Destino\.venv"
 }

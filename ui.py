@@ -6,6 +6,8 @@ import os
 import queue
 import threading
 import traceback
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import BooleanVar, StringVar, Tk, filedialog, messagebox, ttk
@@ -13,8 +15,10 @@ from tkinter.scrolledtext import ScrolledText
 from typing import Literal
 
 from constants import APP_NAME, DEFAULT_MAX_CHUNK_CHARACTERS, DEFAULT_OUTPUT_DIR
-from converter import PdfMarkdownConverter, validate_runtime_dependencies
+from converter import PdfMarkdownConverter, convert_worker, init_worker, validate_runtime_dependencies
 from models import BatchConversionSummary, ConversionFailure, ConversionResult
+
+MAX_PARALLEL_WORKERS = 4
 
 type EventKind = Literal["status", "progress", "file_error", "done", "stopped", "error"]
 type UiEvent = tuple[EventKind, object]
@@ -27,6 +31,24 @@ class ConversionRequest:
     output_dir: Path
     split_output: bool
     max_chunk_characters: int
+    include_toc: bool = False
+
+
+def build_summary_message(title: str, output_dir: str, summary: BatchConversionSummary) -> str:
+    message = [
+        title,
+        "",
+        f"Convertidos: {len(summary.successes)}",
+        f"Com erro: {len(summary.failures)}",
+    ]
+    if summary.successes:
+        message.extend(["", f"Arquivos salvos em:\n{output_dir}"])
+    if summary.failures:
+        failed_names = "\n".join(f"- {failure.source.name}" for failure in summary.failures[:10])
+        message.extend(["", f"Falhas nesta execução:\n{failed_names}"])
+        if len(summary.failures) > 10:
+            message.append(f"... e mais {len(summary.failures) - 10} arquivo(s).")
+    return "\n".join(message)
 
 
 class App:
@@ -41,6 +63,7 @@ class App:
         self.failures_by_source: dict[Path, ConversionFailure] = {}
         self.output_dir = StringVar(value=str(DEFAULT_OUTPUT_DIR))
         self.split_output = BooleanVar(value=False)
+        self.include_toc = BooleanVar(value=False)
         self.max_chunk_characters = StringVar(value=str(DEFAULT_MAX_CHUNK_CHARACTERS))
         self.events: queue.Queue[UiEvent] = queue.Queue()
         self.cancel_requested = threading.Event()
@@ -143,6 +166,11 @@ class App:
         ttk.Label(mode_box, text=f"caracteres ({DEFAULT_MAX_CHUNK_CHARACTERS:,} recomendado)").grid(
             row=0, column=2, sticky="w"
         )
+        ttk.Checkbutton(
+            mode_box,
+            text="Incluir sumário automático (índice a partir dos títulos # e ##)",
+            variable=self.include_toc,
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         actions = ttk.Frame(frame, style="App.TFrame")
         actions.grid(row=5, column=0, sticky="ew", pady=(14, 0))
@@ -276,7 +304,8 @@ class App:
     def request_stop(self) -> None:
         if not messagebox.askyesno(
             APP_NAME,
-            "Parar a fila? O PDF atualmente em processamento será finalizado; os próximos não serão convertidos.",
+            "Parar a fila? Os PDFs já em processamento serão finalizados (mais de um, em lotes "
+            "convertidos em paralelo); os que ainda não começaram não serão convertidos.",
         ):
             return
 
@@ -304,6 +333,7 @@ class App:
             output_dir=self._ensure_output_directory(),
             split_output=self.split_output.get(),
             max_chunk_characters=self._parse_max_chunk_characters(),
+            include_toc=self.include_toc.get(),
         )
 
     def _parse_max_chunk_characters(self) -> int:
@@ -348,70 +378,137 @@ class App:
 
     def _convert_in_background(
         self,
-        files: ConversionRequest | list[Path],
-        output_dir: Path | None = None,
-        split_output: bool | None = None,
-        max_chunk_characters: int | None = None,
+        request: ConversionRequest,
+        max_workers: int | None = None,
     ) -> None:
-        current_request = self._normalize_request(
-            files,
-            output_dir,
-            split_output,
-            max_chunk_characters,
-        )
         try:
-            converter = PdfMarkdownConverter()
-            successes: list[ConversionResult] = []
-            failures: list[ConversionFailure] = []
-            total = len(current_request.files)
-            for index, source in enumerate(current_request.files, start=1):
-                if self._stop_requested(successes, failures):
-                    return
-                if self._wait_until_resumed(successes, failures):
-                    return
-
-                self.events.put(("status", f"Convertendo {index}/{total}: {source.name}"))
-                result = self._convert_single_file(
-                    converter,
-                    source,
-                    current_request.output_dir,
-                    current_request.split_output,
-                    current_request.max_chunk_characters,
-                )
-                if isinstance(result, ConversionFailure):
-                    failures.append(result)
-                    self.events.put(("file_error", result))
-                else:
-                    successes.append(result)
-                self._emit_progress(index, total)
-
-            summary = BatchConversionSummary(successes, failures)
-            if self.cancel_requested.is_set():
-                self.events.put(("stopped", summary))
+            worker_count = (
+                self._resolve_worker_count(len(request.files))
+                if max_workers is None
+                else max(1, max_workers)
+            )
+            if worker_count <= 1:
+                self._convert_sequentially(request)
             else:
-                self.events.put(("done", summary))
+                self._convert_in_parallel(request, worker_count)
         except Exception as error:
             self.events.put(("error", (error, traceback.format_exc())))
 
-    def _normalize_request(
-        self,
-        files: ConversionRequest | list[Path],
-        output_dir: Path | None,
-        split_output: bool | None,
-        max_chunk_characters: int | None,
-    ) -> ConversionRequest:
-        if isinstance(files, ConversionRequest):
-            return files
-        return ConversionRequest(
-            files=files,
-            output_dir=output_dir if output_dir is not None else Path(),
-            split_output=bool(split_output),
-            max_chunk_characters=(
-                max_chunk_characters
-                if max_chunk_characters is not None
-                else MIN_CHUNK_CHARACTERS
-            ),
+    def _resolve_worker_count(self, total_files: int) -> int:
+        if total_files <= 1:
+            return 1
+        return max(1, min(total_files, MAX_PARALLEL_WORKERS, os.cpu_count() or 1))
+
+    def _convert_sequentially(self, request: ConversionRequest) -> None:
+        converter = PdfMarkdownConverter()
+        successes: list[ConversionResult] = []
+        failures: list[ConversionFailure] = []
+        total = len(request.files)
+        for index, source in enumerate(request.files, start=1):
+            if self._stop_requested(successes, failures):
+                return
+            if self._wait_until_resumed(successes, failures):
+                return
+
+            self.events.put(("status", f"Convertendo {index}/{total}: {source.name}"))
+            result = self._convert_single_file(
+                converter,
+                source,
+                request.output_dir,
+                request.split_output,
+                request.max_chunk_characters,
+                request.include_toc,
+            )
+            if isinstance(result, ConversionFailure):
+                failures.append(result)
+                self.events.put(("file_error", result))
+            else:
+                successes.append(result)
+            self._emit_progress(index, total)
+
+        self._finish_batch(successes, failures)
+
+    def _convert_in_parallel(self, request: ConversionRequest, worker_count: int) -> None:
+        # Cada processo do pool tem seu próprio diretório de trabalho, então o
+        # os.chdir() dentro de PdfMarkdownConverter.convert() continua seguro
+        # sem nenhum lock — isso não valeria com threads, só com processos.
+        total = len(request.files)
+        successes: list[ConversionResult] = []
+        failures: list[ConversionFailure] = []
+        pending: dict[Future, Path] = {}
+        next_index = 0
+
+        with ProcessPoolExecutor(max_workers=worker_count, initializer=init_worker) as pool:
+            # Se "Parar" for clicado bem entre um lote de futuros terminar e o
+            # próximo ser submetido (pending vazio, mas ainda restam arquivos),
+            # não há mais nada a fazer: sem essa condição extra, o laço ficaria
+            # preso girando em "aguardando retomar" para sempre.
+            while pending or (next_index < total and not self.cancel_requested.is_set()):
+                if not self.cancel_requested.is_set() and self.resume_processing.is_set():
+                    while len(pending) < worker_count and next_index < total:
+                        source = request.files[next_index]
+                        next_index += 1
+                        self.events.put(("status", f"Convertendo {next_index}/{total}: {source.name}"))
+                        try:
+                            future = pool.submit(
+                                convert_worker,
+                                source,
+                                request.output_dir,
+                                request.split_output,
+                                request.max_chunk_characters,
+                                request.include_toc,
+                            )
+                        except BrokenProcessPool as error:
+                            failures.append(self._as_failure(source, error))
+                            self.events.put(("file_error", failures[-1]))
+                            self._emit_progress(len(successes) + len(failures), total)
+                            continue
+                        pending[future] = source
+
+                if not pending:
+                    self.resume_processing.wait(timeout=0.2)
+                    continue
+
+                done, _ = wait(pending.keys(), timeout=0.2, return_when=FIRST_COMPLETED)
+                for future in done:
+                    source = pending.pop(future)
+                    result = self._resolve_future_result(future, source)
+                    if isinstance(result, ConversionFailure):
+                        failures.append(result)
+                        self.events.put(("file_error", result))
+                    else:
+                        successes.append(result)
+                    self._emit_progress(len(successes) + len(failures), total)
+
+                if self.cancel_requested.is_set() and not pending:
+                    break
+
+        self._finish_batch(successes, failures)
+
+    def _resolve_future_result(self, future: Future, source: Path) -> ConversionResult | ConversionFailure:
+        try:
+            return future.result()
+        except Exception as error:
+            return self._as_failure(source, error)
+
+    @staticmethod
+    def _as_failure(source: Path, error: Exception) -> ConversionFailure:
+        return ConversionFailure(
+            source=source,
+            error_message=str(error),
+            details=traceback.format_exc(),
         )
+
+    def _finish_batch(
+        self,
+        successes: list[ConversionResult],
+        failures: list[ConversionFailure],
+    ) -> None:
+        summary = BatchConversionSummary(successes, failures)
+        if self.cancel_requested.is_set():
+            self.events.put(("stopped", summary))
+        else:
+            self.events.put(("done", summary))
 
     def _stop_requested(
         self,
@@ -440,6 +537,7 @@ class App:
         output_dir: Path,
         split_output: bool,
         max_chunk_characters: int,
+        include_toc: bool,
     ) -> ConversionResult | ConversionFailure:
         try:
             return converter.convert(
@@ -447,13 +545,10 @@ class App:
                 output_dir,
                 split_output,
                 max_chunk_characters,
+                include_toc,
             )
         except Exception as error:
-            return ConversionFailure(
-                source=source,
-                error_message=str(error),
-                details=traceback.format_exc(),
-            )
+            return self._as_failure(source, error)
 
     def _emit_progress(
         self,
@@ -549,20 +644,7 @@ class App:
         )
 
     def _build_summary_message(self, title: str, summary: BatchConversionSummary) -> str:
-        message = [
-            title,
-            "",
-            f"Convertidos: {len(summary.successes)}",
-            f"Com erro: {len(summary.failures)}",
-        ]
-        if summary.successes:
-            message.extend(["", f"Arquivos salvos em:\n{self.output_dir.get()}"])
-        if summary.failures:
-            failed_names = "\n".join(f"- {failure.source.name}" for failure in summary.failures[:10])
-            message.extend(["", f"Falhas nesta execução:\n{failed_names}"])
-            if len(summary.failures) > 10:
-                message.append(f"... e mais {len(summary.failures) - 10} arquivo(s).")
-        return "\n".join(message)
+        return build_summary_message(title, self.output_dir.get(), summary)
 
     def _set_progress(self, completed: int, total: int) -> None:
         percent = 0 if total <= 0 else round((completed / total) * 100)
