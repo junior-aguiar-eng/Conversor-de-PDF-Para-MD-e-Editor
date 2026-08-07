@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import unittest
 from pathlib import Path
@@ -221,9 +222,6 @@ class MarkdownUtilsTests(unittest.TestCase):
         self.assertIn("#### A. Item", result)
 
     def test_normalize_course_heading_levels_nests_lowercase_and_roman_under_scope(self) -> None:
-        # "ii)" (não "i)") de propósito: um único caractere ambíguo como
-        # "i)" casa primeiro com a regra 4 (letra minúscula), por prioridade
-        # — ver comentário em COURSE_ROMAN_PREFIX_PATTERN.
         markdown = (
             "## 1. Seção\n\n"
             "## A. Item\n\n"
@@ -237,6 +235,115 @@ class MarkdownUtilsTests(unittest.TestCase):
         self.assertIn("### A. Item", result)
         self.assertIn("#### a) Subitem", result)
         self.assertIn("##### ii) Detalhe", result)
+
+    def test_normalize_course_heading_levels_treats_consecutive_roman_siblings_as_same_level(
+        self,
+    ) -> None:
+        # Regressão real (Ponto 1 CONSTITUCIONAL 2026.2.md, linhas ~683-745):
+        # "I."/"II."/"III." consecutivos são irmãos da mesma lista, não uma
+        # cadeia pai-filho de profundidade crescente. "I." em particular é
+        # ambíguo com letra maiúscula isolada (ver
+        # _resolve_letter_or_roman_type) -- sem a resolução por contexto,
+        # "I." caía num tipo diferente de "II."/"III." e virava pai deles.
+        markdown = (
+            "## **1.3.1 NEOCONSTITUCIONALISMO**\n\n"
+            "## **I. Marco Histórico**\n\n"
+            "Texto do marco histórico.\n\n"
+            "## **II. Marco Filosófico**\n\n"
+            "Texto do marco filosófico.\n\n"
+            "## **III. Marco Teórico**\n\n"
+            "Texto do marco teórico.\n\n"
+        )
+
+        result = normalize_course_heading_levels(markdown)
+
+        levels = re.findall(r"^(#+) \*\*(I{1,3})\. Marco", result, flags=re.MULTILINE)
+        self.assertEqual([numeral for _, numeral in levels], ["I", "II", "III"])
+        self.assertEqual(len({level for level, _ in levels}), 1, f"níveis divergentes: {levels}")
+
+    def test_normalize_course_heading_levels_treats_consecutive_lowercase_siblings_as_same_level(
+        self,
+    ) -> None:
+        markdown = (
+            "## 1. Transformações\n\n"
+            "## a) primeira mudança\n\n"
+            "## b) segunda mudança\n\n"
+            "## c) terceira mudança\n\n"
+        )
+
+        result = normalize_course_heading_levels(markdown)
+
+        levels = {
+            len(line) - len(line.lstrip("#"))
+            for line in result.splitlines()
+            if re.match(r"^#+ [abc]\) ", line)
+        }
+        self.assertEqual(len(levels), 1, f"esperado nível único (irmãos), obtido níveis divergentes: {result}")
+
+    def test_normalize_course_heading_levels_letter_after_roman_nests_under_the_roman_item(
+        self,
+    ) -> None:
+        # Réplica do padrão real: uma letra minúscula depois de um item
+        # romano deve ser filha DESSE item romano (o heading estrutural
+        # mais recente), não herdar de um rastreador de "última maiúscula"
+        # desatualizado de um heading anterior sem relação.
+        markdown = (
+            "## **III. Marco Teórico**\n\n"
+            "## b) a ampliação da jurisdição constitucional\n\n"
+        )
+
+        result = normalize_course_heading_levels(markdown)
+
+        roman_level = next(
+            len(line) - len(line.lstrip("#")) for line in result.splitlines() if "Marco Teórico" in line
+        )
+        letter_level = next(
+            len(line) - len(line.lstrip("#")) for line in result.splitlines() if line.strip().startswith("#") and "b)" in line
+        )
+        self.assertEqual(letter_level, roman_level + 1)
+
+    def test_normalize_course_heading_levels_resumes_sibling_level_after_nested_digression(
+        self,
+    ) -> None:
+        # Regressão descoberta ao reconverter o documento real: uma lista
+        # de letras maiúsculas A..D com uma digressão em romano i)/ii)/iii)
+        # aninhada DENTRO do item D -- o item seguinte "E." precisa retomar
+        # o nível de A-D (irmão), não virar filho da digressão em romano.
+        # Um modelo que só olha "o tipo do heading imediatamente anterior"
+        # erra esse caso; requer voltar à ramificação correta na pilha.
+        markdown = (
+            "## 1.2.1. Marcos\n\n"
+            "## A. Constitucionalismo primitivo\n\n"
+            "## B. Constitucionalismo antigo\n\n"
+            "## C. Constitucionalismo medieval\n\n"
+            "## D. Constitucionalismo moderno\n\n"
+            "## i) separação dos poderes\n\n"
+            "## ii) poder constituinte\n\n"
+            "## iii) supremacia do parlamento\n\n"
+            "## E. Constitucionalismo contemporâneo\n\n"
+        )
+
+        result = normalize_course_heading_levels(markdown)
+
+        letter_levels = {
+            len(line) - len(line.lstrip("#"))
+            for line in result.splitlines()
+            if re.match(r"^#+ [A-E]\. ", line)
+        }
+        self.assertEqual(
+            len(letter_levels), 1, f"A-E deveriam ficar todos no mesmo nível (irmãos): {result}"
+        )
+        roman_levels = {
+            len(line) - len(line.lstrip("#"))
+            for line in result.splitlines()
+            if re.match(r"^#+ i{1,3}\) ", line)
+        }
+        self.assertEqual(len(roman_levels), 1, f"i/ii/iii deveriam ficar no mesmo nível: {result}")
+        self.assertEqual(
+            next(iter(roman_levels)),
+            next(iter(letter_levels)) + 1,
+            "a digressão romana deve ser filha de D, um nível abaixo de A-E",
+        )
 
     def test_normalize_course_heading_levels_demotes_headings_without_structural_prefix(
         self,

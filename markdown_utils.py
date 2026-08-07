@@ -69,16 +69,16 @@ COURSE_LOWERCASE_PAREN_PREFIX_PATTERN = re.compile(r"^[a-z]\)(?:\s+|$)")
 # "i)", "ii)", "iii)", "I.", "II.", "III." — numeral romano (maiúsculo ou
 # minúsculo) seguido de parêntese ou ponto. O lookahead exige ao menos um
 # caractere romano válido para não casar com string vazia.
-# ATENÇÃO: pela ordem de prioridade das regras (letra antes de romano), um
-# item de UM SÓ caractere ambíguo com letra (ex. "i)" ou "I.", o primeiro
-# item típico de uma lista romana) casa primeiro com a regra de letra
-# maiúscula/minúscula, não com esta. Itens de 2+ caracteres ("ii)", "II.")
-# não têm essa ambiguidade e sempre casam aqui. Efeito prático: o primeiro
-# item de uma lista romana pode sair um nível acima dos irmãos seguintes.
+# Um único caractere ambíguo com letra isolada (I,V,X,L,C,D,M — também
+# válidos como letra maiúscula/minúscula sozinha) é resolvido por contexto
+# em _resolve_letter_or_roman_type, não por esta constante sozinha: ver essa
+# função para o critério exato (em resumo, "I"/"i" default para romano;
+# os demais só viram romano se o heading anterior já era romano).
 _ROMAN_NUMERAL_CORE = r"(?=[MDCLXVI])M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
 COURSE_ROMAN_PREFIX_PATTERN = re.compile(
     rf"^{_ROMAN_NUMERAL_CORE}[).](?:\s+|$)", re.IGNORECASE
 )
+_ROMAN_AMBIGUOUS_LETTERS = frozenset("IVXLCDM")
 # "ATENÇÃO!" — comparado contra o texto já sem negrito e sem acentuação.
 COURSE_ATTENTION_PATTERN = re.compile(r"^ATENCAO!")
 
@@ -192,29 +192,73 @@ def _course_heading_level_from_numeric_depth(prefix: str) -> int:
 
 
 class _CourseHeadingState:
-    """Rastreia, numa passada sequencial pelos títulos do documento, o
-    nível do heading numérico/maiúsculo/minúsculo mais recente visto — usado
-    para aninhar letras e numerais romanos sob a seção estrutural mais
-    próxima que os antecede (ver normalize_course_heading_levels)."""
+    """Rastreia, numa passada sequencial pelos títulos do documento, uma
+    PILHA de (tipo, nível) dos headings de letra/romano (regras 3-5)
+    atualmente "abertos" — do mais raso (base) ao mais profundo (topo).
+
+    A profundidade relativa entre tipos NÃO é fixa (numérico < maiúscula <
+    minúscula < romano não vale sempre): depende de como cada tipo é usado
+    em CADA ramificação do documento real. Ex. confirmado em
+    Ponto 1 CONSTITUCIONAL 2026.2.md: romano aparece tanto raso (marcos "I./
+    II./III." direto sob uma seção numérica, com letra minúscula "b)"
+    aninhada como FILHA de "III.") quanto profundo (letras "A.".."H.", com
+    uma digressão em romano "i)/ii)/iii)" aninhada DENTRO do item "D.",
+    e a letra seguinte "E." precisa retomar o nível de A-D, não virar filha
+    da digressão). Um rank fixo por tipo não satisfaz os dois padrões ao
+    mesmo tempo — só decidir pela pilha real de cada ramificação resolve.
+
+    Regra: ao ver um heading de tipo T, se T já está aberto em algum ponto
+    da pilha (não só no topo), "volta" a essa ramificação — é IRMÃO do
+    heading que abriu esse tipo, descartando tudo que foi empilhado depois
+    dele (ex.: E volta ao nível de D, descartando a digressão em romano).
+    Se T é um tipo novo nesta ramificação, é FILHO do heading mais
+    profundo atualmente aberto (topo da pilha).
+
+    Um heading numérico (regra 2) sempre reinicia a pilha do zero — nenhum
+    tipo de letra/romano de uma seção numerada anterior continua aberto."""
 
     def __init__(self) -> None:
-        self.last_numeric_level: int | None = None
-        self.last_uppercase_level: int | None = None
-        self.last_lowercase_level: int | None = None
+        self._stack: list[tuple[str, int]] = []
 
     def register_numeric(self, level: int) -> None:
-        self.last_numeric_level = level
-        # Nova seção numerada: letras/romanos de uma seção anterior não são
-        # mais o escopo "atual" para aninhamento (regra 4/5 do perfil).
-        self.last_uppercase_level = None
-        self.last_lowercase_level = None
+        self._stack = [("numeric", level)]
 
-    def register_uppercase(self, level: int) -> None:
-        self.last_uppercase_level = level
-        self.last_lowercase_level = None
+    def register_letter_or_roman(self, heading_type: str) -> int:
+        for index in range(len(self._stack) - 1, -1, -1):
+            if self._stack[index][0] == heading_type:
+                del self._stack[index + 1 :]
+                return self._stack[index][1]
+        parent_level = self._stack[-1][1] if self._stack else 1
+        level = min(parent_level + 1, 6)
+        self._stack.append((heading_type, level))
+        return level
 
-    def register_lowercase(self, level: int) -> None:
-        self.last_lowercase_level = level
+    @property
+    def last_type(self) -> str | None:
+        return self._stack[-1][0] if self._stack else None
+
+
+def _resolve_letter_or_roman_type(letter: str, state: _CourseHeadingState) -> str:
+    """Um único caractere de letra isolada que também é numeral romano
+    válido (I,V,X,L,C,D,M) é ambíguo entre "letra maiúscula/minúscula" e
+    "romano" — casa com os dois padrões ao mesmo tempo. Resolvido por
+    contexto, não por prioridade fixa de regex:
+    - "I"/"i" default para romano: é o primeiro item típico de uma lista
+      romana, bem mais comum na prática do que uma lista de letras
+      alcançar o 9º item (I é a 9ª letra) sem interrupção.
+    - os demais (V,X,L,C,D,M) só viram romano se o heading estrutural mais
+      recente já era romano (continuação real de sequência, ex. "IX." ->
+      "X."); caso contrário, seguem como letra isolada (comportamento
+      default já existente, sem essa ambiguidade eles nunca colidiriam).
+    Sem essa resolução, "I." (primeiro item de uma lista romana real)
+    casaria com a regra de letra maiúscula isolada antes de chegar à regra
+    de romano, e ficaria num tipo diferente de "II."/"III." — a causa raiz
+    do defeito de profundidade artificial crescente em listas romanas."""
+    if letter.upper() not in _ROMAN_AMBIGUOUS_LETTERS:
+        return "uppercase" if letter.isupper() else "lowercase"
+    if letter.upper() == "I" or state.last_type == "roman":
+        return "roman"
+    return "uppercase" if letter.isupper() else "lowercase"
 
 
 def _classify_course_heading(text: str, state: _CourseHeadingState) -> tuple[int, bool]:
@@ -230,30 +274,35 @@ def _classify_course_heading(text: str, state: _CourseHeadingState) -> tuple[int
 
     numeric_match = COURSE_NUMERIC_PREFIX_PATTERN.match(canonical)
     if numeric_match:
+        # LIMITAÇÃO CONHECIDA (não corrigida — falta sinal estrutural
+        # confiável, ver histórico de teste): esta regra não distingue
+        # título de seção real de item de lista numerada em prosa (ex. "12.
+        # Não haverá responsabilidade objetiva...") quando o pymupdf4llm já
+        # marca esse item como heading de forma inconsistente com os
+        # vizinhos da mesma lista (ex. "13." ao lado, mesma lista, não
+        # marcado) — nesse caso o falso positivo é indistinguível por
+        # regex de prefixo do padrão legítimo "12. FGV/2022, TJMG - Juiz
+        # de Direito Substituto" de uma lista de questões. Possível pista
+        # futura, NÃO implementada (precisa de mais amostras para validar):
+        # heading numérico cujo texto termina em ";" ou tem muitas palavras
+        # é mais provável ser item de lista em prosa do que título de
+        # seção — mas arrisca falso negativo em títulos legítimos longos.
         level = _course_heading_level_from_numeric_depth(numeric_match.group(1))
         state.register_numeric(level)
         return level, True
 
-    if COURSE_UPPERCASE_LETTER_PREFIX_PATTERN.match(canonical):
-        parent = state.last_numeric_level or 1
-        level = min(parent + 1, 6)
-        state.register_uppercase(level)
-        return level, True
+    upper_match = COURSE_UPPERCASE_LETTER_PREFIX_PATTERN.match(canonical)
+    if upper_match:
+        heading_type = _resolve_letter_or_roman_type(canonical[0], state)
+        return state.register_letter_or_roman(heading_type), True
 
-    if COURSE_LOWERCASE_PAREN_PREFIX_PATTERN.match(canonical):
-        parent = state.last_uppercase_level or state.last_numeric_level or 1
-        level = min(parent + 1, 6)
-        state.register_lowercase(level)
-        return level, True
+    lower_match = COURSE_LOWERCASE_PAREN_PREFIX_PATTERN.match(canonical)
+    if lower_match:
+        heading_type = _resolve_letter_or_roman_type(canonical[0], state)
+        return state.register_letter_or_roman(heading_type), True
 
     if COURSE_ROMAN_PREFIX_PATTERN.match(canonical):
-        parent = (
-            state.last_lowercase_level
-            or state.last_uppercase_level
-            or state.last_numeric_level
-            or 1
-        )
-        return min(parent + 1, 6), True
+        return state.register_letter_or_roman("roman"), True
 
     if COURSE_ATTENTION_PATTERN.match(normalized):
         return 2, True
