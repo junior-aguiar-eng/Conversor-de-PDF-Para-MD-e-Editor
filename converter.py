@@ -9,7 +9,7 @@ import traceback
 from pathlib import Path
 
 from constants import MAX_PAGE_COUNT
-from markdown_utils import finalize_markdown, output_paths
+from markdown_utils import HeadingProfile, finalize_markdown, output_paths
 from models import ConversionFailure, ConversionResult
 
 
@@ -41,6 +41,7 @@ class PdfMarkdownConverter:
         split_output: bool,
         max_chunk_characters: int,
         include_toc: bool = False,
+        heading_profile: HeadingProfile = "jurisprudencia",
     ) -> ConversionResult:
         previous_working_directory = Path.cwd()
         try:
@@ -91,6 +92,7 @@ class PdfMarkdownConverter:
             max_chunk_characters,
             include_toc,
             extraction_seconds,
+            heading_profile,
         )
 
 
@@ -115,6 +117,7 @@ def convert_worker(
     split_output: bool,
     max_chunk_characters: int,
     include_toc: bool,
+    heading_profile: HeadingProfile = "jurisprudencia",
 ) -> ConversionResult | ConversionFailure:
     """Converte um arquivo dentro de um processo do pool. Nunca propaga
     exceção, para que a falha de um arquivo não derrube o processo inteiro."""
@@ -123,7 +126,7 @@ def convert_worker(
         _worker_converter = PdfMarkdownConverter()
     try:
         return _worker_converter.convert(
-            source, output_dir, split_output, max_chunk_characters, include_toc
+            source, output_dir, split_output, max_chunk_characters, include_toc, heading_profile
         )
     except Exception as error:
         return ConversionFailure(

@@ -31,6 +31,8 @@ Cada conversão gera um `.md`. Se já existir um arquivo com o mesmo nome, o apl
 
 A opção **Incluir sumário automático** adiciona um índice no topo do `.md` principal, com links para cada título `#`/`##` do documento (não entra nas partes geradas separadamente). Os links de âncora seguem a convenção do GitHub por melhor esforço: funcionam nos leitores mais comuns, mas nem todo visualizador de Markdown gera o mesmo id.
 
+O **Perfil de normalização de títulos** ajusta como o aplicativo reclassifica os níveis de título (`#`/`##`/...) que o PyMuPDF4LLM extrai do PDF, já que esses níveis vêm do tamanho de fonte do documento original e nem sempre refletem a hierarquia real. Escolha **Boletim de jurisprudência (STJ/STF)** para reconhecer ramos do direito, o rótulo "COMENTÁRIO" e dispositivos legais citados. Escolha **Material de curso** para apostilas com numeração hierárquica (`1.`, `1.1.`, `A.`, `a)`, `i)`...): esse perfil também rebaixa a parágrafo comum qualquer título sem prefixo estrutural reconhecível — comum quando o PDF de origem usa negrito ou destaque em frases de corpo de texto, que o PyMuPDF4LLM às vezes confunde com título.
+
 O limite padrão para divisão em partes é de `60.000` caracteres. **Pausar** suspende a fila antes do próximo PDF e **Parar** encerra a fila depois de concluir o PDF em andamento, preservando os resultados já produzidos.
 
 Após a conversão, selecione um PDF na lista e clique em **Abrir Markdown selecionado** para abrir o resultado diretamente no aplicativo padrão do Windows.

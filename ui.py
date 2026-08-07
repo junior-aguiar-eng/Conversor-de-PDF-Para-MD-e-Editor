@@ -18,6 +18,7 @@ from typing import Literal
 
 from constants import APP_NAME, APP_VERSION, DEFAULT_MAX_CHUNK_CHARACTERS, DEFAULT_OUTPUT_DIR
 from converter import PdfMarkdownConverter, convert_worker, init_worker, validate_runtime_dependencies
+from markdown_utils import HeadingProfile
 from models import BatchConversionSummary, ConversionFailure, ConversionResult
 
 MAX_PARALLEL_WORKERS = 4
@@ -34,6 +35,7 @@ class ConversionRequest:
     split_output: bool
     max_chunk_characters: int
     include_toc: bool = False
+    heading_profile: HeadingProfile = "jurisprudencia"
 
 
 def format_duration(seconds: float) -> str:
@@ -81,6 +83,7 @@ class App:
         self.split_output = BooleanVar(value=False)
         self.include_toc = BooleanVar(value=False)
         self.max_chunk_characters = StringVar(value=str(DEFAULT_MAX_CHUNK_CHARACTERS))
+        self.heading_profile = StringVar(value="jurisprudencia")
         self.events: queue.Queue[UiEvent] = queue.Queue()
         self.cancel_requested = threading.Event()
         self.resume_processing = threading.Event()
@@ -127,7 +130,7 @@ class App:
         frame.pack(fill="both", expand=True)
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(2, weight=4)
-        frame.rowconfigure(6, weight=1)
+        frame.rowconfigure(7, weight=1)
 
         header = ttk.Frame(frame, style="Header.TFrame")
         header.grid(row=0, column=0, sticky="ew")
@@ -194,8 +197,27 @@ class App:
         )
         self.include_toc_checkbox.grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
+        profile_box = ttk.LabelFrame(
+            frame, text="Perfil de normalização de títulos", padding=12, style="Section.TLabelframe"
+        )
+        profile_box.grid(row=5, column=0, sticky="ew", pady=(14, 0))
+        self.heading_profile_jurisprudencia_radio = ttk.Radiobutton(
+            profile_box,
+            text="Boletim de jurisprudência (STJ/STF)",
+            variable=self.heading_profile,
+            value="jurisprudencia",
+        )
+        self.heading_profile_jurisprudencia_radio.grid(row=0, column=0, sticky="w")
+        self.heading_profile_curso_radio = ttk.Radiobutton(
+            profile_box,
+            text="Material de curso (numeração 1., 1.1., A., a), i)...)",
+            variable=self.heading_profile,
+            value="curso",
+        )
+        self.heading_profile_curso_radio.grid(row=1, column=0, sticky="w", pady=(4, 0))
+
         actions = ttk.Frame(frame, style="App.TFrame")
-        actions.grid(row=5, column=0, sticky="ew", pady=(14, 0))
+        actions.grid(row=6, column=0, sticky="ew", pady=(14, 0))
         self.convert_button = ttk.Button(
             actions, text="Converter para Markdown", command=self.start_conversion, style="Accent.TButton"
         )
@@ -232,7 +254,7 @@ class App:
         ttk.Label(actions, textvariable=self.status, style="Subtitle.TLabel").pack(side="left", padx=(12, 0))
 
         log_box = ttk.LabelFrame(frame, text="Atividade", padding=8, style="Section.TLabelframe")
-        log_box.grid(row=6, column=0, sticky="nsew", pady=(14, 0))
+        log_box.grid(row=7, column=0, sticky="nsew", pady=(14, 0))
         log_box.columnconfigure(0, weight=1)
         log_box.rowconfigure(0, weight=1)
         self.log = ScrolledText(
@@ -381,6 +403,7 @@ class App:
             split_output=self.split_output.get(),
             max_chunk_characters=self._parse_max_chunk_characters(),
             include_toc=self.include_toc.get(),
+            heading_profile=self.heading_profile.get(),
         )
 
     def _parse_max_chunk_characters(self) -> int:
@@ -424,6 +447,8 @@ class App:
         self.split_output_checkbox.configure(state="disabled")
         self.include_toc_checkbox.configure(state="disabled")
         self.max_chunk_entry.configure(state="disabled")
+        self.heading_profile_jurisprudencia_radio.configure(state="disabled")
+        self.heading_profile_curso_radio.configure(state="disabled")
         self.cancel_requested.clear()
         self.resume_processing.set()
         self.is_paused = False
@@ -473,6 +498,7 @@ class App:
                 request.split_output,
                 request.max_chunk_characters,
                 request.include_toc,
+                request.heading_profile,
             )
             if isinstance(result, ConversionFailure):
                 failures.append(result)
@@ -512,6 +538,7 @@ class App:
                                 request.split_output,
                                 request.max_chunk_characters,
                                 request.include_toc,
+                                request.heading_profile,
                             )
                         except BrokenProcessPool as error:
                             failures.append(self._as_failure(source, error))
@@ -593,6 +620,7 @@ class App:
         split_output: bool,
         max_chunk_characters: int,
         include_toc: bool,
+        heading_profile: HeadingProfile = "jurisprudencia",
     ) -> ConversionResult | ConversionFailure:
         try:
             return converter.convert(
@@ -601,6 +629,7 @@ class App:
                 split_output,
                 max_chunk_characters,
                 include_toc,
+                heading_profile,
             )
         except Exception as error:
             return self._as_failure(source, error)
@@ -685,6 +714,8 @@ class App:
         self.split_output_checkbox.configure(state="normal")
         self.include_toc_checkbox.configure(state="normal")
         self.max_chunk_entry.configure(state="normal")
+        self.heading_profile_jurisprudencia_radio.configure(state="normal")
+        self.heading_profile_curso_radio.configure(state="normal")
         self.is_paused = False
         # Garante que a barra volte ao modo determinado mesmo se o lote
         # terminar (erro, parada) enquanto ainda houvesse extração marcada

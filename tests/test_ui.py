@@ -192,12 +192,13 @@ class AppFlowTests(unittest.TestCase):
                 max_chunk_characters=1000,
             )
 
-    def test_build_conversion_request_threads_include_toc_checkbox(self) -> None:
+    def test_build_conversion_request_threads_toc_and_heading_profile_choices(self) -> None:
         app = ui.App.__new__(ui.App)
         app.files = [Path("documento.pdf")]
         app.split_output = SimpleNamespace(get=lambda: False)
         app.include_toc = SimpleNamespace(get=lambda: True)
         app.max_chunk_characters = SimpleNamespace(get=lambda: "60000")
+        app.heading_profile = SimpleNamespace(get=lambda: "curso")
 
         # validate_runtime_dependencies() importa pymupdf4llm de verdade; se a
         # dependência não estiver instalada no Python usado para rodar os
@@ -213,6 +214,7 @@ class AppFlowTests(unittest.TestCase):
             request = app._build_conversion_request()
 
         self.assertTrue(request.include_toc)
+        self.assertEqual(request.heading_profile, "curso")
 
     def test_converter_converts_whole_document_in_a_single_call(self) -> None:
         # Chamar to_markdown por página, isoladamente, faz os níveis de título
