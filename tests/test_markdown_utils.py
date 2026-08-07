@@ -302,6 +302,41 @@ class MarkdownUtilsTests(unittest.TestCase):
         )
         self.assertEqual(letter_level, roman_level + 1)
 
+    def test_normalize_course_heading_levels_ambiguous_letter_does_not_falsely_continue_isolated_roman(
+        self,
+    ) -> None:
+        # Regressão real (Ponto 1 CONSTITUCIONAL 2026.2.md, seção "1.5.
+        # EVOLUÇÃO CONSTITUCIONAL DO BRASIL"): "A." / "B." abrem uma lista
+        # de letras; "i." isolado (não uma lista romana de verdade, só um
+        # item solto logo após B, sem relação com uma enumeração romana em
+        # curso) empurra "romano" para o topo da pilha. "C." e "D." (também
+        # numerais romanos válidos: C=100, D=500) então precisam continuar
+        # como letra (irmãos de A/B), não "continuar" a sequência romana só
+        # porque o tipo anterior era romano -- checar SÓ o tipo, sem o
+        # valor numérico, tratava "C." como se fosse o próximo item depois
+        # de "i." (valor 1), quebrando C/D para um nível mais profundo que
+        # A/B/E/F da mesma lista.
+        markdown = (
+            "## 1.5. Seção\n\n"
+            "## A. Constituição de 1824\n\n"
+            "## B. Constituição de 1891\n\n"
+            "## i. Primeira Constituição da República\n\n"
+            "## C. Constituição de 1934\n\n"
+            "## D. Constituição de 1937\n\n"
+            "## E. Constituição de 1946\n\n"
+        )
+
+        result = normalize_course_heading_levels(markdown)
+
+        letter_levels = {
+            len(line) - len(line.lstrip("#"))
+            for line in result.splitlines()
+            if re.match(r"^#+ [A-E]\. Constitui", line)
+        }
+        self.assertEqual(
+            len(letter_levels), 1, f"A-E deveriam ficar todos no mesmo nível (irmãos): {result}"
+        )
+
     def test_normalize_course_heading_levels_resumes_sibling_level_after_nested_digression(
         self,
     ) -> None:
@@ -344,6 +379,81 @@ class MarkdownUtilsTests(unittest.TestCase):
             next(iter(letter_levels)) + 1,
             "a digressão romana deve ser filha de D, um nível abaixo de A-E",
         )
+
+    def test_normalize_course_heading_levels_demotes_prose_list_item_between_plain_neighbors(
+        self,
+    ) -> None:
+        # Caso real (Ponto 1 CONSTITUCIONAL 2026.2.md, item "12." entre
+        # "11." e "13."): item de lista numerada em prosa capturado como
+        # heading pelo pymupdf4llm, com os vizinhos imediatos da mesma
+        # numeração (11 e 13) corretamente como parágrafo comum -- deve ser
+        # rebaixado a parágrafo mesmo tendo forma sintática de heading
+        # numérico válido.
+        markdown = (
+            "11. Os provedores devem manter representante no país.\n\n"
+            "## **Natureza da responsabilidade**\n\n"
+            "## **12. Não haverá responsabilidade objetiva na aplicação da tese.**\n\n"
+            "13. Apela-se ao Congresso Nacional para legislar sobre o tema.\n\n"
+        )
+
+        result = normalize_course_heading_levels(markdown)
+
+        self.assertNotIn("## **12.", result)
+        self.assertIn("**12. Não haverá responsabilidade objetiva", result)
+
+    def test_normalize_course_heading_levels_keeps_heading_with_unrelated_overlapping_numbering(
+        self,
+    ) -> None:
+        # Regressão descoberta ao validar a correção acima contra o
+        # documento real: uma primeira versão do fix demovia por engano
+        # dezenas de headings legítimos porque o documento tem colunas de
+        # numeração PARALELAS e sem relação (lista de questões 1-N e
+        # gabarito comentado citando os mesmos números em prosa) -- checar
+        # só "o número aparece como parágrafo comum em algum lugar do
+        # documento" colide quase sempre. O heading legítimo "12. FGV/2022,
+        # TJMG..." tem "11."/"13." como HEADING vizinho (mesma lista de
+        # questões), não como parágrafo -- deve permanecer heading mesmo
+        # que "11."/"13." também apareçam soltos em prosa em outra parte
+        # do documento, sem relação nenhuma com esta lista.
+        markdown = (
+            "## **11. TJRO/2019 - Juiz de Direito Substituto**\n\n"
+            "Texto da questão 11.\n\n"
+            "## **12. FGV/2022, TJMG - Juiz de Direito Substituto**\n\n"
+            "Texto da questão 12.\n\n"
+            "## **13. CEBRASPE/2022, TJMA - Juiz de Direito Substituto**\n\n"
+            "Texto da questão 13.\n\n"
+            "## **GABARITO COMENTADO**\n\n"
+            "11. Comentário sobre a questão onze, sem relação com a lista acima.\n\n"
+            "13. Comentário sobre a questão treze, sem relação com a lista acima.\n\n"
+        )
+
+        result = normalize_course_heading_levels(markdown)
+
+        self.assertIn("## **12. FGV/2022, TJMG - Juiz de Direito Substituto**", result)
+
+    def test_normalize_course_heading_levels_recognizes_prefix_with_fragmented_bold(
+        self,
+    ) -> None:
+        # Caso real (Ponto 1 CONSTITUCIONAL 2026.2.md, linha ~1819): o
+        # pymupdf4llm às vezes separa o negrito do prefixo e do texto em
+        # dois "runs" distintos, deixando o ponto solto entre eles --
+        # "**ii** . **Princípio federativo**" (dois pares de ** separados),
+        # em vez de "**ii. Princípio federativo**" contínuo. Sem tolerância
+        # a esse espaço, o item falha os padrões de prefixo e é rebaixado
+        # por engano, ficando fora da sequência i/ii/iii/iv.
+        markdown = (
+            "## **i. Princípio republicano**\n\n"
+            "## **ii** . **Princípio federativo**\n\n"
+            "## **iii. Princípio da indissolubilidade**\n\n"
+        )
+
+        result = normalize_course_heading_levels(markdown)
+
+        levels = {
+            len(line) - len(line.lstrip("#")) for line in result.splitlines() if line.strip().startswith("#")
+        }
+        self.assertEqual(len(levels), 1, f"i/ii/iii deveriam ficar no mesmo nível: {result}")
+        self.assertIn("## **ii** . **Princípio federativo**", result)
 
     def test_normalize_course_heading_levels_demotes_headings_without_structural_prefix(
         self,

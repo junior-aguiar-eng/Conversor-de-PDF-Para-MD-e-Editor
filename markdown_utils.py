@@ -62,10 +62,16 @@ LEGAL_INSTRUMENT_PATTERN = re.compile(r"^(CONSTITUICAO FEDERAL|LEI\b|CODIGO\b)")
 # "1.", "1.1.", "1.1.1." etc. — ponto final do último grupo é opcional
 # (visto sem ponto em amostra real, ex. "1.3.1").
 COURSE_NUMERIC_PREFIX_PATTERN = re.compile(r"^(\d+(?:\.\d+)*)\.?(?:\s+|$)")
-# "A.", "B.", "C." — uma única letra maiúscula seguida de ponto.
-COURSE_UPPERCASE_LETTER_PREFIX_PATTERN = re.compile(r"^[A-Z]\.(?:\s+|$)")
+# "A.", "B.", "C." — uma única letra maiúscula seguida de ponto. \s* antes
+# do ponto tolera negrito fragmentado em dois "runs" pelo pymupdf4llm (ex.
+# "**A** . **texto**" -- o "." sobra fora de qualquer negrito, com espaço
+# de ambos os lados, quando a fonte de origem no PDF aplicou o negrito ao
+# numeral/letra e ao texto como blocos separados; confirmado em amostra
+# real, ver Ponto 1 CONSTITUCIONAL 2026.2.md, "ii" -- sem essa tolerância
+# o item inteiro falha os 3 padrões de prefixo e é rebaixado por engano).
+COURSE_UPPERCASE_LETTER_PREFIX_PATTERN = re.compile(r"^[A-Z]\s*\.(?:\s+|$)")
 # "a)", "b)", "c)" — uma única letra minúscula seguida de parêntese.
-COURSE_LOWERCASE_PAREN_PREFIX_PATTERN = re.compile(r"^[a-z]\)(?:\s+|$)")
+COURSE_LOWERCASE_PAREN_PREFIX_PATTERN = re.compile(r"^[a-z]\s*\)(?:\s+|$)")
 # "i)", "ii)", "iii)", "I.", "II.", "III." — numeral romano (maiúsculo ou
 # minúsculo) seguido de parêntese ou ponto. O lookahead exige ao menos um
 # caractere romano válido para não casar com string vazia.
@@ -75,8 +81,11 @@ COURSE_LOWERCASE_PAREN_PREFIX_PATTERN = re.compile(r"^[a-z]\)(?:\s+|$)")
 # função para o critério exato (em resumo, "I"/"i" default para romano;
 # os demais só viram romano se o heading anterior já era romano).
 _ROMAN_NUMERAL_CORE = r"(?=[MDCLXVI])M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
+# Grupo de captura em torno do núcleo: usado para extrair o numeral e
+# calcular seu valor (_roman_to_int), necessário para a checagem de
+# continuidade de sequência em _resolve_letter_or_roman_type.
 COURSE_ROMAN_PREFIX_PATTERN = re.compile(
-    rf"^{_ROMAN_NUMERAL_CORE}[).](?:\s+|$)", re.IGNORECASE
+    rf"^({_ROMAN_NUMERAL_CORE})\s*[).](?:\s+|$)", re.IGNORECASE
 )
 _ROMAN_AMBIGUOUS_LETTERS = frozenset("IVXLCDM")
 # "ATENÇÃO!" — comparado contra o texto já sem negrito e sem acentuação.
@@ -218,54 +227,136 @@ class _CourseHeadingState:
     tipo de letra/romano de uma seção numerada anterior continua aberto."""
 
     def __init__(self) -> None:
-        self._stack: list[tuple[str, int]] = []
+        self._stack: list[tuple[str, int, int | None]] = []
 
     def register_numeric(self, level: int) -> None:
-        self._stack = [("numeric", level)]
+        self._stack = [("numeric", level, None)]
 
-    def register_letter_or_roman(self, heading_type: str) -> int:
+    def register_letter_or_roman(self, heading_type: str, roman_value: int | None = None) -> int:
         for index in range(len(self._stack) - 1, -1, -1):
             if self._stack[index][0] == heading_type:
                 del self._stack[index + 1 :]
+                self._stack[index] = (heading_type, self._stack[index][1], roman_value)
                 return self._stack[index][1]
         parent_level = self._stack[-1][1] if self._stack else 1
         level = min(parent_level + 1, 6)
-        self._stack.append((heading_type, level))
+        self._stack.append((heading_type, level, roman_value))
         return level
 
     @property
     def last_type(self) -> str | None:
         return self._stack[-1][0] if self._stack else None
 
+    @property
+    def last_roman_value(self) -> int | None:
+        return self._stack[-1][2] if self._stack else None
 
-def _resolve_letter_or_roman_type(letter: str, state: _CourseHeadingState) -> str:
+
+_ROMAN_NUMERAL_VALUES = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+
+
+def _roman_to_int(roman: str) -> int:
+    total = 0
+    previous_value = 0
+    for char in reversed(roman.upper()):
+        value = _ROMAN_NUMERAL_VALUES[char]
+        if value < previous_value:
+            total -= value
+        else:
+            total += value
+            previous_value = value
+    return total
+
+
+def _resolve_letter_or_roman_type(letter: str, state: _CourseHeadingState) -> tuple[str, int | None]:
     """Um único caractere de letra isolada que também é numeral romano
     válido (I,V,X,L,C,D,M) é ambíguo entre "letra maiúscula/minúscula" e
     "romano" — casa com os dois padrões ao mesmo tempo. Resolvido por
-    contexto, não por prioridade fixa de regex:
-    - "I"/"i" default para romano: é o primeiro item típico de uma lista
-      romana, bem mais comum na prática do que uma lista de letras
-      alcançar o 9º item (I é a 9ª letra) sem interrupção.
+    contexto, não por prioridade fixa de regex. Retorna (tipo, valor_romano
+    — só quando tipo="roman", senão None):
+    - "I"/"i" default para romano (valor 1): é o primeiro item típico de
+      uma lista romana, bem mais comum na prática do que uma lista de
+      letras alcançar o 9º item (I é a 9ª letra) sem interrupção.
     - os demais (V,X,L,C,D,M) só viram romano se o heading estrutural mais
-      recente já era romano (continuação real de sequência, ex. "IX." ->
-      "X."); caso contrário, seguem como letra isolada (comportamento
-      default já existente, sem essa ambiguidade eles nunca colidiriam).
-    Sem essa resolução, "I." (primeiro item de uma lista romana real)
-    casaria com a regra de letra maiúscula isolada antes de chegar à regra
-    de romano, e ficaria num tipo diferente de "II."/"III." — a causa raiz
-    do defeito de profundidade artificial crescente em listas romanas."""
+      recente já era romano E o valor deste caractere é exatamente o
+      PRÓXIMO da sequência (ex. "IX." valor 9 -> "X." valor 10 continua;
+      mas um "i." isolado (valor 1) seguido de "C." (valor 100) NÃO é uma
+      continuação real — "C." é o início de uma lista de letras nova,
+      mesmo com o tipo anterior sendo romano por coincidência). Checar só
+      "o tipo anterior era romano" (sem o valor) foi tentado e descartado:
+      confirmado bug real em Ponto 1 CONSTITUCIONAL 2026.2.md — depois de
+      um "i. Primeira Constituição..." isolado (não uma lista romana de
+      verdade, só um item solto), "C. Constituição de 1934" era
+      erroneamente tratado como romano só por coincidir tipo, quebrando o
+      nível de C/D em relação a A/B/E/F da mesma lista de letras.
+    Sem NENHUMA resolução por contexto, "I." (primeiro item de uma lista
+    romana real) casaria com a regra de letra maiúscula isolada antes de
+    chegar à regra de romano, e ficaria num tipo diferente de "II."/"III."
+    — a causa raiz original do defeito de profundidade artificial crescente
+    em listas romanas."""
     if letter.upper() not in _ROMAN_AMBIGUOUS_LETTERS:
-        return "uppercase" if letter.isupper() else "lowercase"
-    if letter.upper() == "I" or state.last_type == "roman":
-        return "roman"
-    return "uppercase" if letter.isupper() else "lowercase"
+        return ("uppercase" if letter.isupper() else "lowercase"), None
+    if letter.upper() == "I":
+        return "roman", 1
+    value = _roman_to_int(letter.upper())
+    if state.last_type == "roman" and state.last_roman_value == value - 1:
+        return "roman", value
+    return ("uppercase" if letter.isupper() else "lowercase"), None
+
+
+_HEADING_LINE_START_RE = re.compile(r"^#{1,6}(\s|$)")
+
+
+def _prose_list_item_positions(markdown: str) -> frozenset[int]:
+    """Posições (offset de caractere no markdown original) de heading
+    numérico TOP-LEVEL (ex. "12.", nunca a coluna de sub-numeração "12.3")
+    cujo vizinho numérico IMEDIATO — a linha numerada mais próxima antes e
+    depois dele, heading ou parágrafo comum, na mesma lista — é parágrafo
+    comum com número-1/número+1. Sinal estrutural de item de lista em prosa
+    capturado como heading por engano, não título de seção real (caso real:
+    Ponto 1 CONSTITUCIONAL 2026.2.md, "12. Não haverá responsabilidade..."
+    entre "11." e "13.", ambos parágrafo comum).
+
+    Deliberadamente por PROXIMIDADE POSICIONAL, não "o número aparece como
+    parágrafo comum em algum ponto do documento" — essa versão mais simples
+    foi tentada e descartada: o mesmo documento tem colunas de numeração
+    paralelas e sem relação (lista de questões 1-22, cada uma heading
+    legítimo tipo "12. FGV/2022, TJMG..."; gabarito comentado citando os
+    mesmos números 1-22 em prosa) que colidem em quase todo número sem o
+    filtro de adjacência real, demovendo dezenas de headings legítimos."""
+    entries: list[tuple[int, int, bool]] = []
+    position = 0
+    for line in markdown.split("\n"):
+        stripped = line.strip()
+        is_heading_line = bool(_HEADING_LINE_START_RE.match(stripped))
+        content = stripped.lstrip("#").strip() if is_heading_line else stripped
+        canonical = _canonicalize_heading_text(content)
+        number_match = COURSE_NUMERIC_PREFIX_PATTERN.match(canonical)
+        if number_match and "." not in number_match.group(1):
+            entries.append((position, int(number_match.group(1)), is_heading_line))
+        position += len(line) + 1
+
+    prose_positions: set[int] = set()
+    for index, (entry_position, number, is_heading_line) in enumerate(entries):
+        if not is_heading_line:
+            continue
+        previous_matches = index > 0 and not entries[index - 1][2] and entries[index - 1][1] == number - 1
+        next_matches = (
+            index + 1 < len(entries) and not entries[index + 1][2] and entries[index + 1][1] == number + 1
+        )
+        if previous_matches and next_matches:
+            prose_positions.add(entry_position)
+    return frozenset(prose_positions)
 
 
 def _classify_course_heading(text: str, state: _CourseHeadingState) -> tuple[int, bool]:
     """Classifica um título do perfil de curso, atualizando o estado de
     aninhamento. Retorna (nível, mantém_como_heading) — mantém_como_heading
     é False para o rebaixamento da regra 7 (o nível retornado é ignorado
-    nesse caso)."""
+    nesse caso). O rebaixamento por continuidade de sequência numérica
+    (Defeito 2) acontece ANTES desta função, em normalize_course_heading_levels
+    — ver _prose_list_item_positions — porque depende da posição do heading
+    no documento, não só do seu próprio texto."""
     canonical = _canonicalize_heading_text(text)
     normalized = _strip_accents(canonical).upper()
 
@@ -274,35 +365,24 @@ def _classify_course_heading(text: str, state: _CourseHeadingState) -> tuple[int
 
     numeric_match = COURSE_NUMERIC_PREFIX_PATTERN.match(canonical)
     if numeric_match:
-        # LIMITAÇÃO CONHECIDA (não corrigida — falta sinal estrutural
-        # confiável, ver histórico de teste): esta regra não distingue
-        # título de seção real de item de lista numerada em prosa (ex. "12.
-        # Não haverá responsabilidade objetiva...") quando o pymupdf4llm já
-        # marca esse item como heading de forma inconsistente com os
-        # vizinhos da mesma lista (ex. "13." ao lado, mesma lista, não
-        # marcado) — nesse caso o falso positivo é indistinguível por
-        # regex de prefixo do padrão legítimo "12. FGV/2022, TJMG - Juiz
-        # de Direito Substituto" de uma lista de questões. Possível pista
-        # futura, NÃO implementada (precisa de mais amostras para validar):
-        # heading numérico cujo texto termina em ";" ou tem muitas palavras
-        # é mais provável ser item de lista em prosa do que título de
-        # seção — mas arrisca falso negativo em títulos legítimos longos.
         level = _course_heading_level_from_numeric_depth(numeric_match.group(1))
         state.register_numeric(level)
         return level, True
 
     upper_match = COURSE_UPPERCASE_LETTER_PREFIX_PATTERN.match(canonical)
     if upper_match:
-        heading_type = _resolve_letter_or_roman_type(canonical[0], state)
-        return state.register_letter_or_roman(heading_type), True
+        heading_type, roman_value = _resolve_letter_or_roman_type(canonical[0], state)
+        return state.register_letter_or_roman(heading_type, roman_value), True
 
     lower_match = COURSE_LOWERCASE_PAREN_PREFIX_PATTERN.match(canonical)
     if lower_match:
-        heading_type = _resolve_letter_or_roman_type(canonical[0], state)
-        return state.register_letter_or_roman(heading_type), True
+        heading_type, roman_value = _resolve_letter_or_roman_type(canonical[0], state)
+        return state.register_letter_or_roman(heading_type, roman_value), True
 
-    if COURSE_ROMAN_PREFIX_PATTERN.match(canonical):
-        return state.register_letter_or_roman("roman"), True
+    roman_match = COURSE_ROMAN_PREFIX_PATTERN.match(canonical)
+    if roman_match:
+        roman_value = _roman_to_int(roman_match.group(1))
+        return state.register_letter_or_roman("roman", roman_value), True
 
     if COURSE_ATTENTION_PATTERN.match(normalized):
         return 2, True
@@ -327,6 +407,7 @@ def normalize_course_heading_levels(markdown: str) -> str:
     classificar cada um isoladamente.
     """
     state = _CourseHeadingState()
+    prose_list_item_positions = _prose_list_item_positions(markdown)
 
     def replace(match: re.Match[str]) -> str:
         raw = match.group()
@@ -334,6 +415,8 @@ def normalize_course_heading_levels(markdown: str) -> str:
         trailing_whitespace = raw[len(heading_line) :]
         level = len(heading_line) - len(heading_line.lstrip("#"))
         text = heading_line[level:].strip()
+        if match.start() in prose_list_item_positions:
+            return f"{text}{trailing_whitespace}"
         new_level, keep_as_heading = _classify_course_heading(text, state)
         if not keep_as_heading:
             return f"{text}{trailing_whitespace}"
