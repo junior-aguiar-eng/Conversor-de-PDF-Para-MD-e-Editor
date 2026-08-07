@@ -199,7 +199,16 @@ class AppFlowTests(unittest.TestCase):
         app.include_toc = SimpleNamespace(get=lambda: True)
         app.max_chunk_characters = SimpleNamespace(get=lambda: "60000")
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
+        # validate_runtime_dependencies() importa pymupdf4llm de verdade; se a
+        # dependência não estiver instalada no Python usado para rodar os
+        # testes (comum quando não é o .venv do projeto), ela levanta
+        # RuntimeError e o código de tratamento abre um messagebox.showerror
+        # real, que trava o teste esperando um clique que nunca chega. Mockar
+        # aqui torna o teste independente do ambiente de execução.
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.object(ui, "validate_runtime_dependencies"),
+        ):
             app.output_dir = SimpleNamespace(get=lambda: tmp_dir)
             request = app._build_conversion_request()
 

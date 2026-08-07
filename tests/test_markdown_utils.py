@@ -9,6 +9,7 @@ from markdown_utils import (
     available_output_path,
     build_table_of_contents,
     finalize_markdown,
+    normalize_course_heading_levels,
     normalize_heading_levels,
     split_markdown_by_headings,
 )
@@ -193,6 +194,121 @@ class MarkdownUtilsTests(unittest.TestCase):
         self.assertIn("[DIREITO CIVIL]", toc)
         self.assertIn("[COMENTÁRIO]", toc)
         self.assertNotIn("Lei n. 8.112", toc)
+
+    def test_normalize_course_heading_levels_uses_numeric_depth_plus_one(self) -> None:
+        # Profundidade 4 ("1.3.1.2" = 4 grupos) -> nível 5.
+        heading = "## **1.3.1.2. ASPECTOS CONTEXTUAIS**"
+        expected = "##### **1.3.1.2. ASPECTOS CONTEXTUAIS**"
+
+        self.assertEqual(normalize_course_heading_levels(heading), expected)
+
+    def test_normalize_course_heading_levels_tolerates_missing_final_dot(self) -> None:
+        with_dot = normalize_course_heading_levels("## **1.3.1.**")
+        without_dot = normalize_course_heading_levels("## **1.3.1**")
+
+        self.assertTrue(with_dot.startswith("#### "))
+        self.assertTrue(without_dot.startswith("#### "))
+        self.assertEqual(without_dot, "#### **1.3.1**")
+
+    def test_normalize_course_heading_levels_nests_uppercase_letter_under_last_numeric(
+        self,
+    ) -> None:
+        markdown = "## 1.3. Seção\n\nTexto.\n\n## A. Item\n\nTexto do item."
+
+        result = normalize_course_heading_levels(markdown)
+
+        self.assertIn("### 1.3. Seção", result)
+        self.assertIn("#### A. Item", result)
+
+    def test_normalize_course_heading_levels_nests_lowercase_and_roman_under_scope(self) -> None:
+        # "ii)" (não "i)") de propósito: um único caractere ambíguo como
+        # "i)" casa primeiro com a regra 4 (letra minúscula), por prioridade
+        # — ver comentário em COURSE_ROMAN_PREFIX_PATTERN.
+        markdown = (
+            "## 1. Seção\n\n"
+            "## A. Item\n\n"
+            "## a) Subitem\n\n"
+            "## ii) Detalhe\n\n"
+        )
+
+        result = normalize_course_heading_levels(markdown)
+
+        self.assertIn("## 1. Seção", result)
+        self.assertIn("### A. Item", result)
+        self.assertIn("#### a) Subitem", result)
+        self.assertIn("##### ii) Detalhe", result)
+
+    def test_normalize_course_heading_levels_demotes_headings_without_structural_prefix(
+        self,
+    ) -> None:
+        heading = (
+            "## **O Neoconstitucionalismo possui como principais características:**"
+        )
+
+        result = normalize_course_heading_levels(heading)
+
+        self.assertNotIn("#", result)
+        self.assertEqual(
+            result,
+            "**O Neoconstitucionalismo possui como principais características:**",
+        )
+
+    def test_normalize_course_heading_levels_keeps_atencao_label_at_level_two(self) -> None:
+        heading = "## **ATENÇÃO! JUDICIALIZAÇÃO DA SAÚDE.**"
+
+        self.assertEqual(normalize_course_heading_levels(heading), heading)
+
+    def test_normalize_course_heading_levels_keeps_direito_branch_at_level_one(self) -> None:
+        self.assertEqual(
+            normalize_course_heading_levels("# DIREITO CONSTITUCIONAL"),
+            "# DIREITO CONSTITUCIONAL",
+        )
+        self.assertEqual(
+            normalize_course_heading_levels("## DIREITO CONSTITUCIONAL"),
+            "# DIREITO CONSTITUCIONAL",
+        )
+
+    def test_normalize_course_heading_levels_is_idempotent(self) -> None:
+        markdown = (
+            "# DIREITO CONSTITUCIONAL\n\n"
+            "## 1. Neoconstitucionalismo\n\n"
+            "Texto introdutório não vira heading.\n\n"
+            "### 1.1. Premissas\n\n"
+            "#### A. Marco histórico\n\n"
+            "##### a) Constituições rígidas\n\n"
+            "###### i) Efeito vinculante\n\n"
+            "## **ATENÇÃO! JUDICIALIZAÇÃO DA SAÚDE.**\n\n"
+        )
+
+        once = normalize_course_heading_levels(markdown)
+        twice = normalize_course_heading_levels(once)
+
+        self.assertEqual(once, twice)
+
+    def test_finalize_markdown_applies_course_profile_when_requested(self) -> None:
+        markdown = (
+            "# DIREITO CONSTITUCIONAL\n\n"
+            "## **Frase de corpo capturada por engano:**\n\n"
+            "## 1. Seção real\n\n"
+        )
+        output_dir = TEST_TMP_ROOT / "course_profile"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        markdown_path = output_dir / "documento.md"
+
+        finalize_markdown(
+            source=Path("documento.pdf"),
+            markdown_path=markdown_path,
+            markdown=markdown,
+            asset_count=0,
+            split_output=False,
+            max_chunk_characters=10_000,
+            heading_profile="curso",
+        )
+
+        content = markdown_path.read_text(encoding="utf-8")
+        self.assertIn("**Frase de corpo capturada por engano:**\n", content)
+        self.assertNotIn("## **Frase de corpo capturada por engano:**", content)
+        self.assertIn("## 1. Seção real", content)
 
 
 if __name__ == "__main__":

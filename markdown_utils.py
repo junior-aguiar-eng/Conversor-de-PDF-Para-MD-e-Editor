@@ -6,8 +6,11 @@ import re
 import unicodedata
 from hashlib import sha1
 from pathlib import Path
+from typing import Literal
 
 from models import ConversionResult
+
+HeadingProfile = Literal["jurisprudencia", "curso"]
 
 HEADING_PATTERN = re.compile(r"(?m)^#{1,2}\s+.+?\s*$")
 # O pymupdf4llm rankeia até 6 tamanhos de fonte distintos como níveis de
@@ -50,6 +53,34 @@ SECTION_LABEL_HEADINGS: frozenset[str] = frozenset({"COMENTÁRIO"})
 # Início reconhecido de um cabeçalho de dispositivo legal citado (Lei,
 # Código ou Constituição Federal), com anotação opcional entre parênteses.
 LEGAL_INSTRUMENT_PATTERN = re.compile(r"^(CONSTITUICAO FEDERAL|LEI\b|CODIGO\b)")
+
+# --- Perfil de normalização para material de curso (numeração hierárquica) ---
+# Ver normalize_course_heading_levels. Cada padrão reconhece o prefixo
+# estrutural de um tipo de heading; \s+|$ ao final tolera espaço variável
+# (ou nenhum texto após o prefixo) entre o prefixo e o título propriamente
+# dito.
+# "1.", "1.1.", "1.1.1." etc. — ponto final do último grupo é opcional
+# (visto sem ponto em amostra real, ex. "1.3.1").
+COURSE_NUMERIC_PREFIX_PATTERN = re.compile(r"^(\d+(?:\.\d+)*)\.?(?:\s+|$)")
+# "A.", "B.", "C." — uma única letra maiúscula seguida de ponto.
+COURSE_UPPERCASE_LETTER_PREFIX_PATTERN = re.compile(r"^[A-Z]\.(?:\s+|$)")
+# "a)", "b)", "c)" — uma única letra minúscula seguida de parêntese.
+COURSE_LOWERCASE_PAREN_PREFIX_PATTERN = re.compile(r"^[a-z]\)(?:\s+|$)")
+# "i)", "ii)", "iii)", "I.", "II.", "III." — numeral romano (maiúsculo ou
+# minúsculo) seguido de parêntese ou ponto. O lookahead exige ao menos um
+# caractere romano válido para não casar com string vazia.
+# ATENÇÃO: pela ordem de prioridade das regras (letra antes de romano), um
+# item de UM SÓ caractere ambíguo com letra (ex. "i)" ou "I.", o primeiro
+# item típico de uma lista romana) casa primeiro com a regra de letra
+# maiúscula/minúscula, não com esta. Itens de 2+ caracteres ("ii)", "II.")
+# não têm essa ambiguidade e sempre casam aqui. Efeito prático: o primeiro
+# item de uma lista romana pode sair um nível acima dos irmãos seguintes.
+_ROMAN_NUMERAL_CORE = r"(?=[MDCLXVI])M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
+COURSE_ROMAN_PREFIX_PATTERN = re.compile(
+    rf"^{_ROMAN_NUMERAL_CORE}[).](?:\s+|$)", re.IGNORECASE
+)
+# "ATENÇÃO!" — comparado contra o texto já sem negrito e sem acentuação.
+COURSE_ATTENTION_PATTERN = re.compile(r"^ATENCAO!")
 
 
 def split_markdown_by_headings(markdown: str, max_characters: int) -> list[str]:
@@ -152,6 +183,116 @@ def normalize_heading_levels(markdown: str) -> str:
     return RAW_HEADING_PATTERN.sub(_normalize_heading_match, markdown)
 
 
+def _course_heading_level_from_numeric_depth(prefix: str) -> int:
+    # Nível = profundidade do prefixo + 1 (nível 1 é reservado ao ramo do
+    # direito). profundidade = número de grupos numéricos = número de
+    # pontos internos ("1.3.1" tem 2 pontos = 3 grupos) + 1, então
+    # nível = pontos_internos + 2. Cap em 6: não existe nível 7 no Markdown.
+    return min(prefix.count(".") + 2, 6)
+
+
+class _CourseHeadingState:
+    """Rastreia, numa passada sequencial pelos títulos do documento, o
+    nível do heading numérico/maiúsculo/minúsculo mais recente visto — usado
+    para aninhar letras e numerais romanos sob a seção estrutural mais
+    próxima que os antecede (ver normalize_course_heading_levels)."""
+
+    def __init__(self) -> None:
+        self.last_numeric_level: int | None = None
+        self.last_uppercase_level: int | None = None
+        self.last_lowercase_level: int | None = None
+
+    def register_numeric(self, level: int) -> None:
+        self.last_numeric_level = level
+        # Nova seção numerada: letras/romanos de uma seção anterior não são
+        # mais o escopo "atual" para aninhamento (regra 4/5 do perfil).
+        self.last_uppercase_level = None
+        self.last_lowercase_level = None
+
+    def register_uppercase(self, level: int) -> None:
+        self.last_uppercase_level = level
+        self.last_lowercase_level = None
+
+    def register_lowercase(self, level: int) -> None:
+        self.last_lowercase_level = level
+
+
+def _classify_course_heading(text: str, state: _CourseHeadingState) -> tuple[int, bool]:
+    """Classifica um título do perfil de curso, atualizando o estado de
+    aninhamento. Retorna (nível, mantém_como_heading) — mantém_como_heading
+    é False para o rebaixamento da regra 7 (o nível retornado é ignorado
+    nesse caso)."""
+    canonical = _canonicalize_heading_text(text)
+    normalized = _strip_accents(canonical).upper()
+
+    if canonical.isupper() and normalized in _DIREITO_BRANCH_HEADINGS_NORMALIZED:
+        return 1, True
+
+    numeric_match = COURSE_NUMERIC_PREFIX_PATTERN.match(canonical)
+    if numeric_match:
+        level = _course_heading_level_from_numeric_depth(numeric_match.group(1))
+        state.register_numeric(level)
+        return level, True
+
+    if COURSE_UPPERCASE_LETTER_PREFIX_PATTERN.match(canonical):
+        parent = state.last_numeric_level or 1
+        level = min(parent + 1, 6)
+        state.register_uppercase(level)
+        return level, True
+
+    if COURSE_LOWERCASE_PAREN_PREFIX_PATTERN.match(canonical):
+        parent = state.last_uppercase_level or state.last_numeric_level or 1
+        level = min(parent + 1, 6)
+        state.register_lowercase(level)
+        return level, True
+
+    if COURSE_ROMAN_PREFIX_PATTERN.match(canonical):
+        parent = (
+            state.last_lowercase_level
+            or state.last_uppercase_level
+            or state.last_numeric_level
+            or 1
+        )
+        return min(parent + 1, 6), True
+
+    if COURSE_ATTENTION_PATTERN.match(normalized):
+        return 2, True
+
+    return 0, False
+
+
+def normalize_course_heading_levels(markdown: str) -> str:
+    """Reclassifica o nível de cada título do markdown bruto pelo perfil de
+    material de curso (numeração hierárquica "1.", "1.1.", "A.", "a)",
+    "i)" etc.), como alternativa a normalize_heading_levels (perfil de
+    boletim de jurisprudência).
+
+    Diferente do outro perfil, esta função primeiro faz uma triagem: título
+    sem prefixo estrutural reconhecível é rebaixado a parágrafo comum (a
+    marcação de heading é removida), pois na amostra real ~30% dos títulos
+    que o pymupdf4llm gera aqui são frases de corpo de texto capturadas por
+    engano. Títulos legítimos são então reclassificados pela profundidade
+    indicada no próprio prefixo do texto, não pelo nível herdado do
+    pymupdf4llm — por isso a função percorre os títulos em ordem sequencial,
+    mantendo estado de aninhamento (_CourseHeadingState), em vez de
+    classificar cada um isoladamente.
+    """
+    state = _CourseHeadingState()
+
+    def replace(match: re.Match[str]) -> str:
+        raw = match.group()
+        heading_line = raw.rstrip()
+        trailing_whitespace = raw[len(heading_line) :]
+        level = len(heading_line) - len(heading_line.lstrip("#"))
+        text = heading_line[level:].strip()
+        new_level, keep_as_heading = _classify_course_heading(text, state)
+        if not keep_as_heading:
+            return f"{text}{trailing_whitespace}"
+        return f"{'#' * new_level} {text}{trailing_whitespace}"
+
+    return RAW_HEADING_PATTERN.sub(replace, markdown)
+
+
 def _slugify_heading(text: str) -> str:
     """Gera um id de âncora no estilo GitHub a partir do texto de um título."""
     slug = SLUG_INVALID_CHARS_PATTERN.sub("", text.strip().lower())
@@ -216,11 +357,18 @@ def finalize_markdown(
     max_chunk_characters: int,
     include_toc: bool = False,
     extraction_seconds: float = 0.0,
+    heading_profile: HeadingProfile = "jurisprudencia",
 ) -> ConversionResult:
     # Reclassifica os níveis de título por conteúdo antes de qualquer outra
     # função consumir o texto: o corte em partes e o sumário devem ver a
     # hierarquia corrigida, não a que o pymupdf4llm inferiu da fonte do PDF.
-    markdown = normalize_heading_levels(markdown)
+    # heading_profile escolhe a heurística de conteúdo (boletim de
+    # jurisprudência vs. material de curso com numeração hierárquica) — não
+    # há detecção automática por enquanto, o chamador decide.
+    if heading_profile == "curso":
+        markdown = normalize_course_heading_levels(markdown)
+    else:
+        markdown = normalize_heading_levels(markdown)
     # O sumário é calculado a partir do markdown já normalizado e só entra
     # no arquivo principal: as partes (abaixo) continuam vindo do texto sem
     # sumário, para não gerar uma parte espúria contendo só o índice.
