@@ -8,7 +8,6 @@ from pathlib import Path
 from markdown_utils import (
     asset_directory_name,
     available_output_path,
-    build_table_of_contents,
     finalize_markdown,
     normalize_course_heading_levels,
     normalize_heading_levels,
@@ -92,52 +91,6 @@ class MarkdownUtilsTests(unittest.TestCase):
             first_chunk.read_text(encoding="utf-8"),
         )
 
-
-    def test_build_table_of_contents_returns_empty_without_headings(self) -> None:
-        self.assertEqual(build_table_of_contents("Texto sem títulos."), "")
-
-    def test_build_table_of_contents_nests_level_two_under_level_one(self) -> None:
-        markdown = "# Capítulo 1\n\nTexto.\n\n## Seção 1.1\n\nMais texto."
-
-        toc = build_table_of_contents(markdown)
-
-        self.assertEqual(
-            toc,
-            "## Sumário\n\n- [Capítulo 1](#capítulo-1)\n  - [Seção 1.1](#seção-11)",
-        )
-
-    def test_build_table_of_contents_disambiguates_repeated_titles(self) -> None:
-        markdown = "# Introdução\n\nA.\n\n# Introdução\n\nB."
-
-        toc = build_table_of_contents(markdown)
-
-        self.assertIn("[Introdução](#introdução)", toc)
-        self.assertIn("[Introdução](#introdução-1)", toc)
-
-    def test_finalize_markdown_prepends_toc_only_to_main_file_not_chunks(self) -> None:
-        markdown = (
-            "# Parte 1\n\n" + "A" * 40 + "\n\n## Parte 2\n\n" + "B" * 40
-        )
-        output_dir = TEST_TMP_ROOT / "toc"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        markdown_path = output_dir / "documento.md"
-
-        finalize_markdown(
-            source=Path("documento.pdf"),
-            markdown_path=markdown_path,
-            markdown=markdown,
-            asset_count=0,
-            split_output=True,
-            max_chunk_characters=70,
-            include_toc=True,
-        )
-
-        main_content = markdown_path.read_text(encoding="utf-8")
-        self.assertTrue(main_content.startswith("## Sumário"))
-
-        first_chunk = output_dir / "documento_partes" / "parte_001.md"
-        self.assertFalse(first_chunk.read_text(encoding="utf-8").startswith("## Sumário"))
-
     def test_normalize_heading_levels_reclassifies_comentario_label_regardless_of_origin_level(
         self,
     ) -> None:
@@ -181,20 +134,6 @@ class MarkdownUtilsTests(unittest.TestCase):
         )
 
         self.assertEqual(normalize_heading_levels(markdown), markdown)
-
-    def test_build_table_of_contents_ignores_level_three_after_normalization(self) -> None:
-        markdown = normalize_heading_levels(
-            "# DIREITO CIVIL\n\n"
-            "## COMENTÁRIO\n\n"
-            "## Lei n. 8.112/1990 (redação vigente)\n\n"
-            "Texto."
-        )
-
-        toc = build_table_of_contents(markdown)
-
-        self.assertIn("[DIREITO CIVIL]", toc)
-        self.assertIn("[COMENTÁRIO]", toc)
-        self.assertNotIn("Lei n. 8.112", toc)
 
     def test_normalize_course_heading_levels_uses_numeric_depth_plus_one(self) -> None:
         # Profundidade 4 ("1.3.1.2" = 4 grupos) -> nível 5.

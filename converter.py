@@ -40,7 +40,6 @@ class PdfMarkdownConverter:
         output_dir: Path,
         split_output: bool,
         max_chunk_characters: int,
-        include_toc: bool = False,
         heading_profile: HeadingProfile = "jurisprudencia",
     ) -> ConversionResult:
         previous_working_directory = Path.cwd()
@@ -90,7 +89,6 @@ class PdfMarkdownConverter:
             asset_count,
             split_output,
             max_chunk_characters,
-            include_toc,
             extraction_seconds,
             heading_profile,
         )
@@ -116,7 +114,6 @@ def convert_worker(
     output_dir: Path,
     split_output: bool,
     max_chunk_characters: int,
-    include_toc: bool,
     heading_profile: HeadingProfile = "jurisprudencia",
 ) -> ConversionResult | ConversionFailure:
     """Converte um arquivo dentro de um processo do pool. Nunca propaga
@@ -125,9 +122,7 @@ def convert_worker(
     if _worker_converter is None:
         _worker_converter = PdfMarkdownConverter()
     try:
-        return _worker_converter.convert(
-            source, output_dir, split_output, max_chunk_characters, include_toc, heading_profile
-        )
+        return _worker_converter.convert(source, output_dir, split_output, max_chunk_characters, heading_profile)
     except Exception as error:
         return ConversionFailure(
             source=source,

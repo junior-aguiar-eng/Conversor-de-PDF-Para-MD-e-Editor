@@ -34,7 +34,6 @@ class ConversionRequest:
     output_dir: Path
     split_output: bool
     max_chunk_characters: int
-    include_toc: bool = False
     heading_profile: HeadingProfile = "jurisprudencia"
 
 
@@ -81,7 +80,6 @@ class App:
         self.failures_by_source: dict[Path, ConversionFailure] = {}
         self.output_dir = StringVar(value=str(DEFAULT_OUTPUT_DIR))
         self.split_output = BooleanVar(value=False)
-        self.include_toc = BooleanVar(value=False)
         self.max_chunk_characters = StringVar(value=str(DEFAULT_MAX_CHUNK_CHARACTERS))
         self.heading_profile = StringVar(value="jurisprudencia")
         self.events: queue.Queue[UiEvent] = queue.Queue()
@@ -89,40 +87,115 @@ class App:
         self.resume_processing = threading.Event()
         self.resume_processing.set()
         self.is_paused = False
-        self._active_extractions = 0
+        self._advanced_visible = False
         self._batch_start_time = 0.0
         self._build()
         self.root.after(120, self._process_events)
 
     def _configure_style(self) -> None:
-        background = "#F4F7FB"
+        # "clam" é o único tema ttk que respeita cor/borda customizadas de
+        # forma consistente no Windows — os temas nativos ("vista"/
+        # "xpnative") ignoram boa parte disso em botões e barra de
+        # progresso, então a paleta abaixo não teria efeito visual real
+        # sem essa troca de tema primeiro.
+        background = "#F5F6FA"
         surface = "#FFFFFF"
-        border = "#D8E0EA"
-        accent = "#176B87"
-        text = "#17324D"
+        border = "#E3E6EC"
+        accent = "#4338CA"
+        accent_soft = "#EEF0FD"
+        accent_pressed = "#372DAD"
+        text = "#1E2333"
+        muted = "#6B7280"
 
         self.root.configure(background=background)
         style = ttk.Style(self.root)
+        style.theme_use("clam")
+
+        style.configure(".", background=background, foreground=text, font=("Segoe UI", 10))
         style.configure("App.TFrame", background=background)
         style.configure("Header.TFrame", background=background)
-        style.configure("Title.TLabel", background=background, foreground=text, font=("Segoe UI", 18, "bold"))
-        style.configure("Subtitle.TLabel", background=background, foreground="#5B6B7C", font=("Segoe UI", 10))
-        style.configure("Section.TLabelframe", background=background, bordercolor=border, relief="solid")
-        style.configure("Section.TLabelframe.Label", background=background, foreground=text, font=("Segoe UI", 10, "bold"))
-        style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"), padding=(14, 8))
-        style.configure("Secondary.TButton", padding=(11, 7))
+        style.configure("Title.TLabel", background=background, foreground=text, font=("Segoe UI", 19, "bold"))
+        style.configure("Subtitle.TLabel", background=background, foreground=muted, font=("Segoe UI", 10))
         style.configure(
-            "Treeview", background=surface, fieldbackground=surface, foreground=text, rowheight=30, font=("Segoe UI", 10)
+            "Section.TLabelframe", background=background, bordercolor=border, relief="solid", borderwidth=1
         )
-        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
-        style.map("Treeview", background=[("selected", "#D9EEF3")], foreground=[("selected", text)])
+        style.configure(
+            "Section.TLabelframe.Label", background=background, foreground=muted, font=("Segoe UI", 9, "bold")
+        )
+
+        style.configure(
+            "Accent.TButton",
+            font=("Segoe UI", 10, "bold"),
+            padding=(16, 9),
+            background=accent,
+            foreground="#FFFFFF",
+            borderwidth=0,
+            focuscolor="",
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("disabled", "#C7C9D9"), ("pressed", accent_pressed), ("active", accent_pressed)],
+            foreground=[("disabled", "#F5F6FA")],
+        )
+        style.configure(
+            "Secondary.TButton",
+            padding=(12, 8),
+            background=surface,
+            foreground=text,
+            bordercolor=border,
+            borderwidth=1,
+            focuscolor="",
+        )
+        style.map(
+            "Secondary.TButton",
+            background=[("disabled", background), ("pressed", accent_soft), ("active", accent_soft)],
+            foreground=[("disabled", muted)],
+            bordercolor=[("active", accent)],
+        )
+        style.configure(
+            "Toggle.TButton",
+            padding=(2, 4),
+            background=background,
+            foreground=accent,
+            borderwidth=0,
+            focuscolor="",
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.map("Toggle.TButton", background=[("active", background)], foreground=[("active", accent_pressed)])
+
+        style.configure(
+            "Treeview",
+            background=surface,
+            fieldbackground=surface,
+            foreground=text,
+            bordercolor=border,
+            rowheight=30,
+            font=("Segoe UI", 10),
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=background,
+            foreground=muted,
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+        )
+        style.map("Treeview", background=[("selected", accent_soft)], foreground=[("selected", text)])
+        style.map("Treeview.Heading", background=[("active", background)])
+
+        style.configure("TCheckbutton", background=background, foreground=text, focuscolor="")
+        style.map("TCheckbutton", background=[("active", background)])
+        style.configure("TRadiobutton", background=background, foreground=text, focuscolor="")
+        style.map("TRadiobutton", background=[("active", background)])
+        style.configure("TEntry", fieldbackground=surface, bordercolor=border, foreground=text)
+
         style.configure(
             "Horizontal.TProgressbar",
-            troughcolor="#E1E8F0",
+            troughcolor=border,
             background=accent,
-            bordercolor="#E1E8F0",
+            bordercolor=border,
             lightcolor=accent,
             darkcolor=accent,
+            thickness=8,
         )
 
     def _build(self) -> None:
@@ -130,7 +203,7 @@ class App:
         frame.pack(fill="both", expand=True)
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(2, weight=4)
-        frame.rowconfigure(7, weight=1)
+        frame.rowconfigure(8, weight=1)
 
         header = ttk.Frame(frame, style="Header.TFrame")
         header.grid(row=0, column=0, sticky="ew")
@@ -177,47 +250,60 @@ class App:
         )
         self.choose_output_button.grid(row=0, column=1, padx=(8, 0))
 
-        mode_box = ttk.LabelFrame(frame, text="Opções de saída", padding=12, style="Section.TLabelframe")
-        mode_box.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+        # Opções pouco usadas (divisão em partes, perfil de normalização de
+        # títulos) ficam recolhidas por padrão — reduz a quantidade de
+        # caixas visíveis no fluxo principal (adicionar PDFs -> escolher
+        # pasta -> converter), sem remover a funcionalidade.
+        self.advanced_toggle_button = ttk.Button(
+            frame,
+            text="▸ Opções avançadas",
+            command=self._toggle_advanced,
+            style="Toggle.TButton",
+            cursor="hand2",
+        )
+        self.advanced_toggle_button.grid(row=4, column=0, sticky="w", pady=(14, 0))
+
+        self.advanced_panel = ttk.LabelFrame(
+            frame, text="Opções avançadas", padding=12, style="Section.TLabelframe"
+        )
+        self.advanced_panel.columnconfigure(0, weight=1)
+
         self.split_output_checkbox = ttk.Checkbutton(
-            mode_box,
+            self.advanced_panel,
             text="Gerar partes por títulos # e ## quando passar de",
             variable=self.split_output,
         )
         self.split_output_checkbox.grid(row=0, column=0, sticky="w")
-        self.max_chunk_entry = ttk.Entry(mode_box, width=8, textvariable=self.max_chunk_characters)
-        self.max_chunk_entry.grid(row=0, column=1, padx=(6, 4))
-        ttk.Label(mode_box, text=f"caracteres ({DEFAULT_MAX_CHUNK_CHARACTERS:,} recomendado)").grid(
-            row=0, column=2, sticky="w"
-        )
-        self.include_toc_checkbox = ttk.Checkbutton(
-            mode_box,
-            text="Incluir sumário automático (índice a partir dos títulos # e ##)",
-            variable=self.include_toc,
-        )
-        self.include_toc_checkbox.grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        chunk_row = ttk.Frame(self.advanced_panel, style="App.TFrame")
+        chunk_row.grid(row=1, column=0, sticky="w", pady=(4, 12))
+        self.max_chunk_entry = ttk.Entry(chunk_row, width=8, textvariable=self.max_chunk_characters)
+        self.max_chunk_entry.pack(side="left")
+        ttk.Label(
+            chunk_row, text=f"caracteres ({DEFAULT_MAX_CHUNK_CHARACTERS:,} recomendado)", style="Subtitle.TLabel"
+        ).pack(side="left", padx=(6, 0))
 
-        profile_box = ttk.LabelFrame(
-            frame, text="Perfil de normalização de títulos", padding=12, style="Section.TLabelframe"
+        ttk.Label(self.advanced_panel, text="Perfil de normalização de títulos", style="Subtitle.TLabel").grid(
+            row=2, column=0, sticky="w"
         )
-        profile_box.grid(row=5, column=0, sticky="ew", pady=(14, 0))
+        profile_row = ttk.Frame(self.advanced_panel, style="App.TFrame")
+        profile_row.grid(row=3, column=0, sticky="w", pady=(4, 0))
         self.heading_profile_jurisprudencia_radio = ttk.Radiobutton(
-            profile_box,
+            profile_row,
             text="Boletim de jurisprudência (STJ/STF)",
             variable=self.heading_profile,
             value="jurisprudencia",
         )
-        self.heading_profile_jurisprudencia_radio.grid(row=0, column=0, sticky="w")
+        self.heading_profile_jurisprudencia_radio.pack(side="left")
         self.heading_profile_curso_radio = ttk.Radiobutton(
-            profile_box,
-            text="Material de curso (numeração 1., 1.1., A., a), i)...)",
+            profile_row,
+            text="Material de curso (1., 1.1., A., a), i)...)",
             variable=self.heading_profile,
             value="curso",
         )
-        self.heading_profile_curso_radio.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.heading_profile_curso_radio.pack(side="left", padx=(16, 0))
 
         actions = ttk.Frame(frame, style="App.TFrame")
-        actions.grid(row=6, column=0, sticky="ew", pady=(14, 0))
+        actions.grid(row=6, column=0, sticky="ew", pady=(16, 0))
         self.convert_button = ttk.Button(
             actions, text="Converter para Markdown", command=self.start_conversion, style="Accent.TButton"
         )
@@ -232,7 +318,7 @@ class App:
         self.stop_button.pack(side="left", padx=(8, 0))
         self.open_result_button = ttk.Button(
             actions,
-            text="Abrir Markdown selecionado",
+            text="Abrir Markdown",
             command=self.open_selected_result,
             state="disabled",
             style="Secondary.TButton",
@@ -240,21 +326,29 @@ class App:
         self.open_result_button.pack(side="left", padx=(8, 0))
         self.open_folder_button = ttk.Button(
             actions,
-            text="Abrir pasta do arquivo convertido",
+            text="Abrir pasta",
             command=self.open_containing_folder,
             state="disabled",
             style="Secondary.TButton",
         )
         self.open_folder_button.pack(side="left", padx=(8, 0))
-        self.progress = ttk.Progressbar(actions, mode="determinate", length=150, maximum=100)
-        self.progress.pack(side="left", padx=(16, 8))
+
+        progress_row = ttk.Frame(frame, style="App.TFrame")
+        progress_row.grid(row=7, column=0, sticky="ew", pady=(12, 0))
+        progress_row.columnconfigure(0, weight=1)
+        self.progress = ttk.Progressbar(progress_row, mode="determinate", maximum=100)
+        self.progress.grid(row=0, column=0, sticky="ew")
         self.progress_label = StringVar(value="0%")
-        ttk.Label(actions, textvariable=self.progress_label, width=5, style="Subtitle.TLabel").pack(side="left")
+        ttk.Label(progress_row, textvariable=self.progress_label, width=6, style="Subtitle.TLabel").grid(
+            row=0, column=1, padx=(10, 0)
+        )
         self.status = StringVar(value="Selecione um ou mais PDFs para começar.")
-        ttk.Label(actions, textvariable=self.status, style="Subtitle.TLabel").pack(side="left", padx=(12, 0))
+        ttk.Label(progress_row, textvariable=self.status, style="Subtitle.TLabel").grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(4, 0)
+        )
 
         log_box = ttk.LabelFrame(frame, text="Atividade", padding=8, style="Section.TLabelframe")
-        log_box.grid(row=7, column=0, sticky="nsew", pady=(14, 0))
+        log_box.grid(row=8, column=0, sticky="nsew", pady=(14, 0))
         log_box.columnconfigure(0, weight=1)
         log_box.rowconfigure(0, weight=1)
         self.log = ScrolledText(
@@ -263,11 +357,20 @@ class App:
             state="disabled",
             wrap="word",
             background="#FFFFFF",
-            foreground="#17324D",
+            foreground="#1E2333",
             relief="flat",
             font=("Consolas", 10),
         )
         self.log.grid(row=0, column=0, sticky="nsew")
+
+    def _toggle_advanced(self) -> None:
+        self._advanced_visible = not self._advanced_visible
+        if self._advanced_visible:
+            self.advanced_panel.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+            self.advanced_toggle_button.configure(text="▾ Opções avançadas")
+        else:
+            self.advanced_panel.grid_remove()
+            self.advanced_toggle_button.configure(text="▸ Opções avançadas")
 
     def choose_files(self) -> None:
         paths = filedialog.askopenfilenames(title="Selecionar PDFs", filetypes=[("PDF", "*.pdf")])
@@ -402,7 +505,6 @@ class App:
             output_dir=self._ensure_output_directory(),
             split_output=self.split_output.get(),
             max_chunk_characters=self._parse_max_chunk_characters(),
-            include_toc=self.include_toc.get(),
             heading_profile=self.heading_profile.get(),
         )
 
@@ -445,14 +547,12 @@ class App:
         # ConversionRequest no instante do clique em "Converter" — mudá-los
         # agora não teria efeito nenhum na conversão em andamento.
         self.split_output_checkbox.configure(state="disabled")
-        self.include_toc_checkbox.configure(state="disabled")
         self.max_chunk_entry.configure(state="disabled")
         self.heading_profile_jurisprudencia_radio.configure(state="disabled")
         self.heading_profile_curso_radio.configure(state="disabled")
         self.cancel_requested.clear()
         self.resume_processing.set()
         self.is_paused = False
-        self._active_extractions = 0
         self._batch_start_time = time.perf_counter()
         self._set_progress(0, len(request.files))
 
@@ -497,7 +597,6 @@ class App:
                 request.output_dir,
                 request.split_output,
                 request.max_chunk_characters,
-                request.include_toc,
                 request.heading_profile,
             )
             if isinstance(result, ConversionFailure):
@@ -537,7 +636,6 @@ class App:
                                 request.output_dir,
                                 request.split_output,
                                 request.max_chunk_characters,
-                                request.include_toc,
                                 request.heading_profile,
                             )
                         except BrokenProcessPool as error:
@@ -619,7 +717,6 @@ class App:
         output_dir: Path,
         split_output: bool,
         max_chunk_characters: int,
-        include_toc: bool,
         heading_profile: HeadingProfile = "jurisprudencia",
     ) -> ConversionResult | ConversionFailure:
         try:
@@ -628,7 +725,6 @@ class App:
                 output_dir,
                 split_output,
                 max_chunk_characters,
-                include_toc,
                 heading_profile,
             )
         except Exception as error:
@@ -653,11 +749,9 @@ class App:
     def _handle_event(self, kind: EventKind, payload: object) -> None:
         if kind == "status":
             self.status.set(str(payload))
-            self._enter_extraction()
             return
         if kind == "progress":
             completed, total = payload
-            self._exit_extraction()
             self._set_progress(completed, total)
             return
         if kind == "file_error":
@@ -712,17 +806,10 @@ class App:
         self.add_files_button.configure(state="normal")
         self.choose_output_button.configure(state="normal")
         self.split_output_checkbox.configure(state="normal")
-        self.include_toc_checkbox.configure(state="normal")
         self.max_chunk_entry.configure(state="normal")
         self.heading_profile_jurisprudencia_radio.configure(state="normal")
         self.heading_profile_curso_radio.configure(state="normal")
         self.is_paused = False
-        # Garante que a barra volte ao modo determinado mesmo se o lote
-        # terminar (erro, parada) enquanto ainda houvesse extração marcada
-        # como em andamento.
-        self._active_extractions = 0
-        self.progress.stop()
-        self.progress.configure(mode="determinate")
 
     def _record_results(self, results: list[ConversionResult]) -> None:
         self.results_by_source.update({result.source: result for result in results})
@@ -746,31 +833,16 @@ class App:
         elapsed_seconds = time.perf_counter() - self._batch_start_time
         return build_summary_message(title, self.output_dir.get(), summary, elapsed_seconds)
 
-    def _enter_extraction(self) -> None:
-        # Um único pymupdf4llm.to_markdown() por arquivo é uma chamada
-        # bloqueante sem progresso real por página (ver comentário em
-        # converter.py) — a barra fica em modo indeterminado enquanto pelo
-        # menos um arquivo está sendo extraído, em vez de parecer travada.
-        self._active_extractions += 1
-        if self._active_extractions == 1:
-            self.progress.configure(mode="indeterminate")
-            self.progress.start()
-            self.progress_label.set("Processando...")
-
-    def _exit_extraction(self) -> None:
-        self._active_extractions = max(0, self._active_extractions - 1)
-        if self._active_extractions == 0:
-            self.progress.stop()
-            self.progress.configure(mode="determinate")
-
     def _set_progress(self, completed: int, total: int) -> None:
+        # Sempre modo determinado, refletindo arquivos concluídos/total: em
+        # lote paralelo isso já é sinal real de progresso (não precisa do
+        # modo indeterminado "Processando..." só porque algum arquivo
+        # ainda está em extração — esse modo antigo travava o percentual
+        # o lote inteiro sempre que havia mais de um PDF em paralelo, o
+        # caso mais comum de uso).
         percent = 0 if total <= 0 else round((completed / total) * 100)
         self.progress.configure(maximum=max(total, 1), value=completed)
-        # Enquanto outro arquivo do lote ainda está em extração (conversão
-        # paralela), mantém "Processando..." em vez de mostrar uma
-        # porcentagem que não reflete o que está acontecendo agora.
-        if self._active_extractions == 0:
-            self.progress_label.set(f"{percent}%")
+        self.progress_label.set(f"{percent}%")
 
     def write_log(self, message: str) -> None:
         self.log.configure(state="normal")

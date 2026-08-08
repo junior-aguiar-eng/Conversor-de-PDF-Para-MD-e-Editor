@@ -17,12 +17,10 @@ HEADING_PATTERN = re.compile(r"(?m)^#{1,2}\s+.+?\s*$")
 # título (1 a 6), então a saída bruta pode conter headings de nível 3+ —
 # confirmado empiricamente. normalize_heading_levels precisa localizar
 # TODOS eles para reclassificar; HEADING_PATTERN continua limitado a {1,2}
-# de propósito para split_markdown_by_headings/build_table_of_contents, que
-# devem seguir ignorando níveis 3+ mesmo depois da normalização.
+# de propósito para split_markdown_by_headings, que deve seguir ignorando
+# níveis 3+ mesmo depois da normalização.
 RAW_HEADING_PATTERN = re.compile(r"(?m)^#{1,6}\s+.+?\s*$")
 ASSET_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
-SLUG_INVALID_CHARS_PATTERN = re.compile(r"[^\w\s-]")
-SLUG_WHITESPACE_PATTERN = re.compile(r"\s+")
 
 # Nomes de ramo do direito reconhecidos como título de nível 1 (ver
 # normalize_heading_levels). Lista extensível: adicione novos ramos aqui,
@@ -425,40 +423,6 @@ def normalize_course_heading_levels(markdown: str) -> str:
     return RAW_HEADING_PATTERN.sub(replace, markdown)
 
 
-def _slugify_heading(text: str) -> str:
-    """Gera um id de âncora no estilo GitHub a partir do texto de um título."""
-    slug = SLUG_INVALID_CHARS_PATTERN.sub("", text.strip().lower())
-    slug = SLUG_WHITESPACE_PATTERN.sub("-", slug)
-    return slug or "secao"
-
-
-def build_table_of_contents(markdown: str) -> str:
-    """Gera um sumário a partir dos títulos # e ## do texto.
-
-    Os ids de âncora seguem a convenção do GitHub, por melhor esforço: os
-    links funcionam nos leitores mais comuns (GitHub, VS Code, Obsidian),
-    mas nem todo visualizador de Markdown gera o mesmo id de âncora.
-    """
-    headings = list(HEADING_PATTERN.finditer(markdown))
-    if not headings:
-        return ""
-
-    seen_slugs: dict[str, int] = {}
-    lines = ["## Sumário", ""]
-    for match in headings:
-        heading_line = match.group().strip()
-        level = len(heading_line) - len(heading_line.lstrip("#"))
-        text = heading_line[level:].strip()
-        slug = _slugify_heading(text)
-        occurrence = seen_slugs.get(slug, 0)
-        seen_slugs[slug] = occurrence + 1
-        if occurrence:
-            slug = f"{slug}-{occurrence}"
-        indent = "  " if level == 2 else ""
-        lines.append(f"{indent}- [{text}](#{slug})")
-    return "\n".join(lines)
-
-
 def available_output_path(output_dir: Path, stem: str) -> Path:
     """Retorna um caminho livre, sem substituir uma conversão já existente."""
     candidate = output_dir / f"{stem}.md"
@@ -487,13 +451,12 @@ def finalize_markdown(
     asset_count: int,
     split_output: bool,
     max_chunk_characters: int,
-    include_toc: bool = False,
     extraction_seconds: float = 0.0,
     heading_profile: HeadingProfile = "jurisprudencia",
 ) -> ConversionResult:
     # Reclassifica os níveis de título por conteúdo antes de qualquer outra
-    # função consumir o texto: o corte em partes e o sumário devem ver a
-    # hierarquia corrigida, não a que o pymupdf4llm inferiu da fonte do PDF.
+    # função consumir o texto: o corte em partes deve ver a hierarquia
+    # corrigida, não a que o pymupdf4llm inferiu da fonte do PDF.
     # heading_profile escolhe a heurística de conteúdo (boletim de
     # jurisprudência vs. material de curso com numeração hierárquica) — não
     # há detecção automática por enquanto, o chamador decide.
@@ -501,13 +464,8 @@ def finalize_markdown(
         markdown = normalize_course_heading_levels(markdown)
     else:
         markdown = normalize_heading_levels(markdown)
-    # O sumário é calculado a partir do markdown já normalizado e só entra
-    # no arquivo principal: as partes (abaixo) continuam vindo do texto sem
-    # sumário, para não gerar uma parte espúria contendo só o índice.
     chunks = split_markdown_by_headings(markdown, max_chunk_characters) if split_output else []
-    toc = build_table_of_contents(markdown) if include_toc else ""
-    full_markdown = f"{toc}\n\n{markdown}" if toc else markdown
-    markdown_path.write_text(full_markdown, encoding="utf-8")
+    markdown_path.write_text(markdown, encoding="utf-8")
     if chunks:
         chunks_dir = markdown_path.parent / f"{markdown_path.stem}_partes"
         chunks_dir.mkdir(parents=True, exist_ok=True)

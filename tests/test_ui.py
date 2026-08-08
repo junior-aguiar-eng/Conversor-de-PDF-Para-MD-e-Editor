@@ -192,11 +192,10 @@ class AppFlowTests(unittest.TestCase):
                 max_chunk_characters=1000,
             )
 
-    def test_build_conversion_request_threads_toc_and_heading_profile_choices(self) -> None:
+    def test_build_conversion_request_threads_heading_profile_choice(self) -> None:
         app = ui.App.__new__(ui.App)
         app.files = [Path("documento.pdf")]
         app.split_output = SimpleNamespace(get=lambda: False)
-        app.include_toc = SimpleNamespace(get=lambda: True)
         app.max_chunk_characters = SimpleNamespace(get=lambda: "60000")
         app.heading_profile = SimpleNamespace(get=lambda: "curso")
 
@@ -213,7 +212,6 @@ class AppFlowTests(unittest.TestCase):
             app.output_dir = SimpleNamespace(get=lambda: tmp_dir)
             request = app._build_conversion_request()
 
-        self.assertTrue(request.include_toc)
         self.assertEqual(request.heading_profile, "curso")
 
     def test_converter_converts_whole_document_in_a_single_call(self) -> None:

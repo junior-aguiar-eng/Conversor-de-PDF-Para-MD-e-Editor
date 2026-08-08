@@ -7,7 +7,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from tkinter import Tk, messagebox, ttk
+from tkinter import Tk, messagebox
 
 from constants import APP_NAME, DEFAULT_MAX_CHUNK_CHARACTERS, DEFAULT_OUTPUT_DIR
 from converter import PdfMarkdownConverter, validate_runtime_dependencies
@@ -73,10 +73,6 @@ def main() -> None:
         messagebox.showerror(APP_NAME, str(error))
         root.destroy()
         return
-    try:
-        ttk.Style().theme_use("vista")
-    except Exception:
-        pass
     root.deiconify()
     App(root)
     root.mainloop()
