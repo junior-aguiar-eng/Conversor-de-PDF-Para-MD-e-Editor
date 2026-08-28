@@ -30,13 +30,7 @@ class MarkdownUtilsTests(unittest.TestCase):
         self.assertEqual(split_markdown_by_headings(markdown, max_characters=200), [])
 
     def test_split_markdown_by_headings_preserves_preamble_and_sections(self) -> None:
-        markdown = (
-            "Introducao\n\n"
-            + "# Primeira\n\n"
-            + "A" * 30
-            + "\n\n## Segunda\n\n"
-            + "B" * 30
-        )
+        markdown = "Introducao\n\n" + "# Primeira\n\n" + "A" * 30 + "\n\n## Segunda\n\n" + "B" * 30
 
         chunks = split_markdown_by_headings(markdown, max_characters=60)
 
@@ -62,10 +56,7 @@ class MarkdownUtilsTests(unittest.TestCase):
     def test_finalize_markdown_creates_chunk_files_with_relative_image_paths(self) -> None:
         markdown = (
             "# Parte 1\n\n"
-            f"![img](images/{asset_directory_name('documento')}/pagina-1.png)\n\n"
-            + "A" * 40
-            + "\n\n## Parte 2\n\n"
-            + "B" * 40
+            f"![img](images/{asset_directory_name('documento')}/pagina-1.png)\n\n" + "A" * 40 + "\n\n## Parte 2\n\n" + "B" * 40
         )
 
         output_dir = TEST_TMP_ROOT / "chunks"
@@ -161,12 +152,7 @@ class MarkdownUtilsTests(unittest.TestCase):
         self.assertIn("#### A. Item", result)
 
     def test_normalize_course_heading_levels_nests_lowercase_and_roman_under_scope(self) -> None:
-        markdown = (
-            "## 1. Seção\n\n"
-            "## A. Item\n\n"
-            "## a) Subitem\n\n"
-            "## ii) Detalhe\n\n"
-        )
+        markdown = "## 1. Seção\n\n## A. Item\n\n## a) Subitem\n\n## ii) Detalhe\n\n"
 
         result = normalize_course_heading_levels(markdown)
 
@@ -203,20 +189,11 @@ class MarkdownUtilsTests(unittest.TestCase):
     def test_normalize_course_heading_levels_treats_consecutive_lowercase_siblings_as_same_level(
         self,
     ) -> None:
-        markdown = (
-            "## 1. Transformações\n\n"
-            "## a) primeira mudança\n\n"
-            "## b) segunda mudança\n\n"
-            "## c) terceira mudança\n\n"
-        )
+        markdown = "## 1. Transformações\n\n## a) primeira mudança\n\n## b) segunda mudança\n\n## c) terceira mudança\n\n"
 
         result = normalize_course_heading_levels(markdown)
 
-        levels = {
-            len(line) - len(line.lstrip("#"))
-            for line in result.splitlines()
-            if re.match(r"^#+ [abc]\) ", line)
-        }
+        levels = {len(line) - len(line.lstrip("#")) for line in result.splitlines() if re.match(r"^#+ [abc]\) ", line)}
         self.assertEqual(len(levels), 1, f"esperado nível único (irmãos), obtido níveis divergentes: {result}")
 
     def test_normalize_course_heading_levels_letter_after_roman_nests_under_the_roman_item(
@@ -226,16 +203,11 @@ class MarkdownUtilsTests(unittest.TestCase):
         # romano deve ser filha DESSE item romano (o heading estrutural
         # mais recente), não herdar de um rastreador de "última maiúscula"
         # desatualizado de um heading anterior sem relação.
-        markdown = (
-            "## **III. Marco Teórico**\n\n"
-            "## b) a ampliação da jurisdição constitucional\n\n"
-        )
+        markdown = "## **III. Marco Teórico**\n\n## b) a ampliação da jurisdição constitucional\n\n"
 
         result = normalize_course_heading_levels(markdown)
 
-        roman_level = next(
-            len(line) - len(line.lstrip("#")) for line in result.splitlines() if "Marco Teórico" in line
-        )
+        roman_level = next(len(line) - len(line.lstrip("#")) for line in result.splitlines() if "Marco Teórico" in line)
         letter_level = next(
             len(line) - len(line.lstrip("#")) for line in result.splitlines() if line.strip().startswith("#") and "b)" in line
         )
@@ -268,13 +240,9 @@ class MarkdownUtilsTests(unittest.TestCase):
         result = normalize_course_heading_levels(markdown)
 
         letter_levels = {
-            len(line) - len(line.lstrip("#"))
-            for line in result.splitlines()
-            if re.match(r"^#+ [A-E]\. Constitui", line)
+            len(line) - len(line.lstrip("#")) for line in result.splitlines() if re.match(r"^#+ [A-E]\. Constitui", line)
         }
-        self.assertEqual(
-            len(letter_levels), 1, f"A-E deveriam ficar todos no mesmo nível (irmãos): {result}"
-        )
+        self.assertEqual(len(letter_levels), 1, f"A-E deveriam ficar todos no mesmo nível (irmãos): {result}")
 
     def test_normalize_course_heading_levels_resumes_sibling_level_after_nested_digression(
         self,
@@ -299,19 +267,9 @@ class MarkdownUtilsTests(unittest.TestCase):
 
         result = normalize_course_heading_levels(markdown)
 
-        letter_levels = {
-            len(line) - len(line.lstrip("#"))
-            for line in result.splitlines()
-            if re.match(r"^#+ [A-E]\. ", line)
-        }
-        self.assertEqual(
-            len(letter_levels), 1, f"A-E deveriam ficar todos no mesmo nível (irmãos): {result}"
-        )
-        roman_levels = {
-            len(line) - len(line.lstrip("#"))
-            for line in result.splitlines()
-            if re.match(r"^#+ i{1,3}\) ", line)
-        }
+        letter_levels = {len(line) - len(line.lstrip("#")) for line in result.splitlines() if re.match(r"^#+ [A-E]\. ", line)}
+        self.assertEqual(len(letter_levels), 1, f"A-E deveriam ficar todos no mesmo nível (irmãos): {result}")
+        roman_levels = {len(line) - len(line.lstrip("#")) for line in result.splitlines() if re.match(r"^#+ i{1,3}\) ", line)}
         self.assertEqual(len(roman_levels), 1, f"i/ii/iii deveriam ficar no mesmo nível: {result}")
         self.assertEqual(
             next(iter(roman_levels)),
@@ -388,18 +346,14 @@ class MarkdownUtilsTests(unittest.TestCase):
 
         result = normalize_course_heading_levels(markdown)
 
-        levels = {
-            len(line) - len(line.lstrip("#")) for line in result.splitlines() if line.strip().startswith("#")
-        }
+        levels = {len(line) - len(line.lstrip("#")) for line in result.splitlines() if line.strip().startswith("#")}
         self.assertEqual(len(levels), 1, f"i/ii/iii deveriam ficar no mesmo nível: {result}")
         self.assertIn("## **ii** . **Princípio federativo**", result)
 
     def test_normalize_course_heading_levels_demotes_headings_without_structural_prefix(
         self,
     ) -> None:
-        heading = (
-            "## **O Neoconstitucionalismo possui como principais características:**"
-        )
+        heading = "## **O Neoconstitucionalismo possui como principais características:**"
 
         result = normalize_course_heading_levels(heading)
 
@@ -442,11 +396,7 @@ class MarkdownUtilsTests(unittest.TestCase):
         self.assertEqual(once, twice)
 
     def test_finalize_markdown_applies_course_profile_when_requested(self) -> None:
-        markdown = (
-            "# DIREITO CONSTITUCIONAL\n\n"
-            "## **Frase de corpo capturada por engano:**\n\n"
-            "## 1. Seção real\n\n"
-        )
+        markdown = "# DIREITO CONSTITUCIONAL\n\n## **Frase de corpo capturada por engano:**\n\n## 1. Seção real\n\n"
         output_dir = TEST_TMP_ROOT / "course_profile"
         output_dir.mkdir(parents=True, exist_ok=True)
         markdown_path = output_dir / "documento.md"

@@ -9,10 +9,23 @@ import traceback
 from pathlib import Path
 from tkinter import Tk, messagebox
 
-from constants import APP_NAME, DEFAULT_MAX_CHUNK_CHARACTERS, DEFAULT_OUTPUT_DIR
+import webview
+
+from constants import (
+    APP_NAME,
+    APP_VERSION,
+    DEFAULT_MAX_CHUNK_CHARACTERS,
+    DEFAULT_OUTPUT_DIR,
+    resource_root,
+)
 from converter import PdfMarkdownConverter, validate_runtime_dependencies
-from models import BatchConversionSummary, ConversionFailure, ConversionResult
-from ui import App, build_summary_message
+from models import (
+    BatchConversionSummary,
+    ConversionFailure,
+    ConversionResult,
+    build_summary_message,
+)
+from web_api import BridgeApi
 
 
 def run_quick_convert(paths: list[str]) -> None:
@@ -41,13 +54,9 @@ def run_quick_convert(paths: list[str]) -> None:
     for raw_path in paths:
         source = Path(raw_path)
         try:
-            successes.append(
-                converter.convert(source, DEFAULT_OUTPUT_DIR, False, DEFAULT_MAX_CHUNK_CHARACTERS)
-            )
+            successes.append(converter.convert(source, DEFAULT_OUTPUT_DIR, False, DEFAULT_MAX_CHUNK_CHARACTERS))
         except Exception as error:
-            failures.append(
-                ConversionFailure(source=source, error_message=str(error), details=traceback.format_exc())
-            )
+            failures.append(ConversionFailure(source=source, error_message=str(error), details=traceback.format_exc()))
 
     summary = BatchConversionSummary(successes, failures)
     elapsed_seconds = time.perf_counter() - batch_start
@@ -59,23 +68,44 @@ def run_quick_convert(paths: list[str]) -> None:
     root.destroy()
 
 
+def run_gui() -> None:
+    """Inicia a interface gráfica moderna em Chromium com Edge WebView2."""
+    api = BridgeApi()
+    html_path = resource_root() / "web" / "index.html"
+
+    if not html_path.exists():
+        raise FileNotFoundError(f"Arquivo da interface gráfica não encontrado em: {html_path}")
+
+    window = webview.create_window(
+        title=f"{APP_NAME} — v{APP_VERSION}",
+        url=html_path.as_uri(),
+        js_api=api,
+        width=1040,
+        height=820,
+        min_size=(800, 640),
+        background_color="#F0F7FF",
+    )
+    api.set_window(window)
+    webview.start(gui="edgechromium", debug=False)
+
+
 def main() -> None:
     argv_paths = sys.argv[1:]
     if argv_paths:
         run_quick_convert(argv_paths)
         return
 
-    root = Tk()
-    root.withdraw()
     try:
         validate_runtime_dependencies()
-    except RuntimeError as error:
-        messagebox.showerror(APP_NAME, str(error))
+        run_gui()
+    except Exception as error:
+        root = Tk()
+        root.withdraw()
+        messagebox.showerror(
+            APP_NAME,
+            f"Erro ao iniciar o aplicativo:\n\n{error}\n\nDetalhes:\n{traceback.format_exc()}",
+        )
         root.destroy()
-        return
-    root.deiconify()
-    App(root)
-    root.mainloop()
 
 
 if __name__ == "__main__":

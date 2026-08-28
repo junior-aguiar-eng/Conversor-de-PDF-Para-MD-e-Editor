@@ -1,6 +1,6 @@
-# Boni - Conversor de PDF para Markdown
+# NexoJuris - Conversor
 
-Aplicativo de uso manual para converter PDFs em arquivos `.md` localmente. Não monitora diretórios, não agenda tarefas e não altera os PDFs originais.
+Aplicativo local para converter PDFs em arquivos `.md` estruturados, com interface gráfica moderna baseada em Chromium (Microsoft Edge WebView2) e suporte a conversão rápida pelo menu de contexto do Windows. Não monitora diretórios, não agenda tarefas e não altera os PDFs originais.
 
 Esta pasta é a base oficial do projeto. O executável Windows deve ser gerado a partir daqui.
 
@@ -14,51 +14,44 @@ Esta pasta é a base oficial do projeto. O executável Windows deve ser gerado a
    .\instalar_no_d.ps1
    ```
 
-   Para usar outra pasta no D, informe-a: `.\instalar_no_d.ps1 -Destino "D:\Meus Programas\PDF para Markdown"`.
-3. Abra `D:\PDF para Markdown\iniciar.vbs`. Ele inicia somente a interface gráfica, sem janela de Prompt de Comando.
+   Para usar outra pasta no D, informe-a: `.\instalar_no_d.ps1 -Destino "D:\NexoJuris Conversor"`.
+3. Abra `D:\NexoJuris Conversor\iniciar.vbs`. Ele inicia a interface gráfica nativa em Chromium sem abrir janelas de console.
 
-O instalador cria um ambiente Python 3.14 isolado em `D:\PDF para Markdown\.venv` e instala dependências com versões travadas a partir de `requirements.lock.txt`. Não há download de modelos de IA, Docker, PyTorch ou uso de GPU.
+O instalador cria um ambiente Python 3.14 isolado em `D:\NexoJuris Conversor\.venv` e instala dependências com versões travadas a partir de `requirements.lock.txt`. Não há download de modelos de IA, Docker, PyTorch ou uso de GPU.
 
 Para reconstruir o ambiente e remover dependências antigas, com o aplicativo fechado, execute `.\instalar_no_d.ps1 -RecriarAmbiente`.
 
-## Uso
+## Recursos e Uso
 
-Ao abrir o aplicativo, ele valida rapidamente se o ambiente foi instalado corretamente. Se faltar a dependência principal, a interface informa para executar `instalar_no_d.ps1`.
-
-Selecione um ou mais PDFs digitais com texto selecionável, escolha a pasta de saída e clique em **Converter para Markdown**. O aplicativo usa por padrão a pasta `PDFs Convertidos` dentro desta base oficial, mas você ainda pode trocar esse destino manualmente pela interface. O aplicativo usa PyMuPDF4LLM sem OCR, sem modelos de IA, GPU, PyTorch ou Docker. PDFs escaneados, fórmulas e layouts muito complexos não são o objetivo deste conversor leve.
-
-Cada conversão gera um `.md`. Se já existir um arquivo com o mesmo nome, o aplicativo cria uma nova versão com sufixo, como `Documento (2).md`, para não sobrescrever resultados anteriores. As imagens ficam dentro de `images/`, em uma subpasta curta e segura derivada do nome do PDF, com links relativos que funcionam no Obsidian e em leitores Markdown comuns.
-
-As opções menos usadas ficam recolhidas em **Opções avançadas** (clique para expandir):
-
-- **Gerar partes**: cria `Nome-do-PDF_partes/parte_001.md`, respeitando títulos `#` e `##` quando o arquivo ultrapassa o limite escolhido (`60.000` caracteres por padrão).
-- **Perfil de normalização de títulos**: ajusta como o aplicativo reclassifica os níveis de título (`#`/`##`/...) que o PyMuPDF4LLM extrai do PDF, já que esses níveis vêm do tamanho de fonte do documento original e nem sempre refletem a hierarquia real. Escolha **Boletim de jurisprudência (STJ/STF)** para reconhecer ramos do direito, o rótulo "COMENTÁRIO" e dispositivos legais citados. Escolha **Material de curso** para apostilas com numeração hierárquica (`1.`, `1.1.`, `A.`, `a)`, `i)`...): esse perfil também rebaixa a parágrafo comum qualquer título sem prefixo estrutural reconhecível — comum quando o PDF de origem usa negrito ou destaque em frases de corpo de texto, que o PyMuPDF4LLM às vezes confunde com título.
-
-**Pausar** suspende a fila antes do próximo PDF e **Parar** encerra a fila depois de concluir o PDF em andamento, preservando os resultados já produzidos. A barra de progresso mostra arquivos concluídos/total em tempo real, mesmo em conversão paralela.
-
-Após a conversão, selecione um PDF na lista e clique em **Abrir Markdown** para abrir o resultado diretamente no aplicativo padrão do Windows.
-
-O aplicativo limita a conversão a PDFs com até 1.000 páginas por arquivo e usa nomes curtos e seguros para a pasta de imagens extraídas, evitando caminhos frágeis em leitores Markdown e builds Windows.
+- **Drag & Drop e Seleção Múltipla**: Arraste PDFs diretamente do Windows Explorer para o aplicativo ou selecione múltiplos arquivos pelo botão nativo.
+- **Design Glassmorphism Moderno**: Interface em tons de azul e sky com identidade visual **NexoJuris** (*Conhecimento Conectado*), efeitos de vidro translúcido, métricas em tempo real e feedback sonoro leve (Web Audio API).
+- **Visualizador de Markdown Integrado**: Aba de pré-visualização para inspecionar o Markdown renderizado na hora, com tabelas, citações e imagens extraídas.
+- **Normalização de Imagens**: As imagens extraídas ficam em `images/`, em uma subpasta curta e segura derivada do nome do PDF, com links relativos compatíveis com Obsidian e leitores Markdown padrão.
+- **Opções Avançadas de Estruturação**:
+  - **Gerar partes**: cria `Nome-do-PDF_partes/parte_001.md`, respeitando títulos `#` e `##` quando o arquivo ultrapassa o limite escolhido (`60.000` caracteres por padrão).
+  - **Perfil de normalização de títulos**:
+    - **Boletim de jurisprudência (STJ/STF)**: reconhece ramos do direito como `#1`, rótulo "COMENTÁRIO" como `#2` e dispositivos legais como `#3`.
+    - **Material de curso**: preserva numeração hierárquica (`1.`, `1.1.`, `A.`, `a)`, `i)`...) e rebaixa falsos títulos em corpo de texto.
+- **Controle de Fila**: **Pausar** suspende a fila antes do próximo PDF e **Parar** encerra a fila após o término do PDF em processamento.
+- **Limites de Proteção**: Limite de 1.000 páginas por arquivo para garantir conversões leves e seguras.
 
 ## Release Windows
 
-Para criar uma versão executável em pasta, execute `.\build_release.ps1`. O script tenta nesta ordem:
+Para criar a versão executável autônoma em pasta, execute `.\build_release.ps1`. O script tenta nesta ordem:
 
 1. Reutilizar o `PyInstaller` já instalado na `.venv`, se existir.
 2. Pedir ao `uv` para executar o `PyInstaller` junto das dependências travadas do projeto.
 
-O gerador não usa um `PyInstaller` disponível globalmente no Windows: ele poderia pertencer a outro ambiente Python e produzir um executável sem as dependências do conversor. A pasta temporária de build é removida ao fim; use apenas o executável dentro de `release/dist/`.
+O resultado fica em `release/dist/NexoJuris Conversor/`. O executável principal fica em `release/dist/NexoJuris Conversor/NexoJuris Conversor.exe`.
 
-O resultado fica em `release/dist/Boni Conversor PDF Markdown/`. O executável principal fica em `release/dist/Boni Conversor PDF Markdown/Boni Conversor PDF Markdown.exe`.
+Depois, `.\criar_atalho.ps1` cria um atalho com ícone na Área de Trabalho.
 
-Depois, `.\criar_atalho.ps1` cria um atalho com ícone na Área de Trabalho. Essa distribuição não inclui modelos de IA nem requer Docker ou GPU.
+## Conversão rápida ("Enviar para")
 
-## Conversão pontual ("Enviar para")
-
-Depois de gerar a release, execute `.\criar_atalho_envio_rapido.ps1` para adicionar "Converter para Markdown" ao menu **Enviar para** do Windows Explorer (clique com o botão direito num ou mais PDFs). Esse modo converte direto para a pasta `PDFs Convertidos` da release e mostra só um resumo — sem abrir a janela principal do aplicativo. É pensado para conversões rápidas e avulsas; para escolher pasta de saída, dividir em partes ou usar a fila com pausa/parada, abra o aplicativo normalmente.
+Depois de gerar a release, execute `.\criar_atalho_envio_rapido.ps1` para adicionar "NexoJuris - Converter para Markdown" ao menu **Enviar para** do Windows Explorer (clique com o botão direito num ou mais PDFs). Esse modo converte direto para a pasta `PDFs Convertidos` da release e mostra um resumo em popup — sem abrir a janela principal.
 
 ## Observações
 
-- `PDFs Convertidos/` é uma pasta de saída local e agora fica fora do versionamento.
+- `PDFs Convertidos/` é a pasta de saída local padrão.
 - `release/`, `.venv/`, `.uv-cache/` e caches Python são tratados como artefatos locais.
-- PyMuPDF4LLM é distribuído sob AGPL ou licença comercial. Verifique a compatibilidade da licença antes de redistribuir o aplicativo.
+- O PyMuPDF4LLM é distribuído sob AGPL ou licença comercial. Verifique a compatibilidade da licença antes de redistribuir o aplicativo.

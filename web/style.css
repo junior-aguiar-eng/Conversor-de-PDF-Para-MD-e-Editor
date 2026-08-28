@@ -1,0 +1,626 @@
+/* ==========================================================================
+   NexoJuris - Conversor & Super PDF
+   Design System & Glassmorphism Stylesheet
+   ========================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  --color-brand-50: #f0f7ff;
+  --color-brand-100: #e0effe;
+  --color-brand-200: #bae0fd;
+  --color-brand-300: #7cc7fb;
+  --color-brand-400: #38a9f8;
+  --color-brand-500: #0e8de9;
+  --color-brand-600: #026fc7;
+  --color-brand-700: #0358a1;
+  --color-brand-800: #074b84;
+  --color-brand-900: #0c3f6e;
+  --color-brand-950: #082849;
+}
+
+body {
+  font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+code, pre, .font-mono {
+  font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
+}
+
+/* --------------------------------------------------------------------------
+   Componentes de Glassmorphism
+   -------------------------------------------------------------------------- */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+}
+
+.glass-card {
+  background: rgba(255, 255, 255, 0.70);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-card:hover {
+  background: rgba(255, 255, 255, 0.94);
+  border-color: rgba(186, 224, 253, 0.9);
+  transform: translateY(-2px);
+  box-shadow: 0 16px 36px -8px rgba(2, 111, 199, 0.12);
+}
+
+.glass-input {
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(186, 224, 253, 0.8);
+  transition: all 0.2s ease;
+}
+
+.glass-input:focus {
+  background: #ffffff;
+  border-color: #38a9f8;
+  box-shadow: 0 0 0 3px rgba(56, 169, 248, 0.22);
+}
+
+/* Sombras Customizadas */
+.shadow-glass {
+  box-shadow: 0 12px 36px -8px rgba(2, 111, 199, 0.10), 0 4px 16px -4px rgba(2, 111, 199, 0.05);
+}
+
+.shadow-glass-lg {
+  box-shadow: 0 24px 48px -12px rgba(2, 111, 199, 0.16), 0 8px 24px -6px rgba(2, 111, 199, 0.08);
+}
+
+.shadow-glow-sky {
+  box-shadow: 0 0 25px -3px rgba(56, 169, 248, 0.35);
+}
+
+/* --------------------------------------------------------------------------
+   Scrollbar Personalizada
+   -------------------------------------------------------------------------- */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(240, 247, 255, 0.5);
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(186, 224, 253, 0.8);
+  border-radius: 9999px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(56, 169, 248, 0.8);
+}
+
+/* --------------------------------------------------------------------------
+   Animações
+   -------------------------------------------------------------------------- */
+@keyframes pulseGlow {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.05); }
+}
+
+.bg-mesh-1 {
+  animation: pulseGlow 12s ease-in-out infinite alternate;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes progressShimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.progress-bar-sliding {
+  background-size: 200% 100% !important;
+  background-image: linear-gradient(90deg, #0284c7 0%, #2563eb 25%, #7dd3fc 50%, #2563eb 75%, #0284c7 100%) !important;
+  animation: progressShimmer 2s linear infinite !important;
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.5) !important;
+  transition: width 0.3s cubic-bezier(0.25, 1, 0.5, 1) !important;
+}
+
+.progress-bar-idle {
+  background-image: linear-gradient(90deg, #0ea5e9 0%, #2563eb 50%, #4338ca 100%);
+  transition: width 0.3s ease;
+}
+
+.progress-bar-success {
+  background-image: linear-gradient(90deg, #10b981 0%, #059669 100%) !important;
+  box-shadow: 0 0 16px rgba(16, 185, 129, 0.45) !important;
+  transition: width 0.3s ease !important;
+}
+
+/* Área de Drag & Drop */
+.drop-zone {
+  border: 2px dashed rgba(186, 224, 253, 0.9);
+  transition: all 0.25s ease;
+}
+
+.drop-zone.dragover {
+  border-color: #0e8de9;
+  background: rgba(224, 239, 254, 0.7);
+  transform: scale(1.01);
+  box-shadow: 0 0 25px rgba(56, 169, 248, 0.35);
+}
+
+/* --------------------------------------------------------------------------
+   Renderização de Markdown no Visualizador
+   -------------------------------------------------------------------------- */
+.markdown-body {
+  user-select: text;
+  -webkit-user-select: text;
+  color: #1e293b;
+  line-height: 1.65;
+}
+
+.markdown-body h1 {
+  font-size: 1.65rem;
+  font-weight: 800;
+  color: #0f172a;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 2px solid #e0effe;
+}
+
+.markdown-body h2 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #0358a1;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.markdown-body h3 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: #074b84;
+  margin-top: 1rem;
+  margin-bottom: 0.4rem;
+}
+
+.markdown-body p {
+  margin-bottom: 0.85rem;
+}
+
+.markdown-body blockquote {
+  border-left: 4px solid #38a9f8;
+  padding-left: 1rem;
+  margin: 1rem 0;
+  color: #475569;
+  background: rgba(240, 247, 255, 0.6);
+  border-radius: 0 0.5rem 0.5rem 0;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.markdown-body th, .markdown-body td {
+  padding: 0.6rem 0.85rem;
+  border: 1px solid #e2e8f0;
+  text-align: left;
+}
+
+.markdown-body th {
+  background: #e0effe;
+  font-weight: 700;
+  color: #0c3f6e;
+}
+
+.markdown-body code {
+  background: #f1f5f9;
+  padding: 0.15rem 0.4rem;
+  border-radius: 0.35rem;
+  font-size: 0.875em;
+  color: #026fc7;
+}
+
+.markdown-body pre {
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 1rem;
+  border-radius: 0.75rem;
+  overflow-x: auto;
+  margin: 1rem 0;
+}
+
+.markdown-body pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 0.75rem;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  margin: 1rem 0;
+}
+
+/* --------------------------------------------------------------------------
+   Estilos do Super PDF (Leitor e Editor Integrado)
+   -------------------------------------------------------------------------- */
+.pdf-tool-btn {
+  user-select: none;
+  cursor: pointer;
+}
+
+.pdf-tool-btn.active {
+  background: #ffffff !important;
+  color: #0358a1 !important;
+  box-shadow: 0 4px 12px -2px rgba(2, 111, 199, 0.18), 0 2px 6px -1px rgba(2, 111, 199, 0.1) !important;
+}
+
+.pdf-thumb-card {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  cursor: pointer;
+}
+
+.pdf-thumb-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(56, 169, 248, 0.8);
+  box-shadow: 0 4px 12px -2px rgba(2, 111, 199, 0.15);
+}
+
+.pdf-thumb-card.active {
+  border-color: #026fc7 !important;
+  background: rgba(224, 239, 254, 0.75) !important;
+  box-shadow: 0 0 0 2px rgba(56, 169, 248, 0.4) !important;
+}
+
+/* Cursores Especializados */
+.cursor-pan {
+  cursor: grab !important;
+}
+.cursor-pan:active {
+  cursor: grabbing !important;
+}
+.cursor-pen {
+  cursor: crosshair !important;
+}
+.cursor-highlight-pen {
+  cursor: crosshair !important;
+}
+.cursor-highlight-block {
+  cursor: crosshair !important;
+}
+.cursor-text-tool {
+  cursor: text !important;
+}
+.cursor-snippet {
+  cursor: crosshair !important;
+}
+
+/* --------------------------------------------------------------------------
+   Camada de Overlay HTML Nativa de Texto (DOM Text Annotation Layer)
+   -------------------------------------------------------------------------- */
+.text-annotation-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 25;
+}
+
+/* Container de card de texto sobreposto ao PDF */
+.pdf-text-card {
+  position: absolute;
+  width: auto;
+  height: auto;
+  min-width: 140px;
+  max-width: 420px;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  z-index: 30;
+  box-sizing: border-box;
+  pointer-events: auto;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+
+/* Área de conteúdo editável interna */
+.pdf-text-card .card-content {
+  outline: none;
+  min-width: 140px;
+  max-width: 420px;
+  min-height: 24px;
+  padding: 6px 10px;
+  word-break: break-word;
+  word-wrap: break-word;
+  white-space: pre-wrap; /* Garante que Enter crie nova linha */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Plus Jakarta Sans", sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  box-sizing: border-box;
+  cursor: text;
+}
+
+/* Placeholder para card vazio */
+.pdf-text-card .card-content:empty::before {
+  content: attr(data-placeholder);
+  color: rgba(100, 116, 139, 0.6);
+  pointer-events: none;
+}
+
+/* Modo Sem Fundo (Máquina de Escrever / Texto Livre) */
+.pdf-text-card.text-style-none {
+  background: transparent;
+  box-shadow: none;
+  border: 1px dashed transparent;
+  color: #111827;
+  min-width: 40px;
+}
+.pdf-text-card.text-style-none .card-content {
+  min-width: 40px;
+  padding: 2px 4px;
+}
+.pdf-text-card.text-style-none:focus-within,
+.pdf-text-card.text-style-none:hover {
+  border-color: #3B82F6;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.15);
+}
+
+/* Modo Post-it */
+.pdf-text-card.text-style-postit {
+  background: #FEF08A;
+  border: 1px solid rgba(234, 179, 8, 0.25);
+  border-left: 4px solid #EAB308;
+  color: #713F12;
+  border-radius: 0 6px 6px 0;
+}
+.pdf-text-card.text-style-postit:focus-within {
+  box-shadow: 0 0 0 2px rgba(234, 179, 8, 0.35), 0 4px 16px rgba(0, 0, 0, 0.1);
+}
+
+/* Modo Alerta */
+.pdf-text-card.text-style-danger {
+  background: #FEE2E2;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-left: 4px solid #EF4444;
+  color: #991B1B;
+  border-radius: 0 6px 6px 0;
+}
+.pdf-text-card.text-style-danger:focus-within {
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.35), 0 4px 16px rgba(239, 68, 68, 0.12);
+}
+
+/* Modo Caixa Branca */
+.pdf-text-card.text-style-white {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-left: 4px solid #0284C7;
+  color: #0F172A;
+  border-radius: 0 6px 6px 0;
+}
+.pdf-text-card.text-style-white:focus-within {
+  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.35), 0 4px 16px rgba(2, 111, 199, 0.12);
+}
+
+/* Botão de Excluir do Card de Texto (visível no hover/focus-within) */
+.pdf-text-card .text-item-delete-btn {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 18px;
+  height: 18px;
+  background: #ef4444;
+  color: #ffffff;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: bold;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+  user-select: none;
+  z-index: 40;
+}
+
+.pdf-text-card:hover .text-item-delete-btn,
+.pdf-text-card:focus-within .text-item-delete-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.pdf-text-card .text-item-delete-btn:hover {
+  transform: scale(1.18);
+  background: #dc2626;
+}
+
+/* --------------------------------------------------------------------------
+   Popovers Flutuantes (Microsoft Edge Style Flyouts)
+   -------------------------------------------------------------------------- */
+.edge-flyout {
+  background: rgba(255, 255, 255, 0.98);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(186, 224, 253, 0.95);
+  border-radius: 1.25rem;
+  box-shadow: 0 20px 48px -6px rgba(2, 56, 100, 0.25), 0 0 0 1px rgba(2, 56, 100, 0.08);
+  z-index: 60 !important;
+}
+
+.edge-flyout::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 26px;
+  width: 12px;
+  height: 12px;
+  background: #ffffff;
+  transform: rotate(45deg);
+  border-top: 1px solid rgba(186, 224, 253, 0.95);
+  border-left: 1px solid rgba(186, 224, 253, 0.95);
+}
+
+.edge-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: #e2e8f0;
+  border-radius: 9999px;
+  outline: none;
+}
+
+.edge-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  background: #0284c7;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  transition: transform 0.1s ease;
+}
+
+.edge-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+.swatch-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 9999px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  position: relative;
+  cursor: pointer;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+.swatch-btn:hover {
+  transform: scale(1.18);
+}
+
+.swatch-btn.selected {
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4.5px #0284c7 !important;
+  transform: scale(1.12);
+}
+
+.active-style {
+  border-color: #0284c7 !important;
+  background-color: #f0f9ff !important;
+  color: #0369a1 !important;
+  font-weight: 700 !important;
+}
+
+/* --------------------------------------------------------------------------
+   Iframe de Impressão Isolado (Print Pipeline)
+   -------------------------------------------------------------------------- */
+#pdfPrintIframe {
+  position: absolute;
+  top: -9999px;
+  left: -9999px;
+  width: 0;
+  height: 0;
+  border: none;
+}
+
+/* --------------------------------------------------------------------------
+   Menu de Contexto Flutuante (Text Selection Quick Action Menu)
+   -------------------------------------------------------------------------- */
+.floating-selection-menu {
+  position: fixed;
+  z-index: 60;
+  transform: translate(-50%, -100%) scale(0.95);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1), transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.floating-selection-menu.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, -100%) scale(1);
+}
+
+/* --------------------------------------------------------------------------
+   Player de Áudio Neural (TTS Player Widget)
+   -------------------------------------------------------------------------- */
+.neural-audio-bar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(120%);
+  z-index: 55;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.neural-audio-bar.active {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Animação de Onda Sonora Neural */
+.sound-wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2.5px;
+  height: 16px;
+}
+
+.sound-wave-bar {
+  width: 3px;
+  height: 100%;
+  background: #0284c7;
+  border-radius: 9999px;
+  animation: waveBar 1.2s ease-in-out infinite alternate;
+  transform-origin: bottom;
+}
+
+.sound-wave.paused .sound-wave-bar {
+  animation-play-state: paused;
+  height: 30% !important;
+}
+
+.sound-wave-bar:nth-child(1) { animation-delay: 0.0s; height: 35%; }
+.sound-wave-bar:nth-child(2) { animation-delay: 0.2s; height: 75%; }
+.sound-wave-bar:nth-child(3) { animation-delay: 0.4s; height: 100%; }
+.sound-wave-bar:nth-child(4) { animation-delay: 0.1s; height: 50%; }
+.sound-wave-bar:nth-child(5) { animation-delay: 0.3s; height: 85%; }
+
+@keyframes waveBar {
+  0% { transform: scaleY(0.25); }
+  50% { transform: scaleY(1); }
+  100% { transform: scaleY(0.3); }
+}
+
+/* Permite seleção de texto apenas nas áreas de leitura */
+.markdown-body, #snippetTextArea, #pdfStageContainer .text-selectable, #transOriginalText, #transResultText {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+
+

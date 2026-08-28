@@ -1,5 +1,5 @@
 param(
-    [string]$Destino = "D:\PDF para Markdown",
+    [string]$Destino = "D:\NexoJuris Conversor",
     [switch]$RecriarAmbiente
 )
 
@@ -22,11 +22,13 @@ $arquivosDoAplicativo = @(
     "converter.py",
     "markdown_utils.py",
     "models.py",
-    "ui.py",
+    "web_api.py",
     "requirements.lock.txt",
     "iniciar.vbs"
 )
 Copy-Item -Path ($arquivosDoAplicativo | ForEach-Object { Join-Path $origem $_ }) -Destination $Destino -Force
+Copy-Item -Path (Join-Path $origem "web") -Destination (Join-Path $Destino "web") -Recurse -Force
+Copy-Item -Path (Join-Path $origem "assets") -Destination (Join-Path $Destino "assets") -Recurse -Force
 
 $python = Join-Path $Destino ".venv\Scripts\python.exe"
 if ($RecriarAmbiente -and (Test-Path (Join-Path $Destino ".venv"))) {

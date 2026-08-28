@@ -82,9 +82,7 @@ _ROMAN_NUMERAL_CORE = r"(?=[MDCLXVI])M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(
 # Grupo de captura em torno do núcleo: usado para extrair o numeral e
 # calcular seu valor (_roman_to_int), necessário para a checagem de
 # continuidade de sequência em _resolve_letter_or_roman_type.
-COURSE_ROMAN_PREFIX_PATTERN = re.compile(
-    rf"^({_ROMAN_NUMERAL_CORE})\s*[).](?:\s+|$)", re.IGNORECASE
-)
+COURSE_ROMAN_PREFIX_PATTERN = re.compile(rf"^({_ROMAN_NUMERAL_CORE})\s*[).](?:\s+|$)", re.IGNORECASE)
 _ROMAN_AMBIGUOUS_LETTERS = frozenset("IVXLCDM")
 # "ATENÇÃO!" — comparado contra o texto já sem negrito e sem acentuação.
 COURSE_ATTENTION_PATTERN = re.compile(r"^ATENCAO!")
@@ -128,12 +126,8 @@ def _strip_accents(text: str) -> str:
     return "".join(char for char in normalized if not unicodedata.combining(char))
 
 
-_DIREITO_BRANCH_HEADINGS_NORMALIZED = frozenset(
-    _strip_accents(name).upper() for name in DIREITO_BRANCH_HEADINGS
-)
-_SECTION_LABEL_HEADINGS_NORMALIZED = frozenset(
-    _strip_accents(name).upper() for name in SECTION_LABEL_HEADINGS
-)
+_DIREITO_BRANCH_HEADINGS_NORMALIZED = frozenset(_strip_accents(name).upper() for name in DIREITO_BRANCH_HEADINGS)
+_SECTION_LABEL_HEADINGS_NORMALIZED = frozenset(_strip_accents(name).upper() for name in SECTION_LABEL_HEADINGS)
 
 
 def _canonicalize_heading_text(text: str) -> str:
@@ -339,9 +333,7 @@ def _prose_list_item_positions(markdown: str) -> frozenset[int]:
         if not is_heading_line:
             continue
         previous_matches = index > 0 and not entries[index - 1][2] and entries[index - 1][1] == number - 1
-        next_matches = (
-            index + 1 < len(entries) and not entries[index + 1][2] and entries[index + 1][1] == number + 1
-        )
+        next_matches = index + 1 < len(entries) and not entries[index + 1][2] and entries[index + 1][1] == number + 1
         if previous_matches and next_matches:
             prose_positions.add(entry_position)
     return frozenset(prose_positions)

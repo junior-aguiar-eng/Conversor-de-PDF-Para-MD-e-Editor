@@ -1,0 +1,1283 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NexoJuris • Conversor</title>
+  
+  <!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&family=Cinzel:wght@600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'Inter', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'Consolas', 'monospace'],
+            serif: ['"Cinzel"', 'Georgia', 'serif'],
+          },
+          colors: {
+            brand: {
+              50: '#f0f7ff',
+              100: '#e0effe',
+              200: '#bae0fd',
+              300: '#7cc7fb',
+              400: '#38a9f8',
+              500: '#0e8de9',
+              600: '#026fc7',
+              700: '#0358a1',
+              800: '#074b84',
+              900: '#0c3f6e',
+              950: '#082849',
+            },
+            glass: {
+              surface: 'rgba(255, 255, 255, 0.72)',
+              surfaceHover: 'rgba(255, 255, 255, 0.88)',
+              border: 'rgba(255, 255, 255, 0.85)',
+              borderDark: 'rgba(186, 224, 253, 0.45)',
+            }
+          },
+          boxShadow: {
+            'glass': '0 12px 36px -8px rgba(2, 111, 199, 0.10), 0 4px 16px -4px rgba(2, 111, 199, 0.05)',
+            'glass-lg': '0 24px 48px -12px rgba(2, 111, 199, 0.16), 0 8px 24px -6px rgba(2, 111, 199, 0.08)',
+            'glow-sky': '0 0 25px -3px rgba(56, 169, 248, 0.35)',
+          }
+        }
+      }
+    }
+  </script>
+  
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body class="bg-gradient-to-br from-[#f0f7ff] via-[#e6f2fe] to-[#eff6ff] text-slate-800 font-sans min-h-screen relative selection:bg-brand-200 selection:text-brand-900 antialiased overflow-x-hidden">
+  
+  <!-- Decorative Light Blue Glass Atmosphere -->
+  <div class="fixed inset-0 overflow-hidden pointer-events-none -z-10">
+    <div class="absolute -top-32 -left-32 w-[550px] h-[550px] bg-gradient-to-br from-sky-200/50 to-blue-300/30 rounded-full blur-3xl bg-mesh-1"></div>
+    <div class="absolute top-1/3 -right-40 w-[600px] h-[600px] bg-gradient-to-bl from-cyan-200/40 via-sky-200/30 to-indigo-200/20 rounded-full blur-3xl"></div>
+    <div class="absolute -bottom-40 left-1/4 w-[500px] h-[500px] bg-gradient-to-tr from-blue-200/40 to-sky-100/40 rounded-full blur-3xl"></div>
+  </div>
+
+  <!-- Notification Toast Alert Component -->
+  <div id="toastNotification" class="fixed bottom-6 right-6 z-50 transform translate-y-20 opacity-0 transition-all duration-300 pointer-events-none flex items-center gap-3 px-4 py-3 rounded-2xl glass-panel shadow-glass border border-brand-200 text-slate-800 text-sm font-medium">
+    <span id="toastIcon" class="w-6 h-6 rounded-full bg-brand-100 text-brand-600 flex items-center justify-center flex-shrink-0">
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>
+    </span>
+    <span id="toastMsg">Notificação</span>
+  </div>
+
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+    
+    <!-- Top Bar Header -->
+    <header class="glass-panel rounded-3xl p-6 sm:p-7 shadow-glass border border-white/80 relative overflow-hidden">
+      <div class="absolute top-0 right-0 w-80 h-full bg-gradient-to-l from-sky-100/50 to-transparent pointer-events-none"></div>
+      
+      <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6 relative z-10">
+        <div class="space-y-2">
+          <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-100/80 border border-sky-200/80 text-sky-800 text-xs font-semibold tracking-wide shadow-sm">
+            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span id="appVersionBadge">MOTOR NATIVO LOCAL • OCR ONNX INTEGRADO • SEM TESSERACT EXTERNO</span>
+          </div>
+          
+          <div class="flex items-center gap-3.5 pt-1">
+            <!-- Brand Logo Emblem -->
+            <div class="w-11 h-11 rounded-2xl bg-gradient-to-br from-[#09402a] via-[#064e3b] to-[#022c22] flex items-center justify-center text-white font-serif text-lg font-bold shadow-md border border-emerald-800/40 flex-shrink-0 select-none">
+              NJ
+            </div>
+            <div>
+              <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight flex items-baseline gap-2">
+                <span class="text-[#093e2b] tracking-tight">NexoJuris</span>
+                <span class="bg-gradient-to-r from-sky-600 to-blue-700 bg-clip-text text-transparent font-semibold text-xl sm:text-2xl">• Conversor</span>
+              </h1>
+              <div class="text-[10px] font-bold tracking-[0.25em] text-emerald-800/90 uppercase -mt-0.5">CONHECIMENTO CONECTADO</div>
+            </div>
+          </div>
+          <p class="text-xs sm:text-sm text-slate-600 max-w-2xl leading-relaxed pt-1">
+            Conversão ultrarrápida e local de PDFs para Markdown estruturado, preservando imagens, normalizando hierarquias de títulos e integrando ao ecossistema NexoJuris.
+          </p>
+        </div>
+
+        <!-- Quick Summary Metrics Counter -->
+        <div class="flex flex-wrap sm:flex-nowrap items-center gap-3">
+          <div class="flex-1 sm:flex-none glass-card rounded-2xl p-3 px-4 text-center border-white/90 shadow-sm min-w-[100px]">
+            <span class="block text-2xl font-bold text-sky-700 font-mono" id="statQueueCount">0</span>
+            <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Na Fila</span>
+          </div>
+          <div class="flex-1 sm:flex-none glass-card rounded-2xl p-3 px-4 text-center border-white/90 shadow-sm min-w-[100px]">
+            <span class="block text-2xl font-bold text-emerald-600 font-mono" id="statConvertedCount">0</span>
+            <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Convertidos</span>
+          </div>
+          <div class="flex-1 sm:flex-none glass-card rounded-2xl p-3 px-4 text-center border-white/90 shadow-sm min-w-[100px]">
+            <span class="block text-2xl font-bold text-indigo-700 font-mono" id="statDuration">0s</span>
+            <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Tempo</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs between Views -->
+      <div class="mt-5 pt-4 border-t border-sky-100/80 flex flex-wrap items-center justify-between gap-3">
+        <div class="inline-flex p-1.5 rounded-2xl bg-sky-100/60 border border-sky-200/60 backdrop-blur-sm gap-1 text-xs sm:text-sm font-medium">
+          <button onclick="switchView('converter')" id="tab-converter" class="view-tab-btn active px-4 py-2 rounded-xl transition-all duration-200 text-sky-900 bg-white shadow-sm font-semibold flex items-center gap-2">
+            <svg class="w-4 h-4 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            Conversor de PDFs
+          </button>
+          <button onclick="switchView('superpdf')" id="tab-superpdf" class="view-tab-btn px-4 py-2 rounded-xl transition-all duration-200 text-slate-600 hover:text-sky-800 hover:bg-white/50 flex items-center gap-2">
+            <svg class="w-4 h-4 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
+            Super PDF / Leitor
+          </button>
+          <button onclick="switchView('preview')" id="tab-preview" class="view-tab-btn px-4 py-2 rounded-xl transition-all duration-200 text-slate-600 hover:text-sky-800 hover:bg-white/50 flex items-center gap-2">
+            <svg class="w-4 h-4 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+            Visualizador Markdown
+          </button>
+          <button onclick="switchView('logs')" id="tab-logs" class="view-tab-btn px-4 py-2 rounded-xl transition-all duration-200 text-slate-600 hover:text-sky-800 hover:bg-white/50 flex items-center gap-2">
+            <svg class="w-4 h-4 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+            Registro de Atividade
+          </button>
+        </div>
+
+        <!-- Quick actions buttons -->
+        <div class="flex items-center gap-2">
+          <button onclick="appSearch.openModal()" class="px-3.5 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white transition flex items-center gap-1.5 shadow-sm shadow-amber-400/30" title="Pesquisa Instantânea no Acervo (Ctrl + Shift + F)">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+            <span>Buscar no Acervo</span>
+            <span class="text-[10px] bg-amber-700/60 px-1.5 py-0.5 rounded-md font-mono hidden sm:inline-block">Ctrl+Shift+F</span>
+          </button>
+          <button onclick="toggleAudioFeedback()" id="btnAudioToggle" class="px-3 py-2 rounded-xl text-xs font-semibold glass-panel border-sky-200 hover:bg-white text-slate-700 transition flex items-center gap-1.5 shadow-sm" title="Alternar som de feedback">
+            <svg id="audioIcon" class="w-4 h-4 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"></path></svg>
+            <span id="audioLabel">Som Ativo</span>
+          </button>
+          <button onclick="openCurrentOutputFolder()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 text-white transition flex items-center gap-1.5 shadow-sm shadow-sky-300/40">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+            <span>Abrir Pasta de Saída</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- VIEW 1: CONVERSOR (Principal) -->
+    <main id="view-converter" class="space-y-6">
+      
+      <!-- Drag & Drop Zone -->
+      <section id="dropZone" class="drop-zone glass-panel rounded-3xl p-8 text-center cursor-pointer relative group transition-all" onclick="triggerFileSelect()">
+        <div class="max-w-md mx-auto space-y-3 pointer-events-none">
+          <div class="w-16 h-16 mx-auto rounded-2xl bg-sky-100 text-sky-600 flex items-center justify-center group-hover:scale-110 transition-transform shadow-sm">
+            <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+          </div>
+          <h3 class="text-base sm:text-lg font-bold text-slate-800">
+            Arraste seus PDFs aqui ou <span class="text-sky-600 underline">clique para selecionar</span>
+          </h3>
+          <p class="text-xs text-slate-500">
+            Suporta múltiplos arquivos simultâneos • PDFs com até 1.000 páginas cada.
+          </p>
+        </div>
+      </section>
+
+      <!-- Selected Files Panel -->
+      <section class="glass-panel rounded-3xl p-5 sm:p-6 shadow-glass border border-white/80 space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-sky-100/80 pb-4">
+          <div class="flex items-center gap-2">
+            <h2 class="text-base font-bold text-slate-900">PDFs Selecionados</h2>
+            <span id="fileBadgeCount" class="px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-sky-100 text-sky-800">0</span>
+          </div>
+          
+          <div class="flex items-center gap-2">
+            <button onclick="triggerFileSelect()" class="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 transition flex items-center gap-1.5 shadow-sm">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+              Adicionar PDFs
+            </button>
+            <button onclick="clearAllFiles()" id="btnClearFiles" class="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-white hover:bg-rose-50 text-slate-600 hover:text-rose-600 border border-slate-200 hover:border-rose-200 transition flex items-center gap-1.5 shadow-sm disabled:opacity-40" disabled>
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+              Limpar Lista
+            </button>
+          </div>
+        </div>
+
+        <!-- File List Container -->
+        <div id="fileListContainer" class="space-y-2.5 max-h-[320px] overflow-y-auto custom-scrollbar pr-1">
+          <!-- Empty State -->
+          <div id="fileListEmpty" class="py-10 text-center space-y-2 text-slate-400">
+            <svg class="w-10 h-10 mx-auto text-sky-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            <p class="text-xs font-medium">Nenhum arquivo adicionado ainda.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Output Directory & Advanced Options Grid -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        <!-- Output Directory Config -->
+        <section class="lg:col-span-6 glass-panel rounded-3xl p-5 sm:p-6 shadow-glass border border-white/80 space-y-3">
+          <div class="flex items-center justify-between">
+            <h2 class="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+              <svg class="w-4 h-4 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+              Pasta de Destino
+            </h2>
+            <button onclick="resetOutputDirToDefault()" class="text-[11px] font-semibold text-sky-600 hover:text-sky-800">Restaurar Padrão</button>
+          </div>
+          
+          <div class="flex gap-2">
+            <input type="text" id="inputOutputDir" class="flex-1 px-3.5 py-2.5 rounded-2xl glass-input text-xs font-mono text-slate-800 focus:outline-none" readonly />
+            <button onclick="triggerSelectOutputDir()" class="px-4 py-2.5 rounded-2xl text-xs font-semibold bg-white hover:bg-sky-50 text-slate-700 border border-sky-200 transition shadow-sm whitespace-nowrap">
+              Escolher Pasta
+            </button>
+          </div>
+          <p class="text-[11px] text-slate-500 leading-relaxed">
+            Se já existir um arquivo com o mesmo nome, um novo sufixo numérico será gerado automaticamente para não sobrescrever.
+          </p>
+        </section>
+
+        <!-- Advanced Options Toggle Accordion -->
+        <section class="lg:col-span-6 glass-panel rounded-3xl p-5 sm:p-6 shadow-glass border border-white/80 space-y-3">
+          <div class="flex items-center justify-between cursor-pointer gap-2" onclick="toggleAdvancedOptions()">
+            <div class="flex flex-wrap items-center gap-2">
+              <h2 class="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                <svg class="w-4 h-4 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                <span>Estruturação Inteligente de Documentos (PDF Nativo & Digitalizado / OCR)</span>
+              </h2>
+              <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 whitespace-nowrap">Processamento Local Potente e Ilimitado</span>
+            </div>
+            <button id="btnAdvancedChevron" class="text-sky-600 transition-transform duration-200 flex-shrink-0">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+            </button>
+          </div>
+
+          <div id="advancedOptionsBody" class="space-y-4 pt-1">
+            <!-- Chunking Option -->
+            <div class="p-3 rounded-2xl bg-white/70 border border-sky-100 space-y-2">
+              <label class="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-800">
+                <input type="checkbox" id="chkSplitOutput" class="w-4 h-4 rounded text-sky-600 focus:ring-sky-500 border-sky-300" />
+                <span>Gerar partes por títulos # e ##</span>
+              </label>
+              <div class="flex items-center gap-2 pl-6 text-xs text-slate-600">
+                <span>Quando ultrapassar</span>
+                <input type="number" id="inputMaxChars" value="60000" min="1000" step="5000" class="w-24 px-2 py-1 rounded-xl glass-input text-xs font-mono text-center focus:outline-none" />
+                <span>caracteres</span>
+              </div>
+            </div>
+
+            <!-- Heading Profile Selector -->
+            <div class="space-y-2">
+              <span class="text-xs font-bold text-slate-800 block">Perfil de Normalização de Títulos:</span>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                
+                <div onclick="selectProfile('jurisprudencia')" id="profileCardJurisprudencia" class="p-3 rounded-2xl border cursor-pointer transition-all bg-sky-50/80 border-sky-400 shadow-sm space-y-1">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-bold text-sky-900">Jurisprudência</span>
+                    <span id="dotJurisprudencia" class="w-2 h-2 rounded-full bg-sky-600"></span>
+                  </div>
+                  <p class="text-[11px] text-slate-600 leading-snug">Compatível com PDFs nativos e escaneados (OCR). Estrutura ramos do direito (#1), comentários/julgados (#2) e artigos de lei (#3).</p>
+                </div>
+
+                <div onclick="selectProfile('curso')" id="profileCardCurso" class="p-3 rounded-2xl border cursor-pointer transition-all bg-white/70 border-sky-100 hover:bg-white space-y-1">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-bold text-slate-800">Material de Curso</span>
+                    <span id="dotCurso" class="w-2 h-2 rounded-full bg-slate-300"></span>
+                  </div>
+                  <p class="text-[11px] text-slate-600 leading-snug">Remove ruídos e falsos títulos gerados pelo OCR. Organiza tópicos em numeração multinível (1., 1.1., A., a), i)).</p>
+                </div>
+
+              </div>
+            </div>
+
+            <!-- Local Processing Banner Info -->
+            <div class="p-3 rounded-2xl bg-slate-50 border border-slate-200/60 flex items-start gap-2.5">
+              <span class="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 flex-shrink-0">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+              </span>
+              <div class="space-y-0.5">
+                <span class="block text-[11px] font-bold text-slate-800">Privacidade Absoluta & Segurança de Dados</span>
+                <p class="text-[10px] text-slate-500 leading-normal">
+                  Tanto o motor de OCR quanto as regras de estruturação e normalização rodam <strong>100% offline</strong> no seu processador local. Seus documentos nunca saem desta máquina e não há nenhum limite diário de uso.
+                </p>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+      </div>
+
+      <!-- Action Buttons & Live Progress Bar -->
+      <section class="glass-panel rounded-3xl p-6 shadow-glass border border-white/80 space-y-4">
+        
+        <!-- Progress Bar and Status -->
+        <div class="space-y-2.5">
+          <div class="flex items-center justify-between text-xs font-semibold">
+            <span id="statusMessage" class="text-slate-700 font-medium truncate max-w-[75%]">Selecione um ou mais PDFs para começar.</span>
+            <div class="flex items-center gap-1.5 font-mono">
+              <span class="text-[11px] text-slate-400 font-normal">Progresso:</span>
+              <span id="progressPercent" class="text-sky-700 font-bold text-sm min-w-[36px] text-right">0%</span>
+            </div>
+          </div>
+          
+          <div class="w-full h-3.5 rounded-full bg-sky-100/90 overflow-hidden p-0.5 border border-sky-200/80 shadow-inner">
+            <div id="progressBar" class="h-full rounded-full progress-bar-idle" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <!-- Action Controls -->
+        <div class="flex flex-wrap items-center justify-between gap-3 pt-2">
+          <div class="flex items-center gap-2">
+            <button onclick="startConversion()" id="btnStartConvert" class="px-6 py-3 rounded-2xl text-xs sm:text-sm font-bold bg-gradient-to-r from-sky-600 to-blue-700 hover:from-sky-700 hover:to-blue-800 text-white transition flex items-center gap-2 shadow-sm shadow-sky-400/40 disabled:opacity-40 disabled:pointer-events-none">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+              Converter para Markdown
+            </button>
+            <button onclick="togglePause()" id="btnPauseConvert" class="px-4 py-3 rounded-2xl text-xs sm:text-sm font-semibold bg-white hover:bg-sky-50 text-slate-700 border border-sky-200 transition shadow-sm disabled:opacity-40 disabled:pointer-events-none" disabled>
+              Pausar
+            </button>
+            <button onclick="requestStop()" id="btnStopConvert" class="px-4 py-3 rounded-2xl text-xs sm:text-sm font-semibold bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-600 border border-slate-200 hover:border-rose-200 transition shadow-sm disabled:opacity-40 disabled:pointer-events-none" disabled>
+              Parar Fila
+            </button>
+          </div>
+
+          <div class="flex items-center gap-2" id="postConversionActions">
+            <button onclick="openLastMarkdownResult()" id="btnOpenLastMd" class="px-4 py-3 rounded-2xl text-xs sm:text-sm font-semibold bg-white hover:bg-sky-50 text-sky-800 border border-sky-200 transition shadow-sm disabled:opacity-40 disabled:pointer-events-none" disabled>
+              Abrir Último Markdown
+            </button>
+          </div>
+        </div>
+
+      </section>
+
+    </main>
+
+    <!-- VIEW 2: MARKDOWN LIVE PREVIEW -->
+    <section id="view-preview" class="hidden space-y-6">
+      <div class="glass-panel rounded-3xl p-6 sm:p-8 shadow-glass border border-white/80 space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-sky-100/80 pb-4">
+          <div class="space-y-1">
+            <h2 class="text-xl font-bold text-slate-900 flex items-center gap-2">
+              <span class="p-2 rounded-xl bg-sky-100 text-sky-700">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+              </span>
+              Visualizador de Markdown
+            </h2>
+            <p class="text-xs text-slate-500" id="previewSubtitle">Selecione um arquivo convertido para ler a pré-visualização formatada.</p>
+          </div>
+
+          <!-- Document Selector and Actions -->
+          <div class="flex flex-wrap items-center gap-2">
+            <select id="previewDocSelect" onchange="handlePreviewDocChange()" class="glass-input text-xs font-semibold text-slate-700 py-2 px-3 rounded-xl focus:outline-none cursor-pointer max-w-xs">
+              <option value="">Nenhum documento convertido</option>
+            </select>
+            <button onclick="openCurrentPreviewFile()" id="btnOpenInApp" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 transition flex items-center gap-1.5 shadow-sm disabled:opacity-40" disabled>
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+              Abrir no Windows
+            </button>
+            <button onclick="copyCurrentPreviewContent()" id="btnCopyPreview" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 text-white transition flex items-center gap-1.5 shadow-sm disabled:opacity-40" disabled>
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"></path></svg>
+              Copiar Texto
+            </button>
+          </div>
+        </div>
+
+        <!-- Markdown Render Container -->
+        <div id="previewRenderArea" class="glass-card rounded-2xl p-6 sm:p-8 min-h-[400px] max-h-[600px] overflow-y-auto custom-scrollbar border border-white/90 shadow-sm markdown-body text-xs sm:text-sm">
+          <div class="py-16 text-center text-slate-400 space-y-2">
+            <svg class="w-12 h-12 mx-auto text-sky-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            <p class="text-xs font-medium">Converta um PDF para inspecionar o Markdown renderizado.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- VIEW: SUPER PDF (Leitor e Editor Integrado) -->
+    <section id="view-superpdf" class="hidden space-y-4">
+      
+      <!-- Super PDF Toolbar (Edge / Acrobat Pro Style) -->
+      <div class="glass-panel rounded-3xl p-3 sm:p-4 shadow-glass border border-white/80 relative z-40 overflow-visible">
+        <div class="flex flex-wrap items-center justify-between gap-3 text-xs">
+          
+          <!-- Left Controls: Files, Navigation, Zoom, Rotate, Crop -->
+          <div class="flex flex-wrap items-center gap-2">
+            <!-- File selector & open -->
+            <div class="flex items-center gap-1.5">
+              <select id="pdfViewerSelect" onchange="superPdf.onSelectDocument(this.value)" class="glass-input text-xs font-semibold text-slate-700 py-1.5 px-2.5 rounded-xl focus:outline-none cursor-pointer max-w-[180px] truncate" title="Selecionar documento">
+                <option value="">Selecione um PDF...</option>
+              </select>
+              <button onclick="superPdf.openFileDialog()" class="p-2 rounded-xl bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 transition shadow-sm" title="Abrir arquivo PDF">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+              </button>
+            </div>
+
+            <div class="h-5 w-px bg-sky-200/80"></div>
+
+            <!-- Page Navigation -->
+            <div class="flex items-center gap-1">
+              <button onclick="superPdf.prevPage()" id="btnPdfPrev" class="p-1.5 rounded-xl bg-white hover:bg-sky-50 text-slate-700 border border-sky-200 transition shadow-sm disabled:opacity-40" title="Página Anterior" disabled>
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"></path></svg>
+              </button>
+              <div class="flex items-center gap-1 text-xs font-mono font-semibold text-slate-700 bg-white/90 border border-sky-200 px-2 py-1 rounded-xl shadow-xs">
+                <input type="number" id="pdfPageInput" min="1" value="1" onchange="superPdf.goToPage(parseInt(this.value) - 1)" class="w-9 text-center font-mono font-bold text-xs bg-transparent focus:outline-none" disabled />
+                <span id="pdfTotalPagesLabel" class="text-slate-400 font-normal">/ 0</span>
+              </div>
+              <button onclick="superPdf.nextPage()" id="btnPdfNext" class="p-1.5 rounded-xl bg-white hover:bg-sky-50 text-slate-700 border border-sky-200 transition shadow-sm disabled:opacity-40" title="Próxima Página" disabled>
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"></path></svg>
+              </button>
+            </div>
+
+            <div class="h-5 w-px bg-sky-200/80"></div>
+
+            <!-- Zoom Controls -->
+            <div class="flex items-center gap-1">
+              <button onclick="superPdf.zoomOut()" class="p-1.5 rounded-xl bg-white hover:bg-sky-50 text-slate-700 border border-sky-200 transition shadow-sm" title="Diminuir Zoom (-)">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M20 12H4"></path></svg>
+              </button>
+              <button onclick="superPdf.zoomIn()" class="p-1.5 rounded-xl bg-white hover:bg-sky-50 text-slate-700 border border-sky-200 transition shadow-sm" title="Aumentar Zoom (+)">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"></path></svg>
+              </button>
+              <select id="pdfZoomSelect" onchange="superPdf.setZoom(this.value)" class="glass-input text-xs font-semibold text-slate-700 py-1 px-2 rounded-xl focus:outline-none cursor-pointer">
+                <option value="0.5">50%</option>
+                <option value="0.75">75%</option>
+                <option value="1.0" selected>100%</option>
+                <option value="1.25">125%</option>
+                <option value="1.5">150%</option>
+                <option value="2.0">200%</option>
+                <option value="fit-width">Ajustar Largura</option>
+              </select>
+            </div>
+
+            <div class="h-5 w-px bg-sky-200/80"></div>
+
+            <!-- Rotate & Snippet -->
+            <div class="flex items-center gap-1">
+              <button onclick="superPdf.rotatePage(90)" id="tool-rotate" class="p-1.5 rounded-xl bg-white hover:bg-sky-50 text-slate-700 border border-sky-200 transition shadow-sm flex items-center gap-1 font-semibold" title="Girar 90°">
+                <svg class="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+              </button>
+              <button onclick="superPdf.setTool('snippet')" id="tool-snippet" class="pdf-tool-btn px-2.5 py-1.5 rounded-xl font-semibold transition flex items-center gap-1.5 text-slate-600 hover:text-sky-900 bg-white border border-sky-200 shadow-sm" title="Capturar Trecho (OCR & Imagem)">
+                <svg class="w-3.5 h-3.5 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"></path></svg>
+                <span>Recortar</span>
+              </button>
+            </div>
+
+          </div>
+
+          <!-- Center Annotation Tools with Edge Flyouts -->
+          <div class="flex items-center gap-1.5 relative">
+            
+            <!-- Pan/Cursor -->
+            <button onclick="superPdf.setTool('pan')" id="tool-pan" class="pdf-tool-btn active px-3 py-1.5 rounded-xl font-semibold transition flex items-center gap-1.5 bg-white text-sky-900 shadow-sm" title="Modo Navegar">
+              <svg class="w-3.5 h-3.5 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122"></path></svg>
+              <span>Navegar</span>
+            </button>
+
+            <!-- Draw / Pen (with Flyout arrow) -->
+            <div class="relative inline-block">
+              <div class="inline-flex rounded-xl bg-white border border-sky-200 shadow-sm overflow-hidden" id="tool-pen-container">
+                <button onclick="superPdf.handleToolMainClick('pen')" id="tool-pen" class="px-2.5 py-1.5 font-semibold text-slate-700 hover:bg-sky-50 transition flex items-center gap-1.5" title="Desenhar com Caneta">
+                  <svg class="w-3.5 h-3.5 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                  <span>Desenhar</span>
+                </button>
+                <button onclick="superPdf.toggleFlyout('pen')" id="tool-pen-arrow" class="px-1.5 py-1.5 text-slate-400 hover:text-sky-700 hover:bg-sky-50 border-l border-sky-100 transition" title="Opções de Caneta">
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                </button>
+              </div>
+
+              <!-- POPUP FLYOUT: CANETA -->
+              <div id="flyout-pen" class="edge-flyout absolute top-full mt-3.5 left-0 z-50 p-4 w-64 space-y-3.5 hidden animate-fadeIn select-none">
+                <div class="flex items-center justify-between border-b border-sky-100 pb-2">
+                  <span class="text-xs font-bold text-slate-800">Cores</span>
+                  <span class="text-[10px] font-semibold text-slate-400">Caneta</span>
+                </div>
+                <!-- 24 Color Swatches Grid -->
+                <div id="penColorPaletteGrid" class="grid grid-cols-6 gap-2">
+                  <!-- Generated dynamically in JS -->
+                </div>
+
+                <!-- Live Wave Preview -->
+                <div class="bg-slate-50 rounded-xl p-2 border border-sky-100 flex items-center justify-center">
+                  <canvas id="penWavePreview" width="220" height="32" class="w-full"></canvas>
+                </div>
+
+                <!-- Thickness Slider -->
+                <div class="space-y-1.5">
+                  <div class="flex items-center justify-between text-xs font-semibold text-slate-700">
+                    <span>Espessura</span>
+                    <span id="labelPenWidth" class="font-mono text-sky-600 text-[11px]">4 px</span>
+                  </div>
+                  <input type="range" id="sliderPenWidth" min="1" max="24" value="4" oninput="superPdf.onPenWidthChange(this.value)" class="edge-slider w-full" />
+                  <div class="flex items-center justify-between text-[10px] text-slate-400 font-medium">
+                    <span>Fino</span>
+                    <span>Espesso</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Highlight / Marca-texto (with Flyout arrow) -->
+            <div class="relative inline-block">
+              <div class="inline-flex rounded-xl bg-white border border-sky-200 shadow-sm overflow-hidden" id="tool-highlight-container">
+                <button onclick="superPdf.handleToolMainClick('highlight')" id="tool-highlight-pen" class="px-2.5 py-1.5 font-semibold text-slate-700 hover:bg-sky-50 transition flex items-center gap-1.5" title="Marca-texto">
+                  <svg class="w-3.5 h-3.5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
+                  <span>Marca-texto</span>
+                </button>
+                <button onclick="superPdf.toggleFlyout('highlight')" id="tool-highlight-arrow" class="px-1.5 py-1.5 text-slate-400 hover:text-sky-700 hover:bg-sky-50 border-l border-sky-100 transition" title="Opções de Marca-texto">
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                </button>
+              </div>
+
+              <!-- POPUP FLYOUT: MARCA-TEXTO -->
+              <div id="flyout-highlight" class="edge-flyout absolute top-full mt-3.5 left-0 z-50 p-4 w-64 space-y-3.5 hidden animate-fadeIn select-none">
+                <div class="flex items-center justify-between border-b border-sky-100 pb-2">
+                  <span class="text-xs font-bold text-slate-800">Cores</span>
+                  <span class="text-[10px] font-semibold text-amber-600">Marca-texto</span>
+                </div>
+                <!-- 6 Neon Highlighters -->
+                <div id="hlColorPaletteGrid" class="flex items-center justify-between gap-1">
+                  <!-- Swatches -->
+                </div>
+
+                <!-- Live Highlight Wave Preview -->
+                <div class="bg-slate-50 rounded-xl p-2 border border-sky-100 flex items-center justify-center">
+                  <canvas id="hlWavePreview" width="220" height="32" class="w-full"></canvas>
+                </div>
+
+                <!-- Thickness Slider -->
+                <div class="space-y-1.5">
+                  <div class="flex items-center justify-between text-xs font-semibold text-slate-700">
+                    <span>Espessura</span>
+                    <span id="labelHlWidth" class="font-mono text-amber-600 text-[11px]">18 px</span>
+                  </div>
+                  <input type="range" id="sliderHlWidth" min="8" max="36" value="18" oninput="superPdf.onHlWidthChange(this.value)" class="edge-slider w-full" />
+                  <div class="flex items-center justify-between text-[10px] text-slate-400 font-medium">
+                    <span>Fino</span>
+                    <span>Espesso</span>
+                  </div>
+                </div>
+
+                <!-- Mode Selector (Caneta vs Bloco) -->
+                <div class="pt-2 border-t border-sky-100 space-y-1.5">
+                  <span class="text-[10px] font-bold uppercase text-slate-400 block">Modo de Aplicação</span>
+                  <div class="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl">
+                    <button onclick="superPdf.setHighlightMode('pen')" id="btnHlModePen" class="py-1 px-2 rounded-lg text-xs font-semibold bg-white text-sky-900 shadow-xs flex items-center justify-center gap-1 transition">
+                      <span>✏️ Caneta</span>
+                    </button>
+                    <button onclick="superPdf.setHighlightMode('block')" id="btnHlModeBlock" class="py-1 px-2 rounded-lg text-xs font-semibold text-slate-600 hover:text-sky-900 flex items-center justify-center gap-1 transition">
+                      <span>▧ Bloco</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Text (with Flyout arrow) -->
+            <div class="relative inline-block">
+              <div class="inline-flex rounded-xl bg-white border border-sky-200 shadow-sm overflow-hidden" id="tool-text-container">
+                <button onclick="superPdf.handleToolMainClick('text')" id="tool-text" class="px-2.5 py-1.5 font-semibold text-slate-700 hover:bg-sky-50 transition flex items-center gap-1.5" title="Inserir Texto">
+                  <svg class="w-3.5 h-3.5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7"></path></svg>
+                  <span>Texto</span>
+                </button>
+                <button onclick="superPdf.toggleFlyout('text')" id="tool-text-arrow" class="px-1.5 py-1.5 text-slate-400 hover:text-sky-700 hover:bg-sky-50 border-l border-sky-100 transition" title="Opções de Texto">
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                </button>
+              </div>
+
+              <!-- POPUP FLYOUT: TEXTO -->
+              <div id="flyout-text" class="edge-flyout absolute top-full mt-3.5 left-0 z-50 p-4 w-72 space-y-3.5 hidden animate-fadeIn select-none">
+                <div class="flex items-center justify-between border-b border-sky-100 pb-2">
+                  <span class="text-xs font-bold text-slate-800">Formatação de Texto</span>
+                  <span class="text-[10px] font-semibold text-blue-600">Tipografia</span>
+                </div>
+
+                <!-- Cor do Texto -->
+                <div class="space-y-1.5">
+                  <span class="text-[10px] font-bold uppercase text-slate-400 block">Cor do Texto</span>
+                  <div id="textColorPaletteGrid" class="flex items-center gap-2">
+                    <!-- Swatches -->
+                  </div>
+                </div>
+
+                <!-- Tamanho da Fonte + Negrito -->
+                <div class="space-y-1.5">
+                  <div class="flex items-center justify-between text-xs font-semibold text-slate-700">
+                    <span>Tamanho da Fonte</span>
+                    <span id="labelTextSize" class="font-mono text-blue-600 text-[11px]">14 pt</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <input type="range" id="sliderTextSize" min="10" max="36" value="14" oninput="superPdf.onTextSizeChange(this.value)" class="edge-slider flex-1" />
+                    <button id="btnTextBold" onclick="superPdf.toggleTextBold()" class="px-2.5 py-1 rounded-xl border border-slate-200 hover:bg-sky-50 text-slate-700 font-bold text-xs transition shadow-xs" title="Alternar Negrito">
+                      B
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Estilo do Fundo da Caixa -->
+                <div class="space-y-1.5">
+                  <span class="text-[10px] font-bold uppercase text-slate-400 block">Estilo da Caixa</span>
+                  <div class="grid grid-cols-2 gap-1.5 text-xs font-medium">
+                    <button onclick="superPdf.setTextBoxStyle('none')" id="btnStyleNone" class="p-1.5 rounded-xl border border-slate-200 hover:border-sky-300 text-slate-700 transition active-style">
+                      Sem Fundo
+                    </button>
+                    <button onclick="superPdf.setTextBoxStyle('postit')" id="btnStylePostit" class="p-1.5 rounded-xl border border-yellow-300 bg-yellow-100 text-yellow-900 transition">
+                      📝 Post-it
+                    </button>
+                    <button onclick="superPdf.setTextBoxStyle('white')" id="btnStyleWhite" class="p-1.5 rounded-xl border border-sky-200 bg-white text-sky-900 transition">
+                      📄 Caixa Branca
+                    </button>
+                    <button onclick="superPdf.setTextBoxStyle('danger')" id="btnStyleDanger" class="p-1.5 rounded-xl border border-red-200 bg-red-100 text-red-900 transition">
+                      ⚠️ Alerta
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Undo / Clear -->
+            <div class="flex items-center gap-1 pl-1 border-l border-sky-200/60">
+              <button onclick="superPdf.undoAnnotation()" class="p-1.5 rounded-xl bg-white hover:bg-sky-50 text-slate-700 border border-sky-200 transition shadow-sm" title="Desfazer">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a5 5 0 015 5v2M3 10l6 6m-6-6l6-6"></path></svg>
+              </button>
+              <button onclick="superPdf.clearPageAnnotations()" class="p-1.5 rounded-xl bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-600 border border-sky-200 transition shadow-sm" title="Limpar Tudo da Página">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+              </button>
+            </div>
+
+            <!-- Bookmark / Marcador de Página -->
+            <div class="flex items-center gap-1 pl-1 border-l border-sky-200/60">
+              <button onclick="superPdf.toggleBookmark()" id="btnToolBookmark" class="p-1.5 rounded-xl bg-white hover:bg-amber-50 text-slate-700 hover:text-amber-600 border border-sky-200 transition shadow-sm" title="Adicionar Marcador nesta Página (Bookmark)">
+                <svg id="iconBookmarkStar" class="w-3.5 h-3.5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"></path></svg>
+              </button>
+            </div>
+
+          </div>
+
+          <!-- Right Document Actions: Protect, Print, Save -->
+          <div class="flex items-center gap-1.5">
+            <button onclick="superPdf.openProtectModal()" id="btnToolProtect" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white hover:bg-sky-50 text-slate-700 border border-sky-200 transition flex items-center gap-1.5 shadow-sm disabled:opacity-40" title="Proteger com Senha AES-256" disabled>
+              <svg class="w-3.5 h-3.5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+              <span>Proteger</span>
+            </button>
+            <button onclick="superPdf.printDocument()" id="btnToolPrint" class="p-1.5 rounded-xl bg-white hover:bg-sky-50 text-slate-700 border border-sky-200 transition shadow-sm disabled:opacity-40" title="Imprimir Documento" disabled>
+              <svg class="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
+            </button>
+            <button onclick="superPdf.saveAnnotations()" id="btnToolSave" class="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition flex items-center gap-1.5 shadow-sm shadow-emerald-500/30 disabled:opacity-40 disabled:pointer-events-none" disabled>
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path></svg>
+              <span>Salvar</span>
+            </button>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Main Viewer Stage (Thumbnails Drawer + Canvas Area) -->
+      <div class="glass-panel rounded-3xl p-4 shadow-glass border border-white/80 flex gap-4 min-h-[620px] max-h-[780px] overflow-hidden relative">
+        
+        <!-- Left Thumbnail Sidebar (Collapsible) -->
+        <aside id="pdfThumbnailsSidebar" class="w-52 flex-shrink-0 bg-white/60 rounded-2xl p-2.5 border border-sky-100/90 overflow-y-auto custom-scrollbar space-y-2 hidden md:block select-none">
+          
+          <!-- Tab selector for sidebar (Páginas / Marcadores) -->
+          <div class="flex items-center gap-1 p-1 bg-sky-100/60 rounded-xl text-[11px] font-bold">
+            <button onclick="superPdf.setSidebarTab('pages')" id="btnTabPages" class="flex-1 py-1 rounded-lg bg-white text-sky-900 shadow-xs text-center transition flex items-center justify-center gap-1">
+              <span>Páginas</span>
+              <span id="thumbCountBadge" class="text-[9px] px-1 rounded-full bg-sky-100 text-sky-800 hidden">0</span>
+            </button>
+            <button onclick="superPdf.setSidebarTab('bookmarks')" id="btnTabBookmarks" class="flex-1 py-1 rounded-lg text-slate-600 hover:text-sky-900 text-center transition flex items-center justify-center gap-1">
+              <span>⭐ Marcadores</span>
+              <span id="bookmarkCountBadge" class="text-[9px] px-1 rounded-full bg-amber-100 text-amber-800 hidden">0</span>
+            </button>
+          </div>
+
+          <!-- Section: Pages Thumbnails -->
+          <div id="pdfThumbnailsContainer" class="space-y-2 pt-1">
+            <div class="text-[11px] text-slate-400 text-center py-8">Nenhum documento aberto.</div>
+          </div>
+
+          <!-- Section: Bookmarks List -->
+          <div id="pdfBookmarksContainer" class="space-y-2 pt-1 hidden">
+            <div class="text-[11px] text-slate-400 text-center py-8">Nenhum marcador salvo.</div>
+          </div>
+        </aside>
+
+        <!-- Canvas Viewport -->
+        <div id="pdfStageContainer" class="flex-1 bg-slate-900/5 rounded-2xl border border-sky-100/80 overflow-auto custom-scrollbar flex items-start justify-center p-6 relative select-none">
+          
+          <!-- Empty State Container -->
+          <div id="pdfEmptyState" class="my-auto text-center space-y-3 py-16">
+            <div class="w-16 h-16 mx-auto rounded-2xl bg-sky-100 text-sky-600 flex items-center justify-center shadow-sm">
+              <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            </div>
+            <h3 class="text-base font-bold text-slate-800">Super PDF • Leitor & Editor Integrado</h3>
+            <p class="text-xs text-slate-500 max-w-sm mx-auto">
+              Abra um PDF da lista ou clique abaixo para visualizar, grifar, anotar, recortar trechos e proteger o arquivo.
+            </p>
+            <button onclick="superPdf.openFileDialog()" class="px-5 py-2.5 rounded-2xl text-xs font-bold bg-sky-600 hover:bg-sky-700 text-white transition shadow-sm shadow-sky-300/40">
+              Selecionar Arquivo PDF
+            </button>
+          </div>
+
+          <!-- Canvas Active Wrapper -->
+          <div id="pdfCanvasWrapper" class="relative hidden shadow-2xl rounded-lg overflow-hidden bg-white transition-transform duration-150 origin-top">
+            <!-- Background Layer: PDF Render (HQ Base64) -->
+            <canvas id="pdfPageCanvas" class="block"></canvas>
+            
+            <!-- Foreground Layer: Native vector annotations & user drawing -->
+            <canvas id="pdfAnnotationCanvas" class="absolute inset-0 cursor-default"></canvas>
+            
+            <!-- Interactive DOM Text Editor Layer (Nativo WebView2) -->
+            <div id="pdfOverlayTextContainer" class="text-annotation-layer absolute inset-0 pointer-events-none"></div>
+          </div>
+
+          <!-- Loading Spinner Overlay -->
+          <div id="pdfLoadingIndicator" class="absolute inset-0 bg-white/70 backdrop-blur-xs flex flex-col items-center justify-center gap-2.5 z-20 hidden">
+            <div class="w-8 h-8 border-3 border-sky-600 border-t-transparent rounded-full animate-spin"></div>
+            <span class="text-xs font-bold text-sky-900">Renderizando página em alta resolução...</span>
+          </div>
+
+        </div>
+
+      </div>
+
+    </section>
+
+    <!-- VIEW 3: LOGS & HISTORY -->
+    <section id="view-logs" class="hidden space-y-6">
+      <div class="glass-panel rounded-3xl p-6 sm:p-8 shadow-glass border border-white/80 space-y-4">
+        <div class="flex items-center justify-between border-b border-sky-100/80 pb-4">
+          <div>
+            <h2 class="text-lg font-bold text-slate-900">Histórico de Atividade</h2>
+            <p class="text-xs text-slate-500">Registro detalhado dos eventos de extração, tempos de processamento e eventuais falhas.</p>
+          </div>
+          <button onclick="clearActivityLogs()" class="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-white hover:bg-rose-50 text-slate-600 hover:text-rose-600 border border-slate-200 hover:border-rose-200 transition">
+            Limpar Registro
+          </button>
+        </div>
+
+        <div id="logConsole" class="glass-card rounded-2xl p-4 min-h-[300px] max-h-[500px] overflow-y-auto custom-scrollbar font-mono text-xs text-slate-800 space-y-1.5 border border-white/90 bg-white/90 shadow-sm">
+          <div class="text-slate-400 font-sans text-xs">Aguardando início de tarefas...</div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- MODAL: Captura de Trecho (Snippet & OCR) -->
+  <div id="snippetModal" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="glass-panel bg-white/95 rounded-3xl max-w-2xl w-full p-6 sm:p-7 shadow-2xl border border-white/90 space-y-5 animate-fadeIn max-h-[90vh] overflow-y-auto custom-scrollbar">
+      <div class="flex items-center justify-between border-b border-sky-100 pb-3">
+        <div class="flex items-center gap-2">
+          <span class="p-2 rounded-xl bg-rose-100 text-rose-600">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"></path></svg>
+          </span>
+          <h3 class="text-base font-bold text-slate-900">Trecho Capturado</h3>
+        </div>
+        <button onclick="superPdf.closeSnippetModal()" class="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+      </div>
+
+      <!-- Snippet Image Preview -->
+      <div class="space-y-1.5">
+        <span class="text-xs font-bold text-slate-700 block">Imagem Recortada (HQ):</span>
+        <div class="p-3 bg-slate-50 rounded-2xl border border-sky-100 flex items-center justify-center max-h-56 overflow-hidden">
+          <img id="snippetImgPreview" class="max-h-50 object-contain rounded-lg shadow-sm border border-slate-200" alt="Recorte" />
+        </div>
+      </div>
+
+      <!-- Snippet Extracted Text -->
+      <div class="space-y-1.5">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold text-slate-700 block">Texto Extraído da Região:</span>
+          <span id="snippetOcrBadge" class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 hidden">🔍 Reconhecido via OCR ONNX</span>
+        </div>
+        <textarea id="snippetTextArea" rows="4" class="w-full p-3 rounded-2xl glass-input text-xs font-mono text-slate-800 focus:outline-none custom-scrollbar" placeholder="Nenhum texto nesta área..."></textarea>
+      </div>
+
+      <!-- Actions -->
+      <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-sky-100">
+        <div class="flex flex-wrap items-center gap-2">
+          <button onclick="superPdf.copySnippetText()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 text-white transition flex items-center gap-1.5 shadow-sm">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"></path></svg>
+            Copiar Texto
+          </button>
+          <button onclick="superPdf.copySnippetImage()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-white hover:bg-sky-50 text-sky-800 border border-sky-200 transition flex items-center gap-1.5 shadow-sm">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+            Copiar Imagem
+          </button>
+          <button onclick="appTts.playSnippetText()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition flex items-center gap-1.5 shadow-sm" title="Ouvir texto com voz neural">
+            <svg class="w-3.5 h-3.5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"></path></svg>
+            <span>Ouvir Trecho</span>
+          </button>
+          <button onclick="appTranslator.translateSnippetText()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 transition flex items-center gap-1.5 shadow-sm" title="Traduzir texto do recorte">
+            <svg class="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
+            <span>Traduzir</span>
+          </button>
+        </div>
+        <button onclick="superPdf.closeSnippetModal()" class="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 transition">
+          Fechar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Proteger PDF com Senha (AES-256) / Remover Proteção -->
+  <div id="protectModal" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="glass-panel bg-white/95 rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl border border-white/90 space-y-4 animate-fadeIn">
+      
+      <!-- Cabeçalho do Modal -->
+      <div class="flex items-center justify-between border-b border-sky-100 pb-3">
+        <div class="flex items-center gap-2">
+          <span class="p-2 rounded-xl bg-amber-100 text-amber-600">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+          </span>
+          <h3 id="protectModalTitle" class="text-base font-bold text-slate-900">Segurança do Documento</h3>
+        </div>
+        <button onclick="superPdf.closeProtectModal()" class="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+      </div>
+
+      <!-- SEÇÃO 1: Documento NÃO protegido -> Definir nova senha -->
+      <div id="protectSectionUnencrypted" class="space-y-3">
+        <p class="text-xs text-slate-600 leading-relaxed">
+          Aplique criptografia nativa <strong>AES-256</strong>. O PDF exigirá a senha definida para visualização e edição.
+        </p>
+
+        <div>
+          <label class="block text-xs font-bold text-slate-700 mb-1">Senha de Abertura (Usuário) *</label>
+          <input type="password" id="inputUserPw" class="w-full p-2.5 rounded-2xl glass-input text-xs text-slate-800 focus:outline-none" placeholder="Digite uma senha forte..." />
+        </div>
+
+        <div>
+          <label class="block text-xs font-bold text-slate-700 mb-1">Senha de Administrador (Opcional)</label>
+          <input type="password" id="inputOwnerPw" class="w-full p-2.5 rounded-2xl glass-input text-xs text-slate-800 focus:outline-none" placeholder="Opcional (para permissões avançadas)..." />
+        </div>
+
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-sky-100">
+          <button onclick="superPdf.closeProtectModal()" class="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 transition">
+            Cancelar
+          </button>
+          <button onclick="superPdf.submitProtectPdf()" class="px-4 py-2 rounded-xl text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white transition flex items-center gap-1.5 shadow-sm">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+            Aplicar Senha e Salvar
+          </button>
+        </div>
+      </div>
+
+      <!-- SEÇÃO 2: Documento PROTEGIDO -> Opção de Remover Senha -->
+      <div id="protectSectionEncrypted" class="space-y-3 hidden">
+        <div class="p-3 bg-amber-50 rounded-2xl border border-amber-200 flex items-start gap-2.5">
+          <span class="text-amber-600 text-sm flex-shrink-0">🔒</span>
+          <div class="text-xs text-amber-900">
+            <span class="font-bold block">Documento Protegido por Senha</span>
+            <span>Este PDF possui criptografia ativa. Você pode remover permanentemente a proteção por senha.</span>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-bold text-slate-700 mb-1">Senha Atual do Documento *</label>
+          <input type="password" id="inputCurrentPwForUnprotect" class="w-full p-2.5 rounded-2xl glass-input text-xs text-slate-800 focus:outline-none" placeholder="Digite a senha atual para confirmar a remoção..." />
+        </div>
+
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-sky-100">
+          <button onclick="superPdf.closeProtectModal()" class="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 transition">
+            Cancelar
+          </button>
+          <button onclick="superPdf.submitUnprotectPdf()" class="px-4 py-2 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white transition flex items-center gap-1.5 shadow-sm shadow-rose-200">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>
+            Remover Proteção / Retirar Senha
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- MODAL: Desbloquear PDF com Senha -->
+  <div id="unlockModal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="glass-panel bg-white/95 rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl border border-white/90 space-y-4 animate-fadeIn">
+      <div class="flex items-center gap-3 border-b border-sky-100 pb-3">
+        <span class="p-2.5 rounded-2xl bg-amber-100 text-amber-600 flex-shrink-0">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+        </span>
+        <div>
+          <h3 class="text-base font-bold text-slate-900">PDF Protegido por Senha</h3>
+          <p class="text-xs text-slate-500">Este documento requer uma senha para leitura e edição.</p>
+        </div>
+      </div>
+
+      <div class="space-y-2">
+        <label class="block text-xs font-bold text-slate-700">Digite a Senha do Documento</label>
+        <input type="password" id="inputUnlockPw" class="w-full p-2.5 rounded-2xl glass-input text-xs text-slate-800 focus:outline-none" placeholder="Digite a senha..." onkeydown="if(event.key==='Enter') superPdf.submitUnlockPdf()" />
+        <p id="unlockErrorMsg" class="text-xs text-rose-600 font-medium hidden"></p>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-sky-100">
+        <button onclick="superPdf.closeUnlockModal()" class="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 transition">
+          Cancelar
+        </button>
+        <button onclick="superPdf.submitUnlockPdf()" class="px-4 py-2 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 text-white transition flex items-center gap-1.5 shadow-sm">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>
+          Desbloquear
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden Isolated Print Engine Frame -->
+  <iframe id="pdfPrintIframe" class="hidden" title="NexoJuris PDF Print Engine"></iframe>
+
+  <!-- FLOATING CONTEXT MENU: Ações Rápidas de Seleção de Texto -->
+  <div id="floatingSelectionMenu" class="floating-selection-menu glass-panel rounded-2xl p-1 shadow-glass border border-sky-200/90 flex items-center gap-1 text-xs select-none">
+    <button onclick="appTts.playSelectedText()" class="px-2.5 py-1.5 rounded-xl hover:bg-sky-100 text-sky-900 font-semibold transition flex items-center gap-1.5">
+      <svg class="w-3.5 h-3.5 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"></path></svg>
+      <span>Ouvir</span>
+    </button>
+    <div class="h-4 w-px bg-sky-200"></div>
+    <button onclick="appTranslator.translateSelectedText()" class="px-2.5 py-1.5 rounded-xl hover:bg-emerald-50 text-emerald-800 font-semibold transition flex items-center gap-1.5">
+      <svg class="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
+      <span>Traduzir</span>
+    </button>
+    <div class="h-4 w-px bg-sky-200"></div>
+    <button onclick="appSelection.copySelectedText()" class="px-2.5 py-1.5 rounded-xl hover:bg-slate-100 text-slate-700 font-semibold transition flex items-center gap-1.5">
+      <svg class="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"></path></svg>
+      <span>Copiar</span>
+    </button>
+  </div>
+
+  <!-- NEURAL AUDIO PLAYER BAR (Mini-Player de Voz Neural) -->
+  <div id="neuralAudioPlayer" class="neural-audio-bar max-w-2xl w-[92vw] glass-panel bg-white/95 rounded-3xl p-3.5 sm:p-4 shadow-2xl border border-white/90 space-y-2.5">
+    <div class="flex items-center justify-between gap-3">
+      
+      <!-- Status & Waveform Indicator -->
+      <div class="flex items-center gap-3 min-w-0">
+        <div class="w-9 h-9 rounded-2xl bg-gradient-to-br from-sky-500 to-blue-700 text-white flex items-center justify-center flex-shrink-0 shadow-sm shadow-sky-400/30">
+          <div id="ttsSoundWave" class="sound-wave paused">
+            <div class="sound-wave-bar bg-white"></div>
+            <div class="sound-wave-bar bg-white"></div>
+            <div class="sound-wave-bar bg-white"></div>
+            <div class="sound-wave-bar bg-white"></div>
+            <div class="sound-wave-bar bg-white"></div>
+          </div>
+        </div>
+        <div class="min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-extrabold text-slate-900 tracking-tight">Leitor Neural</span>
+            <span id="ttsLoadingBadge" class="text-[10px] px-2 py-0.2 rounded-full bg-amber-100 text-amber-800 font-bold hidden animate-pulse">Gerando Áudio...</span>
+          </div>
+          <p id="ttsStatusText" class="text-[11px] text-slate-500 truncate max-w-xs sm:max-w-md">Pronto para leitura</p>
+        </div>
+      </div>
+
+      <!-- Quick Play/Pause & Close -->
+      <div class="flex items-center gap-2">
+        <button onclick="appTts.togglePlay()" id="btnTtsPlay" class="w-9 h-9 rounded-2xl bg-sky-600 hover:bg-sky-700 text-white flex items-center justify-center transition shadow-sm shadow-sky-300/40">
+          <svg id="iconTtsPlay" class="w-4 h-4 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path></svg>
+          <svg id="iconTtsPause" class="w-4 h-4 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10 9v6m4-6v6"></path></svg>
+        </button>
+        <button onclick="appTts.stopAndHide()" class="p-2 rounded-2xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition" title="Fechar Player">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+      </div>
+
+    </div>
+
+    <!-- Progress Timeline & Controls Bar -->
+    <div class="flex flex-col sm:flex-row sm:items-center gap-2 pt-1 border-t border-sky-100 text-xs">
+      
+      <!-- Seekbar and Timers -->
+      <div class="flex-1 flex items-center gap-2">
+        <span id="ttsCurrentTime" class="font-mono text-[11px] text-slate-500 w-9">0:00</span>
+        <input type="range" id="ttsSeekbar" min="0" max="100" value="0" step="0.1" oninput="appTts.seek(this.value)" class="edge-slider flex-1 h-1.5" />
+        <span id="ttsTotalTime" class="font-mono text-[11px] text-slate-500 w-9 text-right">0:00</span>
+      </div>
+
+      <!-- Settings: Voice & Speed -->
+      <div class="flex items-center justify-between sm:justify-end gap-2">
+        <!-- Voice Select -->
+        <select id="ttsVoiceSelect" onchange="appTts.setVoice(this.value)" class="glass-input text-[11px] font-semibold text-slate-700 py-1 px-2 rounded-xl focus:outline-none cursor-pointer max-w-[150px] truncate" title="Selecionar Voz Neural">
+          <option value="pt-BR-FranciscaNeural">Francisca (PT-BR)</option>
+          <option value="pt-BR-AntonioNeural">Antônio (PT-BR)</option>
+          <option value="pt-BR-ThalitaNeural">Thalita (PT-BR)</option>
+          <option value="en-US-JennyNeural">Jenny (EN-US)</option>
+          <option value="en-US-GuyNeural">Guy (EN-US)</option>
+          <option value="es-ES-ElviraNeural">Elvira (ES-ES)</option>
+          <option value="fr-FR-DeniseNeural">Denise (FR-FR)</option>
+          <option value="it-IT-ElsaNeural">Elsa (IT-IT)</option>
+          <option value="de-DE-KatjaNeural">Katja (DE-DE)</option>
+        </select>
+
+        <!-- Speed Selector Dropdown/Pills -->
+        <div class="flex items-center gap-0.5 bg-slate-100 p-0.5 rounded-xl text-[11px] font-semibold">
+          <button onclick="appTts.setSpeed(0.75)" class="tts-speed-btn px-1.5 py-0.5 rounded-lg text-slate-600 hover:text-sky-900" data-speed="0.75">0.75x</button>
+          <button onclick="appTts.setSpeed(1.0)" class="tts-speed-btn active px-1.5 py-0.5 rounded-lg bg-white text-sky-800 shadow-xs" data-speed="1.0">1.0x</button>
+          <button onclick="appTts.setSpeed(1.25)" class="tts-speed-btn px-1.5 py-0.5 rounded-lg text-slate-600 hover:text-sky-900" data-speed="1.25">1.25x</button>
+          <button onclick="appTts.setSpeed(1.5)" class="tts-speed-btn px-1.5 py-0.5 rounded-lg text-slate-600 hover:text-sky-900" data-speed="1.5">1.5x</button>
+          <button onclick="appTts.setSpeed(2.0)" class="tts-speed-btn px-1.5 py-0.5 rounded-lg text-slate-600 hover:text-sky-900" data-speed="2.0">2.0x</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- MODAL: Tradução Interativa & Multilíngue -->
+  <div id="translationModal" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden select-none">
+    <div class="glass-panel bg-white/95 rounded-3xl max-w-3xl w-full p-6 sm:p-7 shadow-2xl border border-white/90 space-y-5 animate-fadeIn max-h-[92vh] overflow-y-auto custom-scrollbar">
+      
+      <!-- Header with Language Selector -->
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-sky-100 pb-3">
+        <div class="flex items-center gap-2">
+          <span class="p-2 rounded-xl bg-emerald-100 text-emerald-600">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
+          </span>
+          <div>
+            <h3 class="text-base font-bold text-slate-900">Tradução Jurídica & de Trechos</h3>
+            <p class="text-xs text-slate-500">Tradução instantânea 100% local e sem limites de API.</p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-bold text-slate-600">Traduzir para:</span>
+          <select id="transTargetLang" onchange="appTranslator.retranslate()" class="glass-input text-xs font-bold text-sky-800 py-1.5 px-3 rounded-xl focus:outline-none cursor-pointer">
+            <option value="pt" selected>Português (BR)</option>
+            <option value="en">Inglês (US)</option>
+            <option value="es">Espanhol (ES)</option>
+            <option value="fr">Francês (FR)</option>
+            <option value="de">Alemão (DE)</option>
+            <option value="it">Italiano (IT)</option>
+          </select>
+          <button onclick="appTranslator.closeModal()" class="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Translation Panels Grid -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        
+        <!-- Original Text Column -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+              <span>Texto Original</span>
+              <span id="transOriginalBadge" class="text-[10px] font-normal px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">Auto-Detectado</span>
+            </span>
+            <button onclick="appTts.playText(document.getElementById('transOriginalText').value)" class="text-xs font-semibold text-sky-600 hover:text-sky-800 flex items-center gap-1" title="Ouvir original">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"></path></svg>
+              <span>Ouvir</span>
+            </button>
+          </div>
+          <textarea id="transOriginalText" rows="7" class="w-full p-3 rounded-2xl glass-input text-xs font-sans text-slate-800 focus:outline-none custom-scrollbar resize-none" placeholder="Texto original..."></textarea>
+        </div>
+
+        <!-- Translated Result Column -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+              <span>Resultado da Tradução</span>
+              <span id="transStatusBadge" class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 hidden">Traduzindo...</span>
+            </span>
+            <button onclick="appTts.playText(document.getElementById('transResultText').value)" class="text-xs font-semibold text-emerald-600 hover:text-emerald-800 flex items-center gap-1" title="Ouvir tradução">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"></path></svg>
+              <span>Ouvir</span>
+            </button>
+          </div>
+          <textarea id="transResultText" rows="7" class="w-full p-3 rounded-2xl glass-input text-xs font-sans text-slate-900 font-medium focus:outline-none custom-scrollbar resize-none bg-sky-50/40 border-sky-200" placeholder="A tradução aparecerá aqui..." readonly></textarea>
+        </div>
+
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-sky-100">
+        <div class="flex items-center gap-2">
+          <button onclick="appTranslator.copyResult()" class="px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition flex items-center gap-1.5 shadow-sm shadow-emerald-500/30">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"></path></svg>
+            <span>Copiar Tradução</span>
+          </button>
+          <button onclick="appTranslator.retranslate()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-white hover:bg-sky-50 text-slate-700 border border-sky-200 transition flex items-center gap-1.5 shadow-sm">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+            <span>Atualizar Tradução</span>
+          </button>
+        </div>
+        <button onclick="appTranslator.closeModal()" class="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 transition">
+          Fechar
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- MODAL: Busca Textual Global no Acervo (SQLite FTS5) -->
+  <div id="globalSearchModal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-start justify-center p-4 pt-16 sm:pt-20 hidden select-none">
+    <div class="glass-panel bg-white/95 rounded-3xl max-w-3xl w-full p-5 sm:p-6 shadow-2xl border border-white/90 space-y-4 animate-fadeIn max-h-[85vh] flex flex-col">
+      
+      <!-- Search Input Header -->
+      <div class="flex items-center gap-3 border-b border-sky-100 pb-3">
+        <div class="p-2.5 rounded-2xl bg-amber-100 text-amber-600 flex-shrink-0">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+        </div>
+        <div class="flex-1 relative">
+          <input type="text" id="globalSearchInput" placeholder="Buscar em todo o acervo (termos, leis, julgados)..." oninput="appSearch.onSearchInput(this.value)" class="w-full pl-3 pr-10 py-2.5 rounded-2xl glass-input text-sm font-semibold text-slate-800 focus:outline-none placeholder:text-slate-400" />
+          <button onclick="appSearch.clearInput()" id="btnClearSearchInput" class="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 hidden">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+          </button>
+        </div>
+        <button onclick="appSearch.closeModal()" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 transition" title="Fechar (ESC)">
+          ESC
+        </button>
+      </div>
+
+      <!-- Filters and Results Metrics -->
+      <div class="flex items-center justify-between gap-2 text-xs">
+        <div class="flex items-center gap-1.5">
+          <button onclick="appSearch.setFilter('all')" id="filterSearchAll" class="search-filter-btn active px-2.5 py-1 rounded-xl bg-sky-600 text-white font-semibold transition">Todos</button>
+          <button onclick="appSearch.setFilter('pdf_page')" id="filterSearchPdf" class="search-filter-btn px-2.5 py-1 rounded-xl bg-slate-100 text-slate-600 font-semibold hover:bg-sky-50 transition">Páginas de PDFs</button>
+          <button onclick="appSearch.setFilter('markdown')" id="filterSearchMd" class="search-filter-btn px-2.5 py-1 rounded-xl bg-slate-100 text-slate-600 font-semibold hover:bg-sky-50 transition">Markdowns</button>
+        </div>
+        <div class="text-[11px] text-slate-500 font-mono" id="searchMetricsLabel">
+          0 resultados
+        </div>
+      </div>
+
+      <!-- Results Scrollable Area -->
+      <div id="globalSearchResultsContainer" class="flex-1 overflow-y-auto custom-scrollbar space-y-2.5 pr-1 min-h-[220px]">
+        <!-- Empty State -->
+        <div id="searchEmptyState" class="py-12 text-center space-y-2 text-slate-400">
+          <svg class="w-10 h-10 mx-auto text-sky-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+          <p class="text-xs font-medium">Digite um termo para pesquisar em toda a sua biblioteca de PDFs e Markdowns.</p>
+          <p class="text-[10px] text-slate-400">Índice SQLite FTS5 ultra-rápido com correspondência por prefixo e ranqueamento BM25.</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- MODAL: Termos de Uso e Política de Privacidade (Bloqueante) -->
+  <div id="termsModal" class="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-center justify-center p-4 hidden select-none">
+    <div class="glass-panel bg-white rounded-3xl max-w-2xl w-full p-6 sm:p-8 shadow-2xl border border-sky-100 space-y-4 animate-fadeIn relative">
+      
+      <!-- Icon & Header -->
+      <div class="text-center space-y-2">
+        <div class="w-12 h-12 mx-auto rounded-2xl bg-gradient-to-br from-sky-600 to-blue-700 text-white flex items-center justify-center shadow-lg shadow-sky-500/25">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+        </div>
+        <h2 class="text-base font-extrabold text-slate-900 tracking-tight">Termos de Uso e Política de Privacidade</h2>
+        <p class="text-[11px] text-slate-500 max-w-md mx-auto leading-relaxed">
+          Leia integralmente os termos de uso locais e as políticas de proteção de dados antes de prosseguir com o aplicativo.
+        </p>
+      </div>
+
+      <!-- Scrollable Text Area -->
+      <div id="termsScrollArea" class="overflow-y-auto max-h-[280px] p-4 bg-slate-50 border border-slate-200 rounded-2xl text-slate-600 leading-relaxed space-y-3 font-normal text-[11px] select-text">
+        <p class="font-bold text-center text-slate-800 text-xs">TERMOS DE USO E POLÍTICA DE PRIVACIDADE — NEXOJURIS</p>
+        <p class="text-center text-slate-500 text-[10px]">(Última atualização: Agosto de 2026)</p>
+        
+        <div class="space-y-1">
+          <p class="font-bold text-slate-800">1. ACEITAÇÃO FORMAL E VINCULAÇÃO JURÍDICA</p>
+          <p>Ao clicar em "Li e Aceito os Termos", você ("Usuário") celebra um contrato vinculante com a titularidade do NexoJuris, declarando plena capacidade civil (art. 104 do Código Civil Brasileiro) e concordância integral com as cláusulas deste instrumento. O aceite formal é condição indispensável e bloqueante para qualquer uso ou ativação do software.</p>
+        </div>
+
+        <div class="space-y-1">
+          <p class="font-bold text-slate-800">2. NATUREZA DO SERVIÇO E CÓDIGO DE DEFESA DO CONSUMIDOR (CDC)</p>
+          <p>O NexoJuris é um aplicativo desktop distribuído como ferramenta de produtividade, voltado à conversão, visualização, anotação e estruturação de documentos PDF para Markdown via processamento local. Nos termos da Lei nº 8.078/1990 (CDC), o software é disponibilizado com transparência e clareza sobre suas funcionalidades. O usuário reconhece que as rotinas de OCR e estruturação automatizada constituem obrigações de meio, devendo o operador conferir a fidelidade técnica do texto extraído.</p>
+        </div>
+
+        <div class="space-y-1">
+          <p class="font-bold text-slate-800">3. PRIVACIDADE, DADOS PESSOAIS E LGPD (LEI Nº 13.709/2018)</p>
+          <p><strong>• Processamento 100% Local:</strong> Todo o processamento de arquivos PDF, imagens, banco de dados SQLite FTS5 e extrações por OCR ocorre estritamente dentro da memória e disco do computador do usuário, sem transmissão de arquivos para servidores externos ou nuvem.</p>
+          <p><strong>• Coleta Mínima:</strong> O aplicativo não coleta, não armazena e não comercializa dados pessoais dos documentos lidos. A impressão digital de hardware (Machine ID) gerada na máquina destina-se unicamente ao controle de licenciamento do software.</p>
+          <p><strong>• Serviços Opcionais de Terceiros:</strong> Caso o usuário acione recursos de tradução ou síntese de voz (TTS), apenas o trecho de texto selecionado é transitoriamente processado pelas ferramentas de rede correspondentes, sem armazenamento de logs ou perfis de usuário pelo NexoJuris.</p>
+        </div>
+
+        <div class="space-y-1">
+          <p class="font-bold text-slate-800">4. PROPRIEDADE INTELECTUAL E ANTIPIRATARIA</p>
+          <p>O software NexoJuris, incluindo código-fonte, arquitetura, algoritmos heurísticos, identidade visual e banco de dados, é protegido pela Lei de Direitos Autorais (Lei nº 9.610/1998) e pela Lei do Software (Lei nº 9.609/1998).</p>
+          <p>É expressamente vedado: Descompilar, realizar engenharia reversa, violar a assinatura criptográfica de licença (HMAC-SHA256), gerar chaves não autorizadas, redistribuir cópias modificadas ou remover avisos de direitos autorais.</p>
+          <p><strong>Consequências Penais e Cíveis:</strong> A violação de direitos autorais de programa de computador constitui crime tipificado no art. 12 da Lei nº 9.609/1998 (pena de detenção ou reclusão de 1 a 4 anos e multa), além da apuração de perdas e danos e indenizações cominatórias no âmbito cível (art. 102 e seguintes da Lei nº 9.610/1998 e arts. 186 e 927 do Código Civil).</p>
+        </div>
+
+        <div class="space-y-1">
+          <p class="font-bold text-slate-800">5. LIMITAÇÃO DE RESPONSABILIDADE</p>
+          <p>O NexoJuris é fornecido no estado em que se encontra ("as is"). O titular não se responsabiliza por perdas de prazos processuais, decisões tomadas com base em extrações não revisadas, adulteração indevida de arquivos ou incompatibilidades de hardware/software de terceiros.</p>
+        </div>
+
+        <div class="space-y-1">
+          <p class="font-bold text-slate-800">6. FORO DE ELEIÇÃO</p>
+          <p>Para dirimir quaisquer controvérsias decorrentes deste Termo de Uso e da utilização do software, fica eleito com exclusão de qualquer outro, por mais privilegiado que seja, o Foro da Comarca de Maceió, Estado de Alagoas, Brasil.</p>
+        </div>
+      </div>
+
+      <!-- Scroll Requirement Notice -->
+      <div id="termsScrollNotice" class="text-center text-[10px] text-amber-600 font-semibold bg-amber-50 border border-amber-100 p-2 rounded-xl">
+        Por favor, role os termos de uso até o fim para liberar as opções de consentimento.
+      </div>
+
+      <!-- Agreement Checkbox -->
+      <div class="flex items-start gap-2.5 p-1 select-none">
+        <input type="checkbox" id="chkAcceptTerms" disabled class="w-4 h-4 rounded text-sky-600 focus:ring-sky-500 border-slate-300 mt-0.5 cursor-not-allowed" />
+        <label for="chkAcceptTerms" class="text-[11px] font-semibold text-slate-500 cursor-not-allowed" id="lblAcceptTerms">
+          Declaro que li, compreendi e concordo integralmente com os Termos de Uso e Política de Privacidade do NexoJuris.
+        </label>
+      </div>
+
+      <!-- Action Button -->
+      <div class="pt-1">
+        <button id="btnAcceptTerms" disabled onclick="appTerms.confirmAcceptance()" class="w-full py-3 rounded-2xl font-bold text-xs bg-slate-200 text-slate-400 cursor-not-allowed transition flex items-center justify-center gap-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>
+          <span>Aceitar e Prosseguir</span>
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- MODAL: Ativação do Software (Hardware Node-Locking) -->
+  <div id="activationModal" class="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-center justify-center p-4 hidden select-none">
+    <div class="glass-panel bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl border border-sky-100 space-y-5 animate-fadeIn relative">
+      
+      <!-- Top Brand & Lock Icon Header -->
+      <div class="text-center space-y-2">
+        <div class="w-14 h-14 mx-auto rounded-3xl bg-gradient-to-br from-amber-500 to-amber-600 text-white flex items-center justify-center shadow-lg shadow-amber-500/30">
+          <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+        </div>
+        <h2 class="text-lg font-extrabold text-slate-900 tracking-tight">Ativação da Licença NexoJuris</h2>
+        <p class="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
+          Para liberar o acesso comercial offline neste computador, informe sua Chave de Ativação vinculada ao hardware.
+        </p>
+      </div>
+
+      <!-- Machine ID Field with Copy Button -->
+      <div class="space-y-1.5">
+        <label class="block text-xs font-bold text-slate-700">Código da Máquina (Machine ID)</label>
+        <div class="flex items-center gap-2">
+          <input type="text" id="activationMachineId" readonly class="flex-1 p-2.5 rounded-2xl font-mono text-xs font-bold text-sky-900 bg-sky-50/80 border border-sky-200 focus:outline-none select-all" value="Carregando..." />
+          <button onclick="appLicense.copyMachineId()" class="px-3.5 py-2.5 rounded-2xl bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 font-bold text-xs transition flex items-center gap-1.5 shadow-sm">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"></path></svg>
+            <span>Copiar</span>
+          </button>
+        </div>
+        <p class="text-[11px] text-slate-400">
+          Envie o Código da Máquina ao suporte ou administrador para receber sua chave de ativação vitalícia.
+        </p>
+      </div>
+
+      <!-- Activation Key Input -->
+      <div class="space-y-1.5">
+        <label class="block text-xs font-bold text-slate-700">Chave de Ativação (Activation Key) *</label>
+        <input type="text" id="inputActivationKey" placeholder="ACT-XXXX-XXXX-XXXX-XXXX" onkeydown="if(event.key==='Enter') appLicense.submitActivation()" class="w-full p-3 rounded-2xl glass-input font-mono text-xs font-bold text-slate-800 focus:outline-none placeholder:text-slate-400 tracking-wider uppercase" />
+      </div>
+
+      <!-- Status / Alert Message Container -->
+      <div id="activationAlertBox" class="p-3 rounded-2xl text-xs font-semibold hidden animate-fadeIn"></div>
+
+      <!-- Submit Activation Button -->
+      <div class="pt-2">
+        <button onclick="appLicense.submitActivation()" id="btnSubmitActivation" class="w-full py-3 rounded-2xl font-bold text-xs bg-gradient-to-r from-sky-600 to-blue-700 hover:from-sky-500 hover:to-blue-600 text-white shadow-lg shadow-sky-500/25 transition flex items-center justify-center gap-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>
+          <span>Ativar NexoJuris Agora</span>
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Main JavaScript client logic -->
+  <script src="app.js"></script>
+</body>
+</html>

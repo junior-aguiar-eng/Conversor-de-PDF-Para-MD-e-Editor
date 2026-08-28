@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import os
+import logging
 import shutil
 import time
 import traceback
@@ -11,6 +11,34 @@ from pathlib import Path
 from constants import MAX_PAGE_COUNT
 from markdown_utils import HeadingProfile, finalize_markdown, output_paths
 from models import ConversionFailure, ConversionResult
+from ocr_engine import is_scanned_page, ocr_page_to_markdown
+
+logger = logging.getLogger(__name__)
+
+
+def _patch_pymupdf4llm_md_path() -> None:
+    """Garante que o salvamento de imagens do PyMuPDF4LLM utilize caminhos absolutos seguros no Windows."""
+    try:
+        import pymupdf4llm.helpers.utils as utils
+
+        if not getattr(utils, "_nexojuris_patched", False):
+
+            def safe_md_path(folder: str, filename: str) -> tuple[str, str]:
+                base = Path(folder).expanduser().resolve() if folder.strip() else Path.cwd()
+                base.mkdir(parents=True, exist_ok=True)
+                full_path = base / Path(filename).name
+                try:
+                    rel = full_path.relative_to(base.parent)
+                    md_ref = rel.as_posix()
+                except ValueError:
+                    md_ref = full_path.as_posix()
+                clean_md_ref = md_ref.replace("(", "-").replace(")", "-").replace("[", "-").replace("]", "-").replace(" ", "%20")
+                return clean_md_ref, str(full_path)
+
+            utils.md_path = safe_md_path
+            utils._nexojuris_patched = True
+    except Exception as err:
+        logger.debug(f"Aviso ao inicializar patch pymupdf4llm: {err}")
 
 
 def validate_runtime_dependencies() -> None:
@@ -18,16 +46,20 @@ def validate_runtime_dependencies() -> None:
     try:
         import pymupdf4llm  # noqa: F401
     except ImportError as error:
-        raise RuntimeError(
-            "O conversor não está instalado. Execute instalar_no_d.ps1 para preparar o ambiente."
-        ) from error
+        raise RuntimeError("O conversor não está instalado. Execute instalar_no_d.ps1 para preparar o ambiente.") from error
+
+    try:
+        import rapidocr_onnxruntime  # noqa: F401
+    except ImportError as error:
+        raise RuntimeError("O módulo de OCR Local (rapidocr-onnxruntime) não está instalado.") from error
 
 
 class PdfMarkdownConverter:
-    """Conversor único, leve e local para PDFs com texto nativo."""
+    """Conversor inteligente, híbrido e local para PDFs vetoriais e digitalizados (OCR)."""
 
     def __init__(self) -> None:
         validate_runtime_dependencies()
+        _patch_pymupdf4llm_md_path()
         import pymupdf
         import pymupdf4llm
 
@@ -42,26 +74,30 @@ class PdfMarkdownConverter:
         max_chunk_characters: int,
         heading_profile: HeadingProfile = "jurisprudencia",
     ) -> ConversionResult:
-        previous_working_directory = Path.cwd()
-        try:
-            with self._pymupdf.open(source) as document:
-                page_count = document.page_count
-                if page_count > MAX_PAGE_COUNT:
-                    raise ValueError(
-                        f"O PDF tem {page_count:,} páginas. O limite do aplicativo é de "
-                        f"{MAX_PAGE_COUNT:,} páginas."
-                    )
+        with self._pymupdf.open(source) as document:
+            page_count = document.page_count
+            if page_count > MAX_PAGE_COUNT:
+                raise ValueError(f"O PDF tem {page_count:,} páginas. O limite do aplicativo é de {MAX_PAGE_COUNT:,} páginas.")
 
-                output_dir = output_dir.resolve()
-                markdown_path, assets_dir = output_paths(output_dir, source)
-                assets_dir.mkdir(parents=True, exist_ok=True)
-                image_path = assets_dir.relative_to(output_dir).as_posix()
+            output_dir = output_dir.resolve()
+            markdown_path, assets_dir = output_paths(output_dir, source)
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            image_path = str(assets_dir)
 
-                os.chdir(output_dir)
-                # Converte o documento inteiro numa só chamada: os níveis de título
-                # (# / ##) são calculados a partir dos tamanhos de fonte de todas as
-                # páginas, e ficam inconsistentes se cada página for processada isolada.
-                extraction_start = time.perf_counter()
+            extraction_start = time.perf_counter()
+
+            # 1. Identifica se há páginas escaneadas/digitalizadas no documento
+            scanned_pages: set[int] = set()
+            try:
+                for page in document:
+                    if is_scanned_page(page):
+                        scanned_pages.add(page.number)
+            except Exception as err:
+                logger.debug(f"Detecção de páginas escaneadas ignorada: {err}")
+
+            # 2. Estratégia de Extração Inteligente
+            if not scanned_pages:
+                # Todas as páginas são vetoriais nativas -> extração global direta
                 markdown = self._to_markdown(
                     document,
                     use_ocr=False,
@@ -71,17 +107,59 @@ class PdfMarkdownConverter:
                     header=False,
                     footer=False,
                 )
-                extraction_seconds = time.perf_counter() - extraction_start
-        finally:
-            os.chdir(previous_working_directory)
+            elif len(scanned_pages) == page_count:
+                # Documento 100% digitalizado -> aplica OCR em todas as páginas
+                page_markdowns: list[str] = []
+                for page in document:
+                    page_text = ocr_page_to_markdown(page, dpi=200)
+                    if page_text.strip():
+                        page_markdowns.append(page_text)
+                markdown = "\n\n---\n\n".join(page_markdowns)
+            else:
+                # PDF Híbrido: processa página a página aplicando OCR apenas nas digitalizadas
+                page_markdowns = []
+                for page in document:
+                    if page.number in scanned_pages:
+                        page_text = ocr_page_to_markdown(page, dpi=200)
+                    else:
+                        try:
+                            page_text = self._to_markdown(
+                                document,
+                                pages=[page.number],
+                                use_ocr=False,
+                                force_ocr=False,
+                                write_images=True,
+                                image_path=image_path,
+                                header=False,
+                                footer=False,
+                            )
+                        except Exception:
+                            page_text = page.get_text("text")
+
+                    if page_text and page_text.strip():
+                        page_markdowns.append(page_text.strip())
+
+                markdown = "\n\n---\n\n".join(page_markdowns)
+
+            # 3. Fallback de contingência caso o texto extraído ainda seja insuficiente
+            if len(markdown.strip()) < 40:
+                try:
+                    fallback_markdowns: list[str] = []
+                    for page in document:
+                        page_text = ocr_page_to_markdown(page, dpi=200)
+                        if page_text.strip():
+                            fallback_markdowns.append(page_text)
+                    if fallback_markdowns:
+                        markdown = "\n\n---\n\n".join(fallback_markdowns)
+                except Exception as err:
+                    logger.warning(f"Fallback OCR ignorado: {err}")
+
+            extraction_seconds = time.perf_counter() - extraction_start
+
         asset_count = sum(1 for item in assets_dir.rglob("*") if item.is_file())
         if asset_count == 0:
-            # Só removemos a subpasta própria deste arquivo. A pasta "images/"
-            # pai é compartilhada por todo o lote: em conversão paralela,
-            # outro processo pode estar criando sua própria subpasta ali no
-            # mesmo instante, e apagar o pai causaria uma corrida entre
-            # processos (arquivo "sumiu" no meio de uma operação de outro).
-            shutil.rmtree(assets_dir)
+            shutil.rmtree(assets_dir, ignore_errors=True)
+
         return finalize_markdown(
             source,
             markdown_path,
