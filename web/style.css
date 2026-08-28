@@ -617,9 +617,28 @@ code, pre, .font-mono {
 }
 
 /* Permite seleção de texto apenas nas áreas de leitura */
-.markdown-body, #snippetTextArea, #pdfStageContainer .text-selectable, #transOriginalText, #transResultText {
+.markdown-body, #snippetTextArea, #pdfStageContainer .text-selectable, #transOriginalText, #transResultText, #manualContentArea {
   user-select: text !important;
   -webkit-user-select: text !important;
+}
+
+/* Central de Ajuda - Estilos do Manual */
+.manual-nav-btn {
+  transition: all 0.2s ease;
+}
+.manual-nav-btn:hover {
+  background-color: rgba(241, 245, 249, 0.9);
+}
+.manual-nav-btn.active {
+  background-color: rgba(224, 242, 254, 0.9);
+  color: #0369a1;
+  font-weight: 700;
+}
+.manual-section {
+  scroll-margin-top: 10px;
+}
+#manualContentArea {
+  scroll-behavior: smooth;
 }
 
 

@@ -80,9 +80,21 @@
       
       <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6 relative z-10">
         <div class="space-y-2">
-          <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-100/80 border border-sky-200/80 text-sky-800 text-xs font-semibold tracking-wide shadow-sm">
-            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span id="appVersionBadge">MOTOR NATIVO LOCAL • OCR ONNX INTEGRADO • SEM TESSERACT EXTERNO</span>
+          <div class="flex flex-wrap items-center justify-between gap-4">
+            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-100/80 border border-sky-200/80 text-sky-800 text-[10px] sm:text-xs font-semibold tracking-wide shadow-sm">
+              <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span id="appVersionBadge">MOTOR NATIVO LOCAL • OCR ONNX INTEGRADO • SEM TESSERACT EXTERNO</span>
+            </div>
+            
+            <div class="flex items-center gap-2">
+              <button onclick="appManual.open()" class="px-3 py-1 rounded-full bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 font-bold text-[10px] sm:text-xs transition flex items-center gap-1.5 shadow-sm">
+                <svg class="w-3.5 h-3.5 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
+                <span>Manual Completo <kbd class="hidden sm:inline font-mono bg-sky-100 text-sky-800 px-1 rounded text-[9px]">F1</kbd></span>
+              </button>
+              <button onclick="appWelcome.open()" title="Guia de Boas-Vindas" class="w-6 h-6 rounded-full bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 font-bold text-xs transition flex items-center justify-center shadow-sm">
+                <span>?</span>
+              </button>
+            </div>
           </div>
           
           <div class="flex items-center gap-3.5 pt-1">
@@ -1272,6 +1284,284 @@
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>
           <span>Ativar NexoJuris Agora</span>
         </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- MODAL: Guia de Boas-Vindas (Welcome Hub) -->
+  <div id="welcomeModal" class="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-45 flex items-center justify-center p-4 hidden select-none">
+    <div class="glass-panel bg-white rounded-3xl max-w-xl w-full p-6 sm:p-8 shadow-2xl border border-sky-100 space-y-5 animate-fadeIn relative">
+      
+      <!-- Close button on top-right -->
+      <button onclick="appWelcome.close()" class="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+      </button>
+
+      <!-- Header -->
+      <div class="text-center space-y-2">
+        <div class="w-12 h-12 mx-auto rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-700 text-white flex items-center justify-center shadow-lg shadow-emerald-500/25">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"></path></svg>
+        </div>
+        <h2 class="text-base font-extrabold text-slate-900 tracking-tight">Bem-vindo ao NexoJuris!</h2>
+        <p class="text-[11px] text-slate-500 max-w-sm mx-auto leading-relaxed">
+          Descubra como otimizar seu fluxo fluxo local com nossos principais recursos.
+        </p>
+      </div>
+
+      <!-- Navigation Pills -->
+      <div class="flex border-b border-slate-100 text-xs font-semibold gap-1.5 pb-0.5">
+        <button id="welcomeTabBtn1" onclick="appWelcome.switchTab(1)" class="flex-1 pb-2.5 text-center border-b-2 border-sky-600 text-sky-600 transition-all focus:outline-none">
+          Conversão & MD
+        </button>
+        <button id="welcomeTabBtn2" onclick="appWelcome.switchTab(2)" class="flex-1 pb-2.5 text-center border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition-all focus:outline-none">
+          Leitor & OCR
+        </button>
+        <button id="welcomeTabBtn3" onclick="appWelcome.switchTab(3)" class="flex-1 pb-2.5 text-center border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition-all focus:outline-none">
+          Acervo & Segurança
+        </button>
+      </div>
+
+      <!-- Content Areas -->
+      <div class="min-h-[160px] text-xs text-slate-600 leading-relaxed py-1">
+        <!-- Tab 1 -->
+        <div id="welcomeTabContent1" class="space-y-4">
+          <div class="flex items-start gap-3">
+            <span class="p-2 rounded-xl bg-sky-50 text-sky-600 flex-shrink-0">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+            </span>
+            <div>
+              <p class="font-bold text-slate-800 text-[11px]">Motor de Conversão Híbrida Inteligente</p>
+              <p class="text-[10px] text-slate-500 leading-normal">O NexoJuris diferencia automaticamente páginas vetoriais nativas de páginas escaneadas/digitalizadas (OCR), processando cada uma sob medida sem perda de tempo.</p>
+            </div>
+          </div>
+          <div class="flex items-start gap-3">
+            <span class="p-2 rounded-xl bg-sky-50 text-sky-600 flex-shrink-0">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"></path></svg>
+            </span>
+            <div>
+              <p class="font-bold text-slate-800 text-[11px]">Perfis de Normalização e Markdown</p>
+              <p class="text-[10px] text-slate-500 leading-normal">Escolha o perfil <strong>Jurisprudência</strong> ou <strong>Material de Curso</strong> para normalizar títulos e limpar ruídos de OCR, acompanhando em tempo real na aba Visualizador.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 2 -->
+        <div id="welcomeTabContent2" class="space-y-4 hidden">
+          <div class="flex items-start gap-3">
+            <span class="p-2 rounded-xl bg-sky-50 text-sky-600 flex-shrink-0">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+            </span>
+            <div>
+              <p class="font-bold text-slate-800 text-[11px]">Super Leitor & Renderização HQ</p>
+              <p class="text-[10px] text-slate-500 leading-normal">Leitura fluida com canetas coloridas, marca-texto e cards post-it/alerta embutidos. Salve anotações nativas diretamente no PDF original sem quebrar assinaturas.</p>
+            </div>
+          </div>
+          <div class="flex items-start gap-3">
+            <span class="p-2 rounded-xl bg-sky-50 text-sky-600 flex-shrink-0">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M4 8h16M4 16h16"></path></svg>
+            </span>
+            <div>
+              <p class="font-bold text-slate-800 text-[11px]">OCR de Recorte / Snippet Instantâneo</p>
+              <p class="text-[10px] text-slate-500 leading-normal">Selecione uma área do PDF para extrair o texto de forma imediata (com OCR local) e salve a imagem do trecho na Área de Transferência.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 3 -->
+        <div id="welcomeTabContent3" class="space-y-4 hidden">
+          <div class="flex items-start gap-3">
+            <span class="p-2 rounded-xl bg-sky-50 text-sky-600 flex-shrink-0">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+            </span>
+            <div>
+              <p class="font-bold text-slate-800 text-[11px]">Busca no Acervo (SQLite FTS5 + BM25)</p>
+              <p class="text-[10px] text-slate-500 leading-normal">Todos os seus documentos e Markdowns são auto-indexados em segundo plano. Pesquise em toda a biblioteca e receba trechos destacados com relevância.</p>
+            </div>
+          </div>
+          <div class="flex items-start gap-3">
+            <span class="p-2 rounded-xl bg-sky-50 text-sky-600 flex-shrink-0">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+            </span>
+            <div>
+              <p class="font-bold text-slate-800 text-[11px]">Segurança Máxima & Criptografia AES-256</p>
+              <p class="text-[10px] text-slate-500 leading-normal">Remova ou adicione senhas de proteção em PDFs locais. Todo o ecossistema roda de forma 100% offline, garantindo total conformidade com a LGPD.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action Button -->
+      <div class="pt-2">
+        <button onclick="appWelcome.close()" class="w-full py-3 rounded-2xl font-bold text-xs bg-gradient-to-r from-sky-600 to-blue-700 hover:from-sky-500 hover:to-blue-600 text-white shadow-lg shadow-sky-500/25 transition flex items-center justify-center gap-2">
+          <span>Começar a Usar Agora</span>
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- MODAL: Central de Ajuda e Documentação (Manual Completo) -->
+  <div id="manualModal" class="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-45 flex items-center justify-center p-4 hidden select-none">
+    <div class="glass-panel bg-white rounded-3xl max-w-5xl w-full h-[85vh] flex flex-col shadow-2xl border border-sky-100 animate-fadeIn relative overflow-hidden">
+      
+      <!-- Top Action Bar Header -->
+      <div class="p-4 sm:p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-slate-50/60 backdrop-blur-sm">
+        <div class="flex items-center gap-2.5">
+          <div class="w-9 h-9 rounded-xl bg-sky-600 text-white flex items-center justify-center shadow-md">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
+          </div>
+          <div>
+            <h2 class="text-sm font-extrabold text-slate-900 tracking-tight">Manual Completo & Central de Ajuda</h2>
+            <p class="text-[10px] text-slate-400">NexoJuris v1.3.2 • Guia de Operação e Blindagem Local</p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <!-- Search Box -->
+          <div class="relative w-44 sm:w-56">
+            <input type="text" id="manualSearchInput" oninput="appManual.filterContent()" placeholder="Buscar no manual..." class="w-full pl-8 pr-3 py-1.5 rounded-xl border border-slate-200 text-[11px] focus:outline-none focus:border-sky-400 bg-white" />
+            <svg class="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+          </div>
+
+          <!-- MD View Toggle Button -->
+          <button id="btnToggleManualView" onclick="appManual.toggleViewMode()" class="p-1.5 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-600 transition flex items-center justify-center gap-1 text-[10px] font-bold" title="Alternar entre Visualização Formatada e Markdown Puro">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"></path></svg>
+            <span id="txtToggleManualView">Markdown Puro</span>
+          </button>
+
+          <!-- Print Button -->
+          <button onclick="appManual.printManual()" class="p-1.5 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-600 transition flex items-center justify-center" title="Imprimir / Salvar em PDF">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 00-2 2h2m2 4h10a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
+          </button>
+
+          <!-- Close Modal Button -->
+          <button onclick="appManual.close()" class="p-1.5 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-600 transition flex items-center justify-center">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Main Layout Body -->
+      <div class="flex-1 flex overflow-hidden">
+        
+        <!-- Sidebar Navigation (Chapters Index) -->
+        <aside class="w-56 border-r border-slate-100 p-4 bg-slate-50/50 overflow-y-auto space-y-1 select-none flex-shrink-0">
+          <span class="block text-[10px] font-bold text-slate-400 tracking-wider uppercase mb-2 pl-2">Capítulos</span>
+          <button id="manualNav-cap1" onclick="appManual.scrollToChapter('cap1')" class="manual-nav-btn w-full text-left px-2 py-1.5 rounded-xl text-[11px] font-bold text-sky-700 bg-sky-50 flex items-center gap-1.5 transition">
+            <span class="w-1.5 h-1.5 rounded-full bg-sky-500"></span>
+            Capítulo 1: Introdução
+          </button>
+          <button id="manualNav-cap2" onclick="appManual.scrollToChapter('cap2')" class="manual-nav-btn w-full text-left px-2 py-1.5 rounded-xl text-[11px] font-semibold text-slate-600 hover:bg-slate-100 flex items-center gap-1.5 transition">
+            <span class="w-1.5 h-1.5 rounded-full bg-slate-300"></span>
+            Capítulo 2: Conversão
+          </button>
+          <button id="manualNav-cap3" onclick="appManual.scrollToChapter('cap3')" class="manual-nav-btn w-full text-left px-2 py-1.5 rounded-xl text-[11px] font-semibold text-slate-600 hover:bg-slate-100 flex items-center gap-1.5 transition">
+            <span class="w-1.5 h-1.5 rounded-full bg-slate-300"></span>
+            Capítulo 3: Visualizador
+          </button>
+          <button id="manualNav-cap4" onclick="appManual.scrollToChapter('cap4')" class="manual-nav-btn w-full text-left px-2 py-1.5 rounded-xl text-[11px] font-semibold text-slate-600 hover:bg-slate-100 flex items-center gap-1.5 transition">
+            <span class="w-1.5 h-1.5 rounded-full bg-slate-300"></span>
+            Capítulo 4: Super Leitor
+          </button>
+          <button id="manualNav-cap5" onclick="appManual.scrollToChapter('cap5')" class="manual-nav-btn w-full text-left px-2 py-1.5 rounded-xl text-[11px] font-semibold text-slate-600 hover:bg-slate-100 flex items-center gap-1.5 transition">
+            <span class="w-1.5 h-1.5 rounded-full bg-slate-300"></span>
+            Capítulo 5: Acervo & FTS5
+          </button>
+          <button id="manualNav-cap6" onclick="appManual.scrollToChapter('cap6')" class="manual-nav-btn w-full text-left px-2 py-1.5 rounded-xl text-[11px] font-semibold text-slate-600 hover:bg-slate-100 flex items-center gap-1.5 transition">
+            <span class="w-1.5 h-1.5 rounded-full bg-slate-300"></span>
+            Capítulo 6: Segurança
+          </button>
+        </aside>
+
+        <!-- Chapter Contents Area -->
+        <div id="manualContentArea" class="flex-1 p-6 sm:p-8 overflow-y-auto custom-scrollbar space-y-8 scroll-smooth select-text bg-white">
+          
+          <!-- Structured HTML View -->
+          <div id="manualHtmlView" class="space-y-8">
+            
+            <!-- Capítulo 1 -->
+            <section id="manualSec-cap1" class="manual-section space-y-3">
+              <h3 class="text-sm font-extrabold text-slate-900 border-b border-slate-100 pb-1.5">Capítulo 1: Introdução, Arquitetura Local e Privacidade</h3>
+              <p class="text-[11px] text-slate-600 leading-relaxed">
+                O <strong>NexoJuris</strong> foi concebido sobre um pilar de <strong>privacidade absoluta</strong> e segurança local. Ao contrário de conversores tradicionais na nuvem, todas as operações (conversão de documentos, indexação textual em banco SQLite, reconhecimento de caracteres OCR e renderização de PDF) ocorrem estritamente dentro da memória física e disco rígido do seu computador pessoal.
+              </p>
+              <div class="p-3 rounded-2xl bg-sky-50 border border-sky-100 text-[11px] text-sky-800 space-y-1">
+                <p class="font-bold">💡 Dica de Privacidade:</p>
+                <p>Nenhum dado ou documento PDF lido pelo software é enviado para a nuvem. Suas petições, contratos e arquivos confidenciais permanecem 100% sob seu controle físico.</p>
+              </div>
+            </section>
+
+            <!-- Capítulo 2 -->
+            <section id="manualSec-cap2" class="manual-section space-y-3">
+              <h3 class="text-sm font-extrabold text-slate-900 border-b border-slate-100 pb-1.5">Capítulo 2: Motor de Conversão (Jurisprudência vs Curso, Híbrido)</h3>
+              <p class="text-[11px] text-slate-600 leading-relaxed">
+                O motor nativo local do NexoJuris possui um processador híbrido que inspeciona o arquivo página por página. Se a página contém texto vetorial limpo, ele é extraído em menos de um milissegundo. Se for detectada uma imagem ou documento escaneado/digitalizado, o motor aciona o <strong>OCR Local integrado</strong> na resolução recomendada.
+              </p>
+              <p class="text-[11px] text-slate-600 leading-relaxed">
+                Você pode refinar a estruturação automática escolhendo entre os seguintes perfis:
+              </p>
+              <ul class="list-disc pl-5 space-y-1 text-[11px] text-slate-600">
+                <li><strong>Jurisprudência:</strong> Otimizado para STJ/STF. Estrutura ramos do direito em títulos de nível 1 (#), comentários ou ementas em nível 2 (##) e artigos ou resoluções em nível 3 (###).</li>
+                <li><strong>Material de Curso:</strong> Remove cabeçalhos repetitivos ou falsos títulos inseridos pelo OCR. Organiza tópicos em numerações multiníveis (ex: 1., 1.1., A., a)).</li>
+              </ul>
+            </section>
+
+            <!-- Capítulo 3 -->
+            <section id="manualSec-cap3" class="manual-section space-y-3">
+              <h3 class="text-sm font-extrabold text-slate-900 border-b border-slate-100 pb-1.5">Capítulo 3: Visualizador de Markdown e Integração com Windows</h3>
+              <p class="text-[11px] text-slate-600 leading-relaxed">
+                Ao finalizar a conversão, o arquivo Markdown gerado pode ser lido imediatamente na aba <strong>Visualizador</strong>. Ela conta com realce de sintaxe elegante, exibição de imagens locais extraídas dos PDFs e layout confortável para leitura de petições.
+              </p>
+              <div class="p-3 rounded-2xl bg-amber-50 border border-amber-100 text-[11px] text-amber-800 space-y-1">
+                <p class="font-bold">⚠️ Integração com o Windows Explorer:</p>
+                <p>O instalador do NexoJuris configura o utilitário no menu de envio rápido do Windows. Basta clicar com o botão direito sobre qualquer PDF no Windows Explorer e escolher <strong>"Enviar para -> NexoJuris"</strong> para abrir e processar o arquivo instantaneamente.</p>
+              </div>
+            </section>
+
+            <!-- Capítulo 4 -->
+            <section id="manualSec-cap4" class="manual-section space-y-3">
+              <h3 class="text-sm font-extrabold text-slate-900 border-b border-slate-100 pb-1.5">Capítulo 4: Super Leitor, Snippet/OCR, Voz e Tradutor</h3>
+              <p class="text-[11px] text-slate-600 leading-relaxed">
+                A aba <strong>Super Leitor</strong> carrega PDFs grandes em alta resolução. Suas ferramentas integradas incluem:
+              </p>
+              <ul class="list-disc pl-5 space-y-1 text-[11px] text-slate-600">
+                <li><strong>Ferramenta de Recorte/Snippet:</strong> Selecione qualquer trecho retangular da página. O NexoJuris executa OCR local no recorte e copia o texto e a imagem do trecho para a área de transferência de uma vez.</li>
+                <li><strong>Anotações e Cards:</strong> Adicione marcações com caneta e marca-texto coloridos, ou insira cards do tipo Post-it, Alerta, Caixa Branca ou Sem Fundo. As anotações são salvas de forma incremental e nativa no PDF.</li>
+                <li><strong>Tradução e Voz (TTS):</strong> Selecione um parágrafo de texto e ouça a leitura em áudio neural ou traduza o texto selecionado em tempo real com processamento local.</li>
+              </ul>
+            </section>
+
+            <!-- Capítulo 5 -->
+            <section id="manualSec-cap5" class="manual-section space-y-3">
+              <h3 class="text-sm font-extrabold text-slate-900 border-b border-slate-100 pb-1.5">Capítulo 5: Acervo Pessoal (Busca Textual SQLite FTS5)</h3>
+              <p class="text-[11px] text-slate-600 leading-relaxed">
+                Sempre que você inspeciona ou converte um PDF no NexoJuris, os dados textuais são indexados de forma transparente no banco de dados local.
+              </p>
+              <p class="text-[11px] text-slate-600 leading-relaxed">
+                Na aba <strong>Acervo</strong>, você pode realizar buscas rápidas. O algoritmo BM25 calcula a relevância e retorna trechos de documentos que coincidem com sua pesquisa, destacando a palavra procurada.
+              </p>
+            </section>
+
+            <!-- Capítulo 6 -->
+            <section id="manualSec-cap6" class="manual-section space-y-3">
+              <h3 class="text-sm font-extrabold text-slate-900 border-b border-slate-100 pb-1.5">Capítulo 6: Criptografia AES-256, Senhas e Licenciamento</h3>
+              <p class="text-[11px] text-slate-600 leading-relaxed">
+                O NexoJuris possui suporte nativo para decodificar PDFs criptografados (armazenando a senha temporariamente na sessão) e para criptografar novos PDFs usando a blindagem robusta <strong>AES-256</strong>.
+              </p>
+              <p class="text-[11px] text-slate-600 leading-relaxed">
+                O licenciamento do produto é controlado de forma local e offline através do <strong>Hardware Node-Locking</strong> (vínculo com o identificador de máquina estável baseado em componentes físicos).
+              </p>
+            </section>
+          </div>
+
+          <!-- Raw Markdown View (Hidden by default) -->
+          <div id="manualMarkdownView" class="hidden">
+            <textarea id="manualMarkdownTextarea" readonly class="w-full h-[65vh] p-4 bg-slate-50 border border-slate-200 rounded-2xl font-mono text-[10px] text-slate-700 focus:outline-none select-all custom-scrollbar"></textarea>
+          </div>
+
+        </div>
+
       </div>
 
     </div>

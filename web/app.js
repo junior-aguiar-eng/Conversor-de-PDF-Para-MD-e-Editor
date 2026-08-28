@@ -936,6 +936,10 @@ document.addEventListener("keydown", (event) => {
   ) {
     event.preventDefault();
   }
+  if (event.key === "F1") {
+    event.preventDefault();
+    appManual.open();
+  }
 });
 
 // ==========================================================================
@@ -3252,6 +3256,7 @@ class LicenseManager {
           if (modal) modal.classList.remove("hidden");
         } else {
           if (modal) modal.classList.add("hidden");
+          setTimeout(() => checkWelcomeGuide(), 150);
         }
       }
     } catch (err) {
@@ -3310,6 +3315,7 @@ class LicenseManager {
           const modal = document.getElementById("activationModal");
           if (modal) modal.classList.add("hidden");
           showToast("NexoJuris Ativado com Sucesso!", "success");
+          setTimeout(() => checkWelcomeGuide(), 150);
         }, 1200);
       } else {
         playBeep("error");
@@ -3427,6 +3433,181 @@ class TermsManager {
   }
 }
 
+class WelcomeManager {
+  constructor() {
+    this.modal = null;
+    this.currentTab = 1;
+  }
+
+  init() {
+    this.modal = document.getElementById("welcomeModal");
+  }
+
+  open() {
+    this.init();
+    if (this.modal) {
+      this.modal.classList.remove("hidden");
+      this.switchTab(1);
+    }
+  }
+
+  close() {
+    this.init();
+    if (this.modal) {
+      this.modal.classList.add("hidden");
+    }
+    localStorage.setItem("has_seen_welcome_guide", "true");
+    playBeep("click");
+  }
+
+  switchTab(tabNum) {
+    this.currentTab = tabNum;
+    for (let i = 1; i <= 3; i++) {
+      const btn = document.getElementById(`welcomeTabBtn${i}`);
+      const content = document.getElementById(`welcomeTabContent${i}`);
+      if (i === tabNum) {
+        if (btn) {
+          btn.className = "flex-1 pb-2.5 text-center border-b-2 border-sky-600 text-sky-600 transition-all focus:outline-none font-bold";
+        }
+        if (content) {
+          content.classList.remove("hidden");
+        }
+      } else {
+        if (btn) {
+          btn.className = "flex-1 pb-2.5 text-center border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition-all focus:outline-none";
+        }
+        if (content) {
+          content.classList.add("hidden");
+        }
+      }
+    }
+    playBeep("click");
+  }
+}
+
+class ManualManager {
+  constructor() {
+    this.modal = null;
+    this.viewMode = "html"; // "html" | "markdown"
+  }
+
+  init() {
+    this.modal = document.getElementById("manualModal");
+  }
+
+  open() {
+    this.init();
+    if (this.modal) {
+      this.modal.classList.remove("hidden");
+      this.viewMode = "html";
+      document.getElementById("manualHtmlView").classList.remove("hidden");
+      document.getElementById("manualMarkdownView").classList.add("hidden");
+      document.getElementById("txtToggleManualView").innerText = "Markdown Puro";
+      this.scrollToChapter("cap1");
+    }
+  }
+
+  close() {
+    this.init();
+    if (this.modal) {
+      this.modal.classList.add("hidden");
+    }
+    playBeep("click");
+  }
+
+  scrollToChapter(chapId) {
+    const el = document.getElementById(`manualSec-${chapId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    // Update active nav button
+    const navButtons = document.querySelectorAll(".manual-nav-btn");
+    navButtons.forEach(btn => {
+      if (btn.id === `manualNav-${chapId}`) {
+        btn.className = "manual-nav-btn w-full text-left px-2 py-1.5 rounded-xl text-[11px] font-bold text-sky-700 bg-sky-50 flex items-center gap-1.5 transition";
+        const dot = btn.querySelector("span");
+        if (dot) dot.className = "w-1.5 h-1.5 rounded-full bg-sky-500";
+      } else {
+        btn.className = "manual-nav-btn w-full text-left px-2 py-1.5 rounded-xl text-[11px] font-semibold text-slate-600 hover:bg-slate-100 flex items-center gap-1.5 transition";
+        const dot = btn.querySelector("span");
+        if (dot) dot.className = "w-1.5 h-1.5 rounded-full bg-slate-300";
+      }
+    });
+    playBeep("click");
+  }
+
+  toggleViewMode() {
+    const htmlView = document.getElementById("manualHtmlView");
+    const mdView = document.getElementById("manualMarkdownView");
+    const txtLabel = document.getElementById("txtToggleManualView");
+    const textarea = document.getElementById("manualMarkdownTextarea");
+
+    if (this.viewMode === "html") {
+      this.viewMode = "markdown";
+      htmlView.classList.add("hidden");
+      mdView.classList.remove("hidden");
+      txtLabel.innerText = "Modo Formatado";
+      textarea.value = this.getRawMarkdownContent();
+    } else {
+      this.viewMode = "html";
+      htmlView.classList.remove("hidden");
+      mdView.classList.add("hidden");
+      txtLabel.innerText = "Markdown Puro";
+    }
+    playBeep("click");
+  }
+
+  filterContent() {
+    const query = document.getElementById("manualSearchInput").value.toLowerCase().trim();
+    const sections = document.querySelectorAll(".manual-section");
+
+    sections.forEach(sec => {
+      const text = sec.innerText.toLowerCase();
+      if (text.includes(query)) {
+        sec.classList.remove("hidden");
+      } else {
+        sec.classList.add("hidden");
+      }
+    });
+  }
+
+  printManual() {
+    window.print();
+  }
+
+  getRawMarkdownContent() {
+    return `# NexoJuris v1.3.2 - Manual de Instruções
+
+## Capítulo 1: Introdução, Arquitetura Local e Privacidade
+O NexoJuris foi concebido sobre um pilar de privacidade absoluta e segurança local. Ao contrário de conversores tradicionais na nuvem, todas as operações ocorrem estritamente de forma local no seu computador.
+Dica: Nenhum documento é enviado à nuvem, garantindo conformidade total com a LGPD e CDC.
+
+## Capítulo 2: Motor de Conversão (Jurisprudência vs Curso, Híbrido)
+Processador híbrido inteligente que detecta texto vetorial nativo e aciona OCR local apenas em imagens ou páginas digitalizadas.
+- Perfil Jurisprudência: Estruturação ideal para STF/STJ.
+- Perfil Material de Curso: Limpeza de ruídos e títulos espúrios de OCR.
+
+## Capítulo 3: Visualizador de Markdown e Integração com Windows
+O arquivo Markdown gerado pode ser lido imediatamente com realce de sintaxe na aba correspondente. A integração com o Windows permite clicar com o botão direito no arquivo PDF no Explorer e escolher "Enviar para -> NexoJuris".
+
+## Capítulo 4: Super Leitor, Snippet/OCR, Voz e Tradutor
+Visualize PDFs grandes em alta resolução. Adicione notas, canetas e marca-textos salvas nativamente no arquivo. Use o Snippet de Recorte para realizar OCR local de área e tradução ou síntese de voz rápida de parágrafos.
+
+## Capítulo 5: Acervo Pessoal (Busca Textual SQLite FTS5)
+Banco de dados indexado localmente. Pesquisa textual instantânea usando algoritmo BM25 com destaque do termo procurado em todos os documentos convertidos ou inspecionados.
+
+## Capítulo 6: Criptografia AES-256, Senhas e Licenciamento
+Proteção e desproteção de PDFs locais com criptografia AES-256 comercial. O licenciamento é vinculado ao hardware (Node-locking) 100% offline.`;
+  }
+}
+
+function checkWelcomeGuide() {
+  const hasSeen = localStorage.getItem("has_seen_welcome_guide");
+  if (!hasSeen) {
+    appWelcome.open();
+  }
+}
+
 // Instâncias Globais
 const appSelection = new SelectionController();
 const appTts = new NeuralTtsController();
@@ -3434,6 +3615,8 @@ const appTranslator = new TranslatorController();
 const appSearch = new GlobalSearchController();
 const appLicense = new LicenseManager();
 const appTerms = new TermsManager();
+const appWelcome = new WelcomeManager();
+const appManual = new ManualManager();
 
 window.appSelection = appSelection;
 window.appTts = appTts;
@@ -3441,5 +3624,7 @@ window.appTranslator = appTranslator;
 window.appSearch = appSearch;
 window.appLicense = appLicense;
 window.appTerms = appTerms;
+window.appWelcome = appWelcome;
+window.appManual = appManual;
 
 
