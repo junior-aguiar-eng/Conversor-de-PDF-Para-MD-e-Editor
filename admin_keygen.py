@@ -1,46 +1,113 @@
-"""Utilitário Administrativo Gerador de Chaves de Ativação do NexoJuris.
+"""Emissor administrativo de licenças Ed25519 do NexoJuris.
 
 USO EXCLUSIVO DO ADMINISTRADOR / DISTRIBUIDOR.
-NÃO DISTRIBUIR ESTE ARQUIVO JUNTO COM O EXECUTÁVEL DO CLIENTE.
+NÃO DISTRIBUIR ESTE ARQUIVO NEM A CHAVE PRIVADA COM O EXECUTÁVEL DO CLIENTE.
 """
 
 from __future__ import annotations
 
+import argparse
+import base64
 import sys
+from pathlib import Path
 
-from licensing import generate_activation_key, get_machine_fingerprint, verify_license_key
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from licensing import license_payload
+
+DEFAULT_PRIVATE_KEY_PATH = Path(__file__).resolve().parent / ".secrets" / "nexojuris_ed25519_private.pem"
 
 
-def main() -> None:
-    print("=" * 60)
-    print("   NEXOJURIS - GERADOR DE CHAVES DE ATIVAÇÃO (KEYGEN)   ")
-    print("=" * 60)
+def generate_keypair(private_key_path: Path) -> str:
+    """Cria a chave privada fora dos artefatos e retorna a chave pública em Base64."""
+    path = private_key_path.expanduser().resolve()
+    if path.exists():
+        raise FileExistsError(f"A chave privada já existe em: {path}")
 
-    if len(sys.argv) > 1:
-        machine_id = sys.argv[1].strip()
-    else:
-        current_mid = get_machine_fingerprint()
-        print(f"\n[Info] Machine ID deste computador: {current_mid}")
-        machine_id = input("\nDigite ou cole o Machine ID do cliente (ex: NXJ-XXXX-XXXX-XXXX-XXXX): ").strip()
+    private_key = Ed25519PrivateKey.generate()
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(private_pem)
 
+    public_bytes = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return base64.b64encode(public_bytes).decode("ascii")
+
+
+def load_private_key(private_key_path: Path) -> Ed25519PrivateKey:
+    path = private_key_path.expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Chave privada não encontrada: {path}")
+
+    loaded = serialization.load_pem_private_key(path.read_bytes(), password=None)
+    if not isinstance(loaded, Ed25519PrivateKey):
+        raise TypeError("O arquivo informado não contém uma chave privada Ed25519.")
+    return loaded
+
+
+def generate_activation_key(machine_id: str, private_key: Ed25519PrivateKey) -> str:
+    """Assina um Machine ID e retorna um token ACT2 versionado."""
+    signature = private_key.sign(license_payload(machine_id))
+    encoded = base64.b32encode(signature).decode("ascii").rstrip("=")
+    grouped = "-".join(encoded[index : index + 8] for index in range(0, len(encoded), 8))
+    return f"ACT2-01-{grouped}"
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Emissor administrativo de licenças NexoJuris.")
+    parser.add_argument("machine_id", nargs="?", help="Machine ID do cliente (NXJ-XXXX-XXXX-XXXX-XXXX).")
+    parser.add_argument(
+        "--private-key",
+        type=Path,
+        default=DEFAULT_PRIVATE_KEY_PATH,
+        help=f"Chave privada Ed25519 (padrão: {DEFAULT_PRIVATE_KEY_PATH}).",
+    )
+    parser.add_argument(
+        "--generate-keypair",
+        action="store_true",
+        help="Cria uma chave privada administrativa nova e imprime a chave pública correspondente.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    if args.generate_keypair:
+        try:
+            public_key_b64 = generate_keypair(args.private_key)
+        except (FileExistsError, OSError) as error:
+            print(f"[Erro] {error}")
+            raise SystemExit(1) from error
+        print(f"Chave privada criada em: {args.private_key.expanduser().resolve()}")
+        print(f"Chave pública Base64: {public_key_b64}")
+        print("Faça backup seguro da chave privada; sua perda impede novas emissões.")
+        return
+
+    machine_id = (args.machine_id or input("Machine ID do cliente: ")).strip().upper()
     if not machine_id:
-        print("\n[Erro] Nenhum Machine ID foi informado.")
-        sys.exit(1)
+        print("[Erro] Nenhum Machine ID foi informado.")
+        raise SystemExit(1)
+    if not machine_id.startswith("NXJ-"):
+        print("[Erro] O Machine ID deve começar com 'NXJ-'.")
+        raise SystemExit(1)
 
-    clean_mid = machine_id.upper()
-    if not clean_mid.startswith("NXJ-"):
-        print("\n[Aviso] O Machine ID informado não possui o prefixo 'NXJ-'. Processando mesmo assim...")
+    try:
+        private_key = load_private_key(args.private_key)
+        activation_key = generate_activation_key(machine_id, private_key)
+    except (FileNotFoundError, OSError, TypeError, ValueError) as error:
+        print(f"[Erro] {error}")
+        raise SystemExit(1) from error
 
-    activation_key = generate_activation_key(clean_mid)
-    is_valid = verify_license_key(clean_mid, activation_key)
-
-    print("\n" + "-" * 60)
-    print(f"Machine ID do Cliente : {clean_mid}")
+    print(f"Machine ID do Cliente : {machine_id}")
     print(f"Chave de Ativação     : {activation_key}")
-    print(f"Assinatura Válida     : {'[OK] SIM' if is_valid else '[FALHA]'}")
-    print("-" * 60)
-    print("\nCopie a Chave de Ativação acima e envie ao cliente.")
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

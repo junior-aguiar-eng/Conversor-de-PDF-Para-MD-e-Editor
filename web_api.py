@@ -35,10 +35,12 @@ from converter import (
 )
 from library_db import LibraryDatabase
 from licensing import (
-    activate_software as lic_activate_software,
+    LicenseRequiredError,
+    is_software_activated,
+    require_software_activation,
 )
 from licensing import (
-    is_software_activated,
+    activate_software as lic_activate_software,
 )
 from markdown_utils import HeadingProfile
 from models import ConversionFailure, ConversionResult, format_duration
@@ -88,6 +90,30 @@ def _parse_color(c: Any, default: tuple[float, float, float] = (1.0, 0.0, 0.0)) 
             except ValueError:
                 return default
     return default
+
+
+def _fit_textbox_rect(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    text: str,
+    *,
+    fontname: str,
+    fontsize: float,
+) -> fitz.Rect | None:
+    """Expande a caixa verticalmente, dentro da página, até o texto caber."""
+    candidate = fitz.Rect(rect)
+    shape = page.new_shape()
+    remaining = shape.insert_textbox(candidate, text, fontname=fontname, fontsize=fontsize, render_mode=0, align=0)
+    if remaining >= 0:
+        return candidate
+
+    candidate.y1 = min(page.rect.y1, candidate.y1 - remaining)
+    if candidate.y1 <= rect.y1:
+        return None
+
+    shape = page.new_shape()
+    remaining = shape.insert_textbox(candidate, text, fontname=fontname, fontsize=fontsize, render_mode=0, align=0)
+    return candidate if remaining >= 0 else None
 
 
 def _safe_close(doc: fitz.Document | None) -> None:
@@ -294,6 +320,16 @@ class BridgeApi:
 
     def start_conversion(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Inicia a conversão em lote em uma thread em segundo plano."""
+        try:
+            require_software_activation()
+        except LicenseRequiredError as error:
+            return {
+                "started": False,
+                "error": str(error),
+                "error_code": "license_required",
+                "machine_id": error.machine_id,
+            }
+
         if self.is_converting:
             return {"started": False, "error": "Uma conversão já está em andamento."}
 
@@ -668,8 +704,17 @@ class BridgeApi:
                         box_w = float(item.get("width", max(300.0, fontsize * 15)))
                         box_h = float(item.get("height", fontsize * 1.5 * (text.count("\n") + 2)))
                         text_rect = fitz.Rect(pt_x, pt_y, pt_x + box_w, pt_y + box_h)
+                        text_rect = _fit_textbox_rect(
+                            page,
+                            text_rect,
+                            text,
+                            fontname=fontname,
+                            fontsize=fontsize,
+                        )
+                        if text_rect is None:
+                            raise ValueError("O texto não cabe na área disponível da página.")
 
-                        page.insert_textbox(
+                        remaining = page.insert_textbox(
                             text_rect,
                             text,
                             fontname=fontname,
@@ -678,6 +723,8 @@ class BridgeApi:
                             render_mode=0,
                             align=0,
                         )
+                        if remaining < 0:
+                            raise RuntimeError("O mecanismo de PDF não confirmou a inserção do texto.")
                         applied_count += 1
                     else:
                         padding_x = 8.0
@@ -703,19 +750,30 @@ class BridgeApi:
                             left_border_color = (0.2, 0.2, 0.2)
                             text_color = _parse_color(item.get("text_color"), default=(0.1, 0.1, 0.1))
 
+                        text_rect = fitz.Rect(
+                            pt_x + padding_x + 2, pt_y + padding_y, pt_x + card_w - padding_x, pt_y + card_h - padding_y
+                        )
+                        fitted_text_rect = _fit_textbox_rect(
+                            page,
+                            text_rect,
+                            text,
+                            fontname=fontname,
+                            fontsize=fontsize,
+                        )
+                        if fitted_text_rect is None:
+                            raise ValueError("O texto não cabe na área disponível da página.")
+
+                        card_rect.y1 += fitted_text_rect.y1 - text_rect.y1
                         page.draw_rect(card_rect, color=None, fill=bg_color, width=0)
                         page.draw_line(
                             fitz.Point(pt_x, pt_y),
-                            fitz.Point(pt_x, pt_y + card_h),
+                            fitz.Point(pt_x, card_rect.y1),
                             color=left_border_color,
                             width=3.5,
                         )
 
-                        text_rect = fitz.Rect(
-                            pt_x + padding_x + 2, pt_y + padding_y, pt_x + card_w - padding_x, pt_y + card_h - padding_y
-                        )
-                        page.insert_textbox(
-                            text_rect,
+                        remaining = page.insert_textbox(
+                            fitted_text_rect,
                             text,
                             fontname=fontname,
                             fontsize=fontsize,
@@ -723,6 +781,8 @@ class BridgeApi:
                             render_mode=0,
                             align=0,
                         )
+                        if remaining < 0:
+                            raise RuntimeError("O mecanismo de PDF não confirmou a inserção do texto.")
                         applied_count += 1
 
             _save_doc_safely(doc, path)
@@ -788,7 +848,7 @@ class BridgeApi:
             _safe_close(doc)
 
     # --------------------------------------------------------------------------
-    # Módulos de Síntese de Voz Neural (TTS) & Tradução Multilíngue Local
+    # Serviços online opcionais de síntese de voz neural e tradução multilíngue
     # --------------------------------------------------------------------------
     def get_available_voices(self) -> dict[str, Any]:
         """Retorna as vozes neurais suportadas para leitura com alta fidelidade."""
@@ -857,7 +917,7 @@ class BridgeApi:
             return {"ok": False, "error": f"Falha na síntese de voz: {error}"}
 
     def translate_text(self, text: str, target_lang: str = "pt", source_lang: str = "auto") -> dict[str, Any]:
-        """Traduz trecho de texto usando deep-translator sem dependência de API paga."""
+        """Traduz texto online com Google Translator por meio de deep-translator."""
         cleaned_text = (text or "").strip()
         if not cleaned_text:
             return {"ok": False, "error": "Nenhum texto informado para tradução."}

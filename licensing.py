@@ -1,16 +1,18 @@
 """Módulo de Licenciamento por Hardware (Hardware Node-Locking).
 
-Gera identificadores de máquina estáveis e realiza validação offline criptográfica
-utilizando assinaturas HMAC-SHA256 para impedir o uso não autorizado da aplicação.
+Gera identificadores de máquina estáveis e valida licenças offline assinadas com
+Ed25519. O cliente contém somente a chave pública; a chave privada fica restrita
+ao utilitário administrativo.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
-import hmac
 import logging
 import os
 import platform
+import re
 import sqlite3
 import subprocess
 import uuid
@@ -18,26 +20,52 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
 from constants import application_root
 
 logger = logging.getLogger(__name__)
 
 _LICENSE_DB_PATH = application_root() / "data" / "nexojuris_acervo.db"
 _LICENSE_BACKUP_PATH = application_root() / "data" / "license.sig"
+_LICENSE_KEY_PREFIX = "ACT2-01-"
+_LICENSE_PAYLOAD_PREFIX = b"nexojuris-license:v2:"
+_LICENSE_PUBLIC_KEY_B64 = "80WGyZ+9TwHmcKDPpjOncNZVVYgFHgNBl59aBK5Hpug="
+_LICENSE_KEY_PATTERN = re.compile(r"ACT2-01-(?:[A-Z2-7]{8}-){12}[A-Z2-7]{7}")
 
 
-def _get_signing_key() -> bytes:
-    """Retorna a chave mestra criptográfica para assinatura de licenças offline."""
-    env_key = os.environ.get("NEXOJURIS_LICENSE_SECRET")
-    if env_key:
-        return env_key.encode("utf-8")
+class LicenseRequiredError(PermissionError):
+    """Indica que uma operação protegida exige ativação válida nesta máquina."""
 
-    # Componentes seguros ofuscados para compor a chave mestra padrão
-    part_a = b"NXJ_SEC_2026"
-    part_b = b"CORE_NODE_LOCK"
-    part_c = b"LEGAL_TECH_MASTER"
-    part_d = b"SHA256_OFFLINE"
-    return hashlib.sha256(b":".join([part_a, part_b, part_c, part_d])).digest()
+    def __init__(self, machine_id: str) -> None:
+        self.machine_id = machine_id
+        super().__init__(f"Ativação necessária para converter arquivos. Código da máquina: {machine_id}.")
+
+
+def license_payload(machine_id: str) -> bytes:
+    """Produz o payload canônico e versionado assinado pelo emissor administrativo."""
+    normalized_id = machine_id.strip().upper()
+    return _LICENSE_PAYLOAD_PREFIX + normalized_id.encode("ascii")
+
+
+def _decode_activation_signature(key: str) -> bytes | None:
+    candidate = (key or "").strip().upper()
+    if _LICENSE_KEY_PATTERN.fullmatch(candidate) is None:
+        return None
+
+    encoded = candidate.removeprefix(_LICENSE_KEY_PREFIX).replace("-", "")
+    padding = "=" * ((8 - len(encoded) % 8) % 8)
+    try:
+        signature = base64.b32decode(encoded + padding, casefold=False)
+    except ValueError:
+        return None
+    return signature if len(signature) == 64 else None
+
+
+def _public_key() -> Ed25519PublicKey:
+    public_bytes = base64.b64decode(_LICENSE_PUBLIC_KEY_B64, validate=True)
+    return Ed25519PublicKey.from_public_bytes(public_bytes)
 
 
 def _get_motherboard_uuid() -> str:
@@ -113,30 +141,20 @@ def get_machine_fingerprint() -> str:
     return f"NXJ-{chunk1}-{chunk2}-{chunk3}-{chunk4}"
 
 
-def generate_activation_key(machine_id: str, master_key: bytes | None = None) -> str:
-    """Gera a chave de ativação assinada com HMAC-SHA256 formatada como ACT-XXXX-XXXX-XXXX-XXXX."""
-    key = master_key if master_key is not None else _get_signing_key()
-    normalized_id = machine_id.strip().upper()
-    h = hmac.new(key, normalized_id.encode("utf-8"), hashlib.sha256)
-    digest = h.hexdigest().upper()
-
-    chunk1 = digest[0:4]
-    chunk2 = digest[4:8]
-    chunk3 = digest[8:12]
-    chunk4 = digest[12:16]
-
-    return f"ACT-{chunk1}-{chunk2}-{chunk3}-{chunk4}"
-
-
-def verify_license_key(machine_id: str, key: str, master_key: bytes | None = None) -> bool:
-    """Valida se uma chave informada corresponde ao Machine ID via comparação em tempo constante."""
+def verify_license_key(machine_id: str, key: str) -> bool:
+    """Valida uma assinatura Ed25519 vinculada ao Machine ID informado."""
     if not machine_id or not key:
         return False
 
-    expected_key = generate_activation_key(machine_id, master_key=master_key)
-    candidate_key = key.strip().upper()
+    signature = _decode_activation_signature(key)
+    if signature is None:
+        return False
 
-    return hmac.compare_digest(expected_key, candidate_key)
+    try:
+        _public_key().verify(signature, license_payload(machine_id))
+    except (InvalidSignature, ValueError):
+        return False
+    return True
 
 
 @contextmanager
@@ -247,6 +265,14 @@ def is_software_activated() -> tuple[bool, str]:
         return True, current_machine_id
 
     return False, current_machine_id
+
+
+def require_software_activation() -> str:
+    """Autoriza operações protegidas ou falha antes de qualquer conversão."""
+    is_activated, machine_id = is_software_activated()
+    if not is_activated:
+        raise LicenseRequiredError(machine_id)
+    return machine_id
 
 
 def activate_software(activation_key: str) -> dict[str, Any]:

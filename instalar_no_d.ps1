@@ -20,8 +20,11 @@ $arquivosDoAplicativo = @(
     "app.py",
     "constants.py",
     "converter.py",
+    "library_db.py",
+    "licensing.py",
     "markdown_utils.py",
     "models.py",
+    "ocr_engine.py",
     "web_api.py",
     "requirements.lock.txt",
     "iniciar.vbs"
@@ -44,6 +47,12 @@ if (-not (Test-Path $python)) {
 & uv pip install --python $python -r (Join-Path $Destino "requirements.lock.txt")
 if ($LASTEXITCODE -ne 0) {
     throw "Não foi possível sincronizar as dependências do conversor."
+}
+
+# Falha durante a instalação, em vez de deixar imports ausentes aparecerem só ao abrir o aplicativo.
+& $python -c "import app, converter, library_db, licensing, ocr_engine, web_api"
+if ($LASTEXITCODE -ne 0) {
+    throw "A instalação está incompleta: um ou mais módulos do aplicativo não puderam ser importados."
 }
 
 Write-Host "Instalação concluída em $Destino"

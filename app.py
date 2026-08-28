@@ -19,6 +19,7 @@ from constants import (
     resource_root,
 )
 from converter import PdfMarkdownConverter, validate_runtime_dependencies
+from licensing import LicenseRequiredError, require_software_activation
 from models import (
     BatchConversionSummary,
     ConversionFailure,
@@ -33,6 +34,13 @@ def run_quick_convert(paths: list[str]) -> None:
     Explorer), sem abrir a janela principal — pensado para uso pontual."""
     root = Tk()
     root.withdraw()
+    try:
+        require_software_activation()
+    except LicenseRequiredError as error:
+        messagebox.showerror(APP_NAME, str(error))
+        root.destroy()
+        return
+
     try:
         validate_runtime_dependencies()
     except RuntimeError as error:

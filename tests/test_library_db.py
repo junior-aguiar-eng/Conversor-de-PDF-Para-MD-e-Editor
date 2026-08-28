@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import fitz
 
@@ -62,6 +62,33 @@ class LibraryDatabaseTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["content_type"], "markdown")
 
+    def test_search_snippet_escapes_indexed_html_and_preserves_highlight(self) -> None:
+        pdf_path = Path(self.tmp_dir.name) / "malicioso.pdf"
+        md_path = Path(self.tmp_dir.name) / "malicioso.md"
+        payload = (
+            '</mark><img src=x onerror="window.PWNED=1">'
+            '<svg onload="window.PWNED=2"><script>window.PWNED=3</script> '
+            "\ue000 termoalvo \ue001"
+        )
+        self.db.index_markdown_file(pdf_path, md_path, payload)
+
+        results = self.db.search("termoalvo")
+
+        self.assertEqual(len(results), 1)
+        snippet = results[0]["snippet"]
+        self.assertNotIn("<img", snippet)
+        self.assertNotIn("<svg", snippet)
+        self.assertNotIn("<script", snippet)
+        self.assertNotIn("onerror=\"", snippet)
+        self.assertIn("&lt;img", snippet)
+        self.assertIn("&lt;svg", snippet)
+        self.assertIn("\ue000", snippet)
+        self.assertIn("\ue001", snippet)
+        mark_open = '<mark class="bg-amber-200 text-amber-900 font-bold px-0.5 rounded">'
+        self.assertIn(f"{mark_open}termoalvo</mark>", snippet)
+        content_without_highlight = snippet.replace(mark_open, "").replace("</mark>", "")
+        self.assertNotIn("<", content_without_highlight)
+
     def test_session_state_persistence(self) -> None:
         pdf_path = str(Path(self.tmp_dir.name) / "livro_juridico.pdf")
 
@@ -113,8 +140,9 @@ class LibraryDatabaseTests(unittest.TestCase):
 class WebApiLibraryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp_dir = tempfile.TemporaryDirectory()
-        self.api = BridgeApi()
-        self.api._library = LibraryDatabase(Path(self.tmp_dir.name) / "test_api_acervo.db")
+        library = LibraryDatabase(Path(self.tmp_dir.name) / "test_api_acervo.db")
+        with patch("web_api.LibraryDatabase", return_value=library):
+            self.api = BridgeApi()
         self.api._window = MagicMock()
 
     def tearDown(self) -> None:

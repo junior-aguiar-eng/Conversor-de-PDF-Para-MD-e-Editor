@@ -1,95 +1,172 @@
-"""Testes unitários para o módulo de licenciamento por hardware (licensing.py)."""
+"""Testes do licenciamento offline assimétrico."""
 
 from __future__ import annotations
 
-import re
+import base64
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+import app as app_module
+import licensing as licensing_module
+from admin_keygen import generate_activation_key, load_private_key
 from licensing import (
+    LicenseRequiredError,
     activate_software,
     deactivate_software,
-    generate_activation_key,
     get_machine_fingerprint,
     is_software_activated,
+    require_software_activation,
     verify_license_key,
 )
 from web_api import BridgeApi
 
 
-class LicensingUnitTests(unittest.TestCase):
+class IsolatedLicensingTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp_dir = tempfile.TemporaryDirectory()
-        self.machine_id = get_machine_fingerprint()
+        root = Path(self.tmp_dir.name)
+        self.machine_id = "NXJ-1111-2222-3333-4444"
+        self.private_key = Ed25519PrivateKey.generate()
+        public_bytes = self.private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        public_key_b64 = base64.b64encode(public_bytes).decode("ascii")
+        self.patchers = [
+            patch.object(licensing_module, "_LICENSE_DB_PATH", root / "license.db"),
+            patch.object(licensing_module, "_LICENSE_BACKUP_PATH", root / "license.sig"),
+            patch.object(licensing_module, "_LICENSE_PUBLIC_KEY_B64", public_key_b64),
+            patch.object(licensing_module, "get_machine_fingerprint", return_value=self.machine_id),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
 
     def tearDown(self) -> None:
-        try:
-            self.tmp_dir.cleanup()
-        except OSError:
-            pass
+        for patcher in reversed(self.patchers):
+            patcher.stop()
+        self.tmp_dir.cleanup()
 
+    def issue_key(self, machine_id: str | None = None) -> str:
+        return generate_activation_key(machine_id or self.machine_id, self.private_key)
+
+
+class LicensingUnitTests(IsolatedLicensingTestCase):
     def test_machine_fingerprint_format(self) -> None:
-        """Verifica se o Machine ID segue o formato padrão NXJ-XXXX-XXXX-XXXX-XXXX."""
-        self.assertTrue(self.machine_id.startswith("NXJ-"))
-        pattern = r"^NXJ-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$"
-        self.assertTrue(bool(re.match(pattern, self.machine_id)), f"Formato inválido: {self.machine_id}")
+        machine_id = get_machine_fingerprint()
+        self.assertRegex(machine_id, r"^NXJ-[0-9A-F]{4}(?:-[0-9A-F]{4}){3}$")
 
-    def test_activation_key_generation_and_verification(self) -> None:
-        """Testa a geração e verificação da assinatura criptográfica HMAC-SHA256."""
-        key = generate_activation_key(self.machine_id)
-        self.assertTrue(key.startswith("ACT-"))
-        pattern = r"^ACT-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$"
-        self.assertTrue(bool(re.match(pattern, key)), f"Formato da chave inválido: {key}")
-
-        # Chave correta deve validar
+    def test_ed25519_key_generation_and_verification(self) -> None:
+        key = self.issue_key()
+        self.assertTrue(key.startswith("ACT2-01-"))
+        self.assertRegex(key, r"^ACT2-01-[A-Z2-7-]+$")
         self.assertTrue(verify_license_key(self.machine_id, key))
-
-        # Chave falsa ou alterada deve falhar
-        self.assertFalse(verify_license_key(self.machine_id, "ACT-0000-1111-2222-3333"))
         self.assertFalse(verify_license_key("NXJ-9999-8888-7777-6666", key))
 
-    def test_activation_lifecycle(self) -> None:
-        """Testa o ciclo de ativação, persistência e desativação."""
-        # 1. Desativação
+        replacement = "A" if key[20] != "A" else "B"
+        tampered_key = f"{key[:20]}{replacement}{key[21:]}"
+        self.assertFalse(verify_license_key(self.machine_id, tampered_key))
+
+    def test_client_rejects_legacy_hmac_keys_and_has_no_emitter(self) -> None:
+        self.assertFalse(verify_license_key(self.machine_id, "ACT-0000-1111-2222-3333"))
+        self.assertFalse(hasattr(licensing_module, "generate_activation_key"))
+
+    def test_rejects_malformed_version_and_key_id(self) -> None:
+        key = self.issue_key()
+        self.assertFalse(verify_license_key(self.machine_id, key.replace("ACT2-01-", "ACT3-01-", 1)))
+        self.assertFalse(verify_license_key(self.machine_id, key.replace("ACT2-01-", "ACT2-99-", 1)))
+        self.assertFalse(verify_license_key(self.machine_id, "ACT2-01-INVALID"))
+        encoded = key.removeprefix("ACT2-01-").replace("-", "")
+        self.assertFalse(verify_license_key(self.machine_id, f"ACT2-01-{encoded}"))
+        self.assertFalse(verify_license_key(self.machine_id, key.replace("ACT2-01-", "ACT2-01--", 1)))
+        self.assertFalse(verify_license_key(self.machine_id, key.replace("-", "--", 1)))
+
+    def test_activation_lifecycle_uses_only_temporary_storage(self) -> None:
         deactivate_software()
-        is_act, mid = is_software_activated()
-        self.assertFalse(is_act)
-        self.assertEqual(mid, self.machine_id)
+        self.assertEqual(is_software_activated(), (False, self.machine_id))
+        self.assertFalse(activate_software("ACT2-01-INVALID")["ok"])
+        with self.assertRaisesRegex(LicenseRequiredError, "Ativação necessária"):
+            require_software_activation()
 
-        # 2. Tentativa com chave inválida
-        bad_res = activate_software("ACT-INVALID-KEY-1234")
-        self.assertFalse(bad_res["ok"])
-        is_act2, _ = is_software_activated()
-        self.assertFalse(is_act2)
+        good_key = self.issue_key()
+        self.assertTrue(activate_software(good_key)["ok"])
+        self.assertEqual(is_software_activated(), (True, self.machine_id))
+        self.assertEqual(require_software_activation(), self.machine_id)
 
-        # 3. Ativação com chave correta
-        good_key = generate_activation_key(self.machine_id)
-        good_res = activate_software(good_key)
-        self.assertTrue(good_res["ok"])
+    def test_quick_convert_rejects_unlicensed_machine_before_converter(self) -> None:
+        fake_root = MagicMock()
+        with (
+            patch.object(app_module, "Tk", return_value=fake_root),
+            patch.object(app_module, "PdfMarkdownConverter") as converter_class,
+            patch.object(app_module.messagebox, "showerror") as showerror,
+        ):
+            app_module.run_quick_convert(["documento.pdf"])
 
-        # 4. Verificação de estado ativo
-        is_act3, mid3 = is_software_activated()
-        self.assertTrue(is_act3)
-        self.assertEqual(mid3, self.machine_id)
+        converter_class.assert_not_called()
+        showerror.assert_called_once()
+        self.assertIn(self.machine_id, showerror.call_args.args[1])
+        fake_root.destroy.assert_called_once()
+
+    def test_admin_private_key_roundtrip(self) -> None:
+        private_path = Path(self.tmp_dir.name) / "admin.pem"
+        private_path.write_bytes(
+            self.private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+        )
+        loaded_key = load_private_key(private_path)
+        self.assertTrue(verify_license_key(self.machine_id, generate_activation_key(self.machine_id, loaded_key)))
 
 
-class WebApiLicensingBridgeTests(unittest.TestCase):
+class WebApiLicensingBridgeTests(IsolatedLicensingTestCase):
     def setUp(self) -> None:
-        self.api = BridgeApi()
+        super().setUp()
+        with patch("web_api.LibraryDatabase", return_value=MagicMock()):
+            self.api = BridgeApi()
         self.api._window = MagicMock()
-        self.machine_id = get_machine_fingerprint()
 
     def test_bridge_license_endpoints(self) -> None:
-        """Testa as chamadas de licença expostas através da BridgeApi."""
         info = self.api.get_license_info()
-        self.assertIn("is_activated", info)
-        self.assertIn("machine_id", info)
+        self.assertFalse(info["is_activated"])
         self.assertEqual(info["machine_id"], self.machine_id)
 
-        valid_key = generate_activation_key(self.machine_id)
-        act_res = self.api.activate_software(valid_key)
+        act_res = self.api.activate_software(self.issue_key())
         self.assertTrue(act_res["ok"])
+        self.assertTrue(self.api.get_license_info()["is_activated"])
+
+    def test_bridge_rejects_conversion_before_side_effects_without_license(self) -> None:
+        output_dir = Path(self.tmp_dir.name) / "must-not-exist"
+        with patch("web_api.threading.Thread") as thread_class:
+            result = self.api.start_conversion(
+                {"files": [{"path": "documento.pdf"}], "output_dir": str(output_dir)}
+            )
+
+        self.assertFalse(result["started"])
+        self.assertEqual(result["error_code"], "license_required")
+        self.assertEqual(result["machine_id"], self.machine_id)
+        self.assertFalse(output_dir.exists())
+        self.assertFalse(self.api.is_converting)
+        thread_class.assert_not_called()
+
+    def test_bridge_starts_conversion_after_valid_activation(self) -> None:
+        self.assertTrue(self.api.activate_software(self.issue_key())["ok"])
+        output_dir = Path(self.tmp_dir.name) / "licensed-output"
+        with patch("web_api.threading.Thread") as thread_class:
+            result = self.api.start_conversion(
+                {"files": [{"path": "documento.pdf"}], "output_dir": str(output_dir)}
+            )
+
+        self.assertTrue(result["started"])
+        self.assertTrue(output_dir.is_dir())
+        self.assertTrue(self.api.is_converting)
+        thread_class.assert_called_once()
+        thread_class.return_value.start.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from constants import (
     DEFAULT_OUTPUT_DIR,
     MAX_PAGE_COUNT,
 )
+from licensing import LicenseRequiredError
 from models import (
     BatchConversionSummary,
     ConversionFailure,
@@ -22,6 +24,11 @@ from models import (
 
 
 class ConverterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        activation_patcher = patch.object(converter_module, "require_software_activation", return_value="NXJ-TEST")
+        activation_patcher.start()
+        self.addCleanup(activation_patcher.stop)
+
     def test_app_name_is_nexojuris_conversor(self) -> None:
         self.assertEqual(APP_NAME, "NexoJuris - Conversor")
 
@@ -30,6 +37,21 @@ class ConverterTests(unittest.TestCase):
 
     def test_default_chunk_size_is_sixty_thousand(self) -> None:
         self.assertEqual(DEFAULT_MAX_CHUNK_CHARACTERS, 60_000)
+
+    def test_image_markdown_reference_resolves_to_saved_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir) / "saida"
+            assets_dir = output_dir / "images" / "documento-abcd1234"
+
+            markdown_ref, saved_path = converter_module._safe_image_md_path(
+                str(assets_dir),
+                "pagina-1.png",
+            )
+
+            self.assertEqual(markdown_ref, "images/documento-abcd1234/pagina-1.png")
+            self.assertEqual((output_dir / markdown_ref).resolve(), Path(saved_path).resolve())
+            Path(saved_path).write_bytes(b"imagem")
+            self.assertTrue((output_dir / markdown_ref).is_file())
 
     def test_format_duration(self) -> None:
         self.assertEqual(format_duration(45), "45s")
@@ -91,6 +113,23 @@ class ConverterTests(unittest.TestCase):
                 split_output=False,
                 max_chunk_characters=1000,
             )
+
+    def test_converter_rejects_unlicensed_machine_before_opening_pdf(self) -> None:
+        fake_open = unittest.mock.MagicMock()
+        converter = converter_module.PdfMarkdownConverter.__new__(converter_module.PdfMarkdownConverter)
+        converter._pymupdf = SimpleNamespace(open=fake_open)
+
+        with (
+            patch.object(
+                converter_module,
+                "require_software_activation",
+                side_effect=LicenseRequiredError("NXJ-1111-2222-3333-4444"),
+            ),
+            self.assertRaises(LicenseRequiredError),
+        ):
+            converter.convert(Path("documento.pdf"), Path("saida"), False, 1000)
+
+        fake_open.assert_not_called()
 
     def test_converter_converts_whole_document_in_a_single_call(self) -> None:
         class FakeDocument:

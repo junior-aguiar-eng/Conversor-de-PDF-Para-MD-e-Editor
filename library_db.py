@@ -11,8 +11,10 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -217,8 +219,10 @@ class LibraryDatabase:
         # Formata como prefix query para busca incremental ("termo*")
         fts_query = " ".join(f'"{w}"*' for w in words)
 
-        snip_open = '<mark class="bg-amber-200 text-amber-900 font-bold px-0.5 rounded">'
-        snip_close = "</mark>"
+        marker_id = uuid.uuid4().hex
+        snip_open_marker = f"NXJHIGHLIGHTOPEN{marker_id}"
+        snip_close_marker = f"NXJHIGHLIGHTCLOSE{marker_id}"
+        snip_open_html = '<mark class="bg-amber-200 text-amber-900 font-bold px-0.5 rounded">'
         sql = f"""
             SELECT
                 file_path,
@@ -226,7 +230,7 @@ class LibraryDatabase:
                 page_number,
                 content_type,
                 title,
-                snippet(doc_fts, 4, '{snip_open}', '{snip_close}', '...', 22) AS match_snippet,
+                snippet(doc_fts, 4, '{snip_open_marker}', '{snip_close_marker}', '...', 22) AS match_snippet,
                 bm25(doc_fts) AS rank
             FROM doc_fts
             WHERE doc_fts MATCH ?
@@ -246,6 +250,8 @@ class LibraryDatabase:
 
             results = []
             for row in rows:
+                safe_snippet = escape(str(row["match_snippet"] or ""), quote=True)
+                safe_snippet = safe_snippet.replace(snip_open_marker, snip_open_html).replace(snip_close_marker, "</mark>")
                 results.append(
                     {
                         "file_path": row["file_path"],
@@ -253,7 +259,7 @@ class LibraryDatabase:
                         "page_number": int(row["page_number"]),
                         "content_type": row["content_type"],
                         "title": row["title"],
-                        "snippet": row["match_snippet"],
+                        "snippet": safe_snippet,
                         "rank": float(row["rank"]),
                     }
                 )

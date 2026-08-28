@@ -1,5 +1,9 @@
 .venv/
 .uv-cache/
+.secrets/
+/data/nexojuris_acervo.db
+/data/nexojuris_acervo.db-*
+/data/license.sig
 __pycache__/
 *.py[cod]
 release/

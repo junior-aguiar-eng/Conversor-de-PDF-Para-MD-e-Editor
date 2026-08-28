@@ -305,7 +305,7 @@
               <div class="space-y-0.5">
                 <span class="block text-[11px] font-bold text-slate-800">Privacidade Absoluta & Segurança de Dados</span>
                 <p class="text-[10px] text-slate-500 leading-normal">
-                  Tanto o motor de OCR quanto as regras de estruturação e normalização rodam <strong>100% offline</strong> no seu processador local. Seus documentos nunca saem desta máquina e não há nenhum limite diário de uso.
+                  O motor de OCR e as regras de estruturação e normalização rodam <strong>100% offline</strong> no seu processador local. Os arquivos PDF e as imagens não saem desta máquina; somente os recursos opcionais de tradução e voz enviam o texto selecionado a serviços externos.
                 </p>
               </div>
             </div>
@@ -1194,7 +1194,7 @@
           <p class="font-bold text-slate-800">3. PRIVACIDADE, DADOS PESSOAIS E LGPD (LEI Nº 13.709/2018)</p>
           <p><strong>• Processamento 100% Local:</strong> Todo o processamento de arquivos PDF, imagens, banco de dados SQLite FTS5 e extrações por OCR ocorre estritamente dentro da memória e disco do computador do usuário, sem transmissão de arquivos para servidores externos ou nuvem.</p>
           <p><strong>• Coleta Mínima:</strong> O aplicativo não coleta, não armazena e não comercializa dados pessoais dos documentos lidos. A impressão digital de hardware (Machine ID) gerada na máquina destina-se unicamente ao controle de licenciamento do software.</p>
-          <p><strong>• Serviços Opcionais de Terceiros:</strong> Caso o usuário acione recursos de tradução ou síntese de voz (TTS), apenas o trecho de texto selecionado é transitoriamente processado pelas ferramentas de rede correspondentes, sem armazenamento de logs ou perfis de usuário pelo NexoJuris.</p>
+          <p><strong>• Serviços Opcionais de Terceiros:</strong> Tradução e síntese de voz (TTS) exigem conexão com a internet e usam, respectivamente, Google Translator e Microsoft Edge TTS. Quando o usuário aciona esses recursos, apenas o trecho de texto selecionado é enviado ao serviço correspondente; o NexoJuris não armazena logs nem cria perfis de usuário com esse conteúdo.</p>
         </div>
 
         <div class="space-y-1">
@@ -1272,7 +1272,7 @@
       <!-- Activation Key Input -->
       <div class="space-y-1.5">
         <label class="block text-xs font-bold text-slate-700">Chave de Ativação (Activation Key) *</label>
-        <input type="text" id="inputActivationKey" placeholder="ACT-XXXX-XXXX-XXXX-XXXX" onkeydown="if(event.key==='Enter') appLicense.submitActivation()" class="w-full p-3 rounded-2xl glass-input font-mono text-xs font-bold text-slate-800 focus:outline-none placeholder:text-slate-400 tracking-wider uppercase" />
+        <input type="text" id="inputActivationKey" placeholder="ACT2-01-CHAVE-ASSINADA" onkeydown="if(event.key==='Enter') appLicense.submitActivation()" class="w-full p-3 rounded-2xl glass-input font-mono text-xs font-bold text-slate-800 focus:outline-none placeholder:text-slate-400 tracking-wider uppercase" />
       </div>
 
       <!-- Status / Alert Message Container -->
@@ -1385,7 +1385,7 @@
             </span>
             <div>
               <p class="font-bold text-slate-800 text-[11px]">Segurança Máxima & Criptografia AES-256</p>
-              <p class="text-[10px] text-slate-500 leading-normal">Remova ou adicione senhas de proteção em PDFs locais. Todo o ecossistema roda de forma 100% offline, garantindo total conformidade com a LGPD.</p>
+              <p class="text-[10px] text-slate-500 leading-normal">Remova ou adicione senhas de proteção em PDFs localmente. Conversão, OCR, acervo e proteção de arquivos funcionam offline; tradução e voz são opcionais e exigem internet.</p>
             </div>
           </div>
         </div>
@@ -1484,11 +1484,11 @@
             <section id="manualSec-cap1" class="manual-section space-y-3">
               <h3 class="text-sm font-extrabold text-slate-900 border-b border-slate-100 pb-1.5">Capítulo 1: Introdução, Arquitetura Local e Privacidade</h3>
               <p class="text-[11px] text-slate-600 leading-relaxed">
-                O <strong>NexoJuris</strong> foi concebido sobre um pilar de <strong>privacidade absoluta</strong> e segurança local. Ao contrário de conversores tradicionais na nuvem, todas as operações (conversão de documentos, indexação textual em banco SQLite, reconhecimento de caracteres OCR e renderização de PDF) ocorrem estritamente dentro da memória física e disco rígido do seu computador pessoal.
+                O <strong>NexoJuris</strong> prioriza privacidade e segurança local. As operações documentais centrais — conversão, indexação em SQLite, OCR e renderização de PDF — ocorrem na memória e no disco do seu computador.
               </p>
               <div class="p-3 rounded-2xl bg-sky-50 border border-sky-100 text-[11px] text-sky-800 space-y-1">
                 <p class="font-bold">💡 Dica de Privacidade:</p>
-                <p>Nenhum dado ou documento PDF lido pelo software é enviado para a nuvem. Suas petições, contratos e arquivos confidenciais permanecem 100% sob seu controle físico.</p>
+                <p>Os arquivos PDF e as imagens usados na conversão, no OCR e na leitura não são enviados à nuvem. Ao acionar tradução ou voz, somente o texto selecionado é enviado ao serviço externo correspondente.</p>
               </div>
             </section>
 
@@ -1528,7 +1528,7 @@
               <ul class="list-disc pl-5 space-y-1 text-[11px] text-slate-600">
                 <li><strong>Ferramenta de Recorte/Snippet:</strong> Selecione qualquer trecho retangular da página. O NexoJuris executa OCR local no recorte e copia o texto e a imagem do trecho para a área de transferência de uma vez.</li>
                 <li><strong>Anotações e Cards:</strong> Adicione marcações com caneta e marca-texto coloridos, ou insira cards do tipo Post-it, Alerta, Caixa Branca ou Sem Fundo. As anotações são salvas de forma incremental e nativa no PDF.</li>
-                <li><strong>Tradução e Voz (TTS):</strong> Selecione um parágrafo de texto e ouça a leitura em áudio neural ou traduza o texto selecionado em tempo real com processamento local.</li>
+                <li><strong>Tradução e Voz (TTS):</strong> Recursos opcionais que usam Google Translator e Microsoft Edge TTS. Exigem conexão com a internet e enviam somente o texto selecionado ao serviço correspondente.</li>
               </ul>
             </section>
 

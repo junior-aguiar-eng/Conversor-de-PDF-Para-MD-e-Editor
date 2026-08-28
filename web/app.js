@@ -325,6 +325,21 @@ function openInSuperPdf(filePath) {
   }
 }
 
+function openQueuedPdf(index) {
+  const file = state.files[index];
+  if (file) openInSuperPdf(file.path);
+}
+
+function previewQueuedMarkdown(index) {
+  const file = state.files[index];
+  if (file?.markdown_path) previewSpecificMarkdown(file.markdown_path);
+}
+
+function openQueuedMarkdown(index) {
+  const file = state.files[index];
+  if (file?.markdown_path) openMarkdownDirectly(file.markdown_path);
+}
+
 function removeFile(index) {
   if (state.isConverting) return;
   playBeep("click");
@@ -368,7 +383,7 @@ function renderFileList() {
   container.innerHTML = state.files.map((file, idx) => {
     let statusBadge = `<span class="px-2.5 py-0.5 rounded-lg text-[10.5px] font-semibold bg-slate-100 text-slate-600">Pendente</span>`;
     let actionButtons = `
-      <button onclick="openInSuperPdf('${file.path.replace(/\\/g, '\\\\')}')" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Abrir no Super PDF">
+      <button onclick="openQueuedPdf(${idx})" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Abrir no Super PDF">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
       </button>
       <button onclick="removeFile(${idx})" class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition" title="Remover da lista">
@@ -382,18 +397,18 @@ function renderFileList() {
     } else if (file.status === "success") {
       statusBadge = `<span class="px-2.5 py-0.5 rounded-lg text-[10.5px] font-semibold bg-emerald-100 text-emerald-800">Concluído (${file.duration})</span>`;
       actionButtons = `
-        <button onclick="openInSuperPdf('${file.path.replace(/\\/g, '\\\\')}')" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Abrir no Super PDF">
+        <button onclick="openQueuedPdf(${idx})" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Abrir no Super PDF">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
         </button>
-        <button onclick="previewSpecificMarkdown('${file.markdown_path.replace(/\\/g, '\\\\')}')" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Visualizar Markdown">
+        <button onclick="previewQueuedMarkdown(${idx})" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Visualizar Markdown">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
         </button>
-        <button onclick="openMarkdownDirectly('${file.markdown_path.replace(/\\/g, '\\\\')}')" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Abrir no Editor do Windows">
+        <button onclick="openQueuedMarkdown(${idx})" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Abrir no Editor do Windows">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
         </button>
       `;
     } else if (file.status === "error") {
-      statusBadge = `<span class="px-2.5 py-0.5 rounded-lg text-[10.5px] font-semibold bg-rose-100 text-rose-800" title="${file.error_message}">Falhou</span>`;
+      statusBadge = `<span class="px-2.5 py-0.5 rounded-lg text-[10.5px] font-semibold bg-rose-100 text-rose-800" title="${escapeHtml(file.error_message)}">Falhou</span>`;
     }
 
     return `
@@ -403,8 +418,8 @@ function renderFileList() {
             PDF
           </div>
           <div class="min-w-0 flex-1">
-            <h4 class="font-bold text-slate-800 truncate" title="${file.path}">${file.name}</h4>
-            <span class="text-[11px] font-mono text-slate-400">${file.size_formatted}</span>
+            <h4 class="font-bold text-slate-800 truncate" title="${escapeHtml(file.path)}">${escapeHtml(file.name)}</h4>
+            <span class="text-[11px] font-mono text-slate-400">${escapeHtml(file.size_formatted)}</span>
           </div>
         </div>
         
@@ -513,6 +528,11 @@ async function startConversion() {
   if (!response.started) {
     playBeep("error");
     showToast(response.error, "error");
+    if (response.error_code === "license_required") {
+      appLicense.isActivated = false;
+      appLicense.machineId = response.machine_id || "";
+      appLicense.openModal();
+    }
     return;
   }
 
@@ -2214,6 +2234,8 @@ class SuperPdfController {
       playBeep("success");
       showToast(res.message, "success");
       appendLog("OK", `${this.currentFileName}: ${res.saved_count} anotação(ões) gravada(s) nativamente no PDF.`);
+      this.annotations.clear();
+      this.undoStack = [];
       await this.renderCurrentPage(true);
     } else {
       playBeep("error");
@@ -3034,6 +3056,7 @@ class GlobalSearchController {
     this.currentFilter = "all"; // "all" | "pdf_page" | "markdown"
     this.debounceTimer = null;
     this.allResults = [];
+    this.visibleResults = [];
   }
 
   init() {
@@ -3172,6 +3195,7 @@ class GlobalSearchController {
     }
 
     if (filtered.length === 0) {
+      this.visibleResults = [];
       this.resultsContainer.innerHTML = `
         <div class="py-12 text-center space-y-2 text-slate-400">
           <svg class="w-10 h-10 mx-auto text-sky-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
@@ -3182,8 +3206,9 @@ class GlobalSearchController {
       return;
     }
 
+    this.visibleResults = filtered;
     this.resultsContainer.innerHTML = filtered
-      .map((item) => {
+      .map((item, index) => {
         const isPdf = item.content_type === "pdf_page";
         const badgeColor = isPdf ? "bg-rose-100 text-rose-800" : "bg-indigo-100 text-indigo-800";
         const typeLabel = isPdf ? `PDF • Pág. ${item.page_number + 1}` : "Markdown";
@@ -3199,7 +3224,7 @@ class GlobalSearchController {
                   ${escapeHtml(item.file_name)}
                 </span>
               </div>
-              <button onclick="appSearch.openItem('${escapeJsString(item.file_path)}', ${item.page_number}, '${item.content_type}')" class="px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-sky-600 hover:bg-sky-700 text-white transition flex items-center gap-1 shadow-xs flex-shrink-0">
+              <button onclick="appSearch.openResult(${index})" class="px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-sky-600 hover:bg-sky-700 text-white transition flex items-center gap-1 shadow-xs flex-shrink-0">
                 <span>Abrir</span>
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
               </button>
@@ -3213,7 +3238,11 @@ class GlobalSearchController {
       .join("");
   }
 
-  async openItem(filePath, pageNumber, contentType) {
+  async openResult(index) {
+    const item = this.visibleResults[index];
+    if (!item) return;
+
+    const { file_path: filePath, page_number: pageNumber, content_type: contentType } = item;
     this.closeModal();
     if (contentType === "pdf_page") {
       switchView("superpdf");
@@ -3221,14 +3250,10 @@ class GlobalSearchController {
       superPdf.goToPage(pageNumber);
       showToast(`Saltando para Página ${pageNumber + 1}`, "info");
     } else {
-      switchView("markdown");
-      showToast(`Visualizando documento no acervo.`, "info");
+      await previewSpecificMarkdown(filePath);
+      showToast("Visualizando documento no acervo.", "info");
     }
   }
-}
-
-function escapeJsString(str) {
-  return (str || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
 // --------------------------------------------------------------------------
@@ -3579,8 +3604,8 @@ class ManualManager {
     return `# NexoJuris v1.3.2 - Manual de Instruções
 
 ## Capítulo 1: Introdução, Arquitetura Local e Privacidade
-O NexoJuris foi concebido sobre um pilar de privacidade absoluta e segurança local. Ao contrário de conversores tradicionais na nuvem, todas as operações ocorrem estritamente de forma local no seu computador.
-Dica: Nenhum documento é enviado à nuvem, garantindo conformidade total com a LGPD e CDC.
+Conversão, indexação SQLite, OCR e renderização de PDF ocorrem localmente no computador.
+Dica: Os arquivos PDF e as imagens não são enviados à nuvem. Tradução e voz são opcionais, exigem internet e enviam somente o texto selecionado ao serviço externo correspondente.
 
 ## Capítulo 2: Motor de Conversão (Jurisprudência vs Curso, Híbrido)
 Processador híbrido inteligente que detecta texto vetorial nativo e aciona OCR local apenas em imagens ou páginas digitalizadas.
@@ -3591,7 +3616,7 @@ Processador híbrido inteligente que detecta texto vetorial nativo e aciona OCR 
 O arquivo Markdown gerado pode ser lido imediatamente com realce de sintaxe na aba correspondente. A integração com o Windows permite clicar com o botão direito no arquivo PDF no Explorer e escolher "Enviar para -> NexoJuris".
 
 ## Capítulo 4: Super Leitor, Snippet/OCR, Voz e Tradutor
-Visualize PDFs grandes em alta resolução. Adicione notas, canetas e marca-textos salvas nativamente no arquivo. Use o Snippet de Recorte para realizar OCR local de área e tradução ou síntese de voz rápida de parágrafos.
+Visualize PDFs grandes em alta resolução. Adicione notas, canetas e marca-textos salvas nativamente no arquivo. O OCR de recorte é local; tradução e síntese de voz usam, respectivamente, Google Translator e Microsoft Edge TTS e exigem internet.
 
 ## Capítulo 5: Acervo Pessoal (Busca Textual SQLite FTS5)
 Banco de dados indexado localmente. Pesquisa textual instantânea usando algoritmo BM25 com destaque do termo procurado em todos os documentos convertidos ou inspecionados.
@@ -3626,5 +3651,4 @@ window.appLicense = appLicense;
 window.appTerms = appTerms;
 window.appWelcome = appWelcome;
 window.appManual = appManual;
-
 

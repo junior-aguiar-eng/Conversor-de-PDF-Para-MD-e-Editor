@@ -9,11 +9,30 @@ import traceback
 from pathlib import Path
 
 from constants import MAX_PAGE_COUNT
+from licensing import require_software_activation
 from markdown_utils import HeadingProfile, finalize_markdown, output_paths
 from models import ConversionFailure, ConversionResult
 from ocr_engine import is_scanned_page, ocr_page_to_markdown
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_image_md_path(folder: str, filename: str) -> tuple[str, str]:
+    """Retorna a referência relativa ao Markdown e o caminho físico da imagem."""
+    base = Path(folder).expanduser().resolve() if folder.strip() else Path.cwd()
+    base.mkdir(parents=True, exist_ok=True)
+    full_path = base / Path(filename).name
+
+    # output_paths() salva em <saida>/images/<documento>/; o Markdown fica em
+    # <saida> e, portanto, precisa conservar também o segmento "images/".
+    reference_root = base.parent.parent if base.parent.name.casefold() == "images" else base.parent
+    try:
+        md_ref = full_path.relative_to(reference_root).as_posix()
+    except ValueError:
+        md_ref = full_path.as_posix()
+
+    clean_md_ref = md_ref.replace("(", "-").replace(")", "-").replace("[", "-").replace("]", "-").replace(" ", "%20")
+    return clean_md_ref, str(full_path)
 
 
 def _patch_pymupdf4llm_md_path() -> None:
@@ -22,20 +41,7 @@ def _patch_pymupdf4llm_md_path() -> None:
         import pymupdf4llm.helpers.utils as utils
 
         if not getattr(utils, "_nexojuris_patched", False):
-
-            def safe_md_path(folder: str, filename: str) -> tuple[str, str]:
-                base = Path(folder).expanduser().resolve() if folder.strip() else Path.cwd()
-                base.mkdir(parents=True, exist_ok=True)
-                full_path = base / Path(filename).name
-                try:
-                    rel = full_path.relative_to(base.parent)
-                    md_ref = rel.as_posix()
-                except ValueError:
-                    md_ref = full_path.as_posix()
-                clean_md_ref = md_ref.replace("(", "-").replace(")", "-").replace("[", "-").replace("]", "-").replace(" ", "%20")
-                return clean_md_ref, str(full_path)
-
-            utils.md_path = safe_md_path
+            utils.md_path = _safe_image_md_path
             utils._nexojuris_patched = True
     except Exception as err:
         logger.debug(f"Aviso ao inicializar patch pymupdf4llm: {err}")
@@ -74,6 +80,7 @@ class PdfMarkdownConverter:
         max_chunk_characters: int,
         heading_profile: HeadingProfile = "jurisprudencia",
     ) -> ConversionResult:
+        require_software_activation()
         with self._pymupdf.open(source) as document:
             page_count = document.page_count
             if page_count > MAX_PAGE_COUNT:

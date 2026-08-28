@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from constants import DEFAULT_MAX_CHUNK_CHARACTERS, MAX_PAGE_COUNT
+from library_db import LibraryDatabase
 from models import ConversionResult
 from web_api import (
     BridgeApi,
@@ -16,6 +17,21 @@ from web_api import (
 
 
 class WebApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.storage_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.storage_dir.cleanup)
+        test_db_path = Path(self.storage_dir.name) / "web_api_acervo.db"
+        library_patcher = patch(
+            "web_api.LibraryDatabase",
+            side_effect=lambda: LibraryDatabase(test_db_path),
+        )
+        library_patcher.start()
+        self.addCleanup(library_patcher.stop)
+
+        activation_patcher = patch("web_api.require_software_activation", return_value="NXJ-TEST")
+        activation_patcher.start()
+        self.addCleanup(activation_patcher.stop)
+
     def test_format_duration(self) -> None:
         self.assertEqual(format_duration(30), "30s")
         self.assertEqual(format_duration(65), "1m 5s")
@@ -76,6 +92,79 @@ class WebApiTests(unittest.TestCase):
         res = api.start_conversion({"files": [{"path": "a.pdf"}], "max_chunk_characters": 500})
         self.assertFalse(res["started"])
         self.assertIn("pelo menos 1.000", res["error"])
+
+    def test_save_annotations_expands_textbox_and_persists_long_text(self) -> None:
+        import fitz
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "texto-longo.pdf"
+            doc = fitz.open()
+            doc.new_page()
+            doc.save(pdf_path)
+            doc.close()
+
+            api = BridgeApi.__new__(BridgeApi)
+            api._pdf_passwords = {}
+            long_text = "Texto longo efetivamente persistido no documento. " * 12
+            result = api.save_pdf_annotations(
+                {
+                    "file_path": str(pdf_path),
+                    "annotations": [
+                        {
+                            "type": "text",
+                            "page_number": 0,
+                            "x": 50,
+                            "y": 50,
+                            "width": 180,
+                            "height": 45,
+                            "fontsize": 14,
+                            "style": "none",
+                            "text": long_text,
+                        }
+                    ],
+                }
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["saved_count"], 1)
+            with fitz.open(pdf_path) as saved_doc:
+                self.assertIn("Texto longo efetivamente", saved_doc[0].get_text())
+
+    def test_save_annotations_does_not_claim_success_when_text_cannot_fit(self) -> None:
+        import fitz
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "sem-espaco.pdf"
+            doc = fitz.open()
+            doc.new_page()
+            doc.save(pdf_path)
+            doc.close()
+            original_bytes = pdf_path.read_bytes()
+
+            api = BridgeApi.__new__(BridgeApi)
+            api._pdf_passwords = {}
+            result = api.save_pdf_annotations(
+                {
+                    "file_path": str(pdf_path),
+                    "annotations": [
+                        {
+                            "type": "text",
+                            "page_number": 0,
+                            "x": 50,
+                            "y": 820,
+                            "width": 100,
+                            "height": 20,
+                            "fontsize": 14,
+                            "style": "none",
+                            "text": "Texto sem espaço vertical disponível. " * 10,
+                        }
+                    ],
+                }
+            )
+
+            self.assertFalse(result["ok"])
+            self.assertIn("não cabe", result["error"])
+            self.assertEqual(pdf_path.read_bytes(), original_bytes)
 
     def test_resolve_worker_count_bounds(self) -> None:
         api = BridgeApi()

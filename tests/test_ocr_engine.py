@@ -8,11 +8,23 @@ from unittest.mock import patch
 import fitz
 
 from converter import PdfMarkdownConverter
+from library_db import LibraryDatabase
 from ocr_engine import is_scanned_page, ocr_pixmap
 from web_api import BridgeApi
 
 
 class OcrEngineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.storage_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.storage_dir.cleanup)
+        test_db_path = Path(self.storage_dir.name) / "ocr_api_acervo.db"
+        library_patcher = patch(
+            "web_api.LibraryDatabase",
+            side_effect=lambda: LibraryDatabase(test_db_path),
+        )
+        library_patcher.start()
+        self.addCleanup(library_patcher.stop)
+
     def test_is_scanned_page_with_text(self) -> None:
         doc = fitz.open()
         page = doc.new_page(width=595, height=842)
@@ -55,7 +67,10 @@ class OcrEngineTests(unittest.TestCase):
             converter = PdfMarkdownConverter()
             output_dir = Path(tmp_dir) / "output"
 
-            with patch("converter.ocr_page_to_markdown") as mock_ocr_page:
+            with (
+                patch("converter.require_software_activation", return_value="NXJ-TEST"),
+                patch("converter.ocr_page_to_markdown") as mock_ocr_page,
+            ):
                 mock_ocr_page.return_value = "# Relatório Médico Escaneado\n\nPaciente em bom estado geral."
                 res = converter.convert(pdf_path, output_dir, False, 60000)
                 self.assertTrue(res.markdown_path.is_file())
