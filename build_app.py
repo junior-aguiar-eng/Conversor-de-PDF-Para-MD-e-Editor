@@ -155,7 +155,7 @@ def build() -> None:
     res = subprocess.run(pyinstaller_args, cwd=str(PROJECT_ROOT), env=env)
 
     if res.returncode != 0:
-        print("❌ Erro durante o empacotamento com PyInstaller.")
+        print("[ERRO] Erro durante o empacotamento com PyInstaller.")
         sys.exit(res.returncode)
 
     # Verificação de integridade pós-build
