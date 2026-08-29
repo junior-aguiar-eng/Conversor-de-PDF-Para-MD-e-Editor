@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import ctypes
 import multiprocessing
 import sys
 import time
 import traceback
 from pathlib import Path
-from tkinter import Tk, messagebox
 
 import webview
 
@@ -19,6 +19,7 @@ from constants import (
     resource_root,
 )
 from converter import PdfMarkdownConverter, validate_runtime_dependencies
+from file_authorization import AuthorizedResourceRegistry
 from licensing import LicenseRequiredError, require_software_activation
 from models import (
     BatchConversionSummary,
@@ -29,40 +30,76 @@ from models import (
 from web_api import BridgeApi
 
 
+def _show_message(message: str, *, error: bool) -> None:
+    """Exibe aviso nativo sem depender de Tcl/Tk no executável empacotado."""
+    if sys.platform == "win32":
+        icon = 0x10 if error else 0x40
+        ctypes.windll.user32.MessageBoxW(None, message, APP_NAME, icon)
+        return
+    print(message, file=sys.stderr if error else sys.stdout)
+
+
 def run_quick_convert(paths: list[str]) -> None:
     """Converte PDFs recebidos por linha de comando (ex.: "Enviar para" do
     Explorer), sem abrir a janela principal — pensado para uso pontual."""
-    root = Tk()
-    root.withdraw()
     try:
         require_software_activation()
     except LicenseRequiredError as error:
-        messagebox.showerror(APP_NAME, str(error))
-        root.destroy()
+        _show_message(str(error), error=True)
         return
 
     try:
         validate_runtime_dependencies()
     except RuntimeError as error:
-        messagebox.showerror(APP_NAME, str(error))
-        root.destroy()
+        _show_message(str(error), error=True)
         return
 
     try:
         DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     except OSError as error:
-        messagebox.showerror(APP_NAME, f"Não foi possível criar a pasta de saída:\n{error}")
-        root.destroy()
+        _show_message(f"Não foi possível criar a pasta de saída:\n{error}", error=True)
         return
 
     batch_start = time.perf_counter()
     converter = PdfMarkdownConverter()
+    resources = AuthorizedResourceRegistry()
+    output_resource = resources.register(
+        DEFAULT_OUTPUT_DIR,
+        kind="directory",
+        origin="send_to_cli",
+        capabilities={"write"},
+    )
+    authorized_output = resources.resolve(
+        output_resource.resource_id,
+        kind="directory",
+        capability="write",
+    )
     successes: list[ConversionResult] = []
     failures: list[ConversionFailure] = []
     for raw_path in paths:
-        source = Path(raw_path)
+        source = Path(raw_path).expanduser().resolve()
         try:
-            successes.append(converter.convert(source, DEFAULT_OUTPUT_DIR, False, DEFAULT_MAX_CHUNK_CHARACTERS))
+            if source.suffix.casefold() != ".pdf" or not source.is_file():
+                raise ValueError("O arquivo recebido não é um PDF válido.")
+            source_resource = resources.register(
+                source,
+                kind="pdf",
+                origin="send_to_cli",
+                capabilities={"read", "convert"},
+            )
+            authorized_source = resources.resolve(
+                source_resource.resource_id,
+                kind="pdf",
+                capability="convert",
+            )
+            successes.append(
+                converter.convert(
+                    authorized_source,
+                    authorized_output,
+                    False,
+                    DEFAULT_MAX_CHUNK_CHARACTERS,
+                )
+            )
         except Exception as error:
             failures.append(ConversionFailure(source=source, error_message=str(error), details=traceback.format_exc()))
 
@@ -70,10 +107,9 @@ def run_quick_convert(paths: list[str]) -> None:
     elapsed_seconds = time.perf_counter() - batch_start
     message = build_summary_message("Conversão concluída.", str(DEFAULT_OUTPUT_DIR), summary, elapsed_seconds)
     if successes:
-        messagebox.showinfo(APP_NAME, message)
+        _show_message(message, error=False)
     else:
-        messagebox.showerror(APP_NAME, message)
-    root.destroy()
+        _show_message(message, error=True)
 
 
 def run_gui() -> None:
@@ -107,13 +143,10 @@ def main() -> None:
         validate_runtime_dependencies()
         run_gui()
     except Exception as error:
-        root = Tk()
-        root.withdraw()
-        messagebox.showerror(
-            APP_NAME,
+        _show_message(
             f"Erro ao iniciar o aplicativo:\n\n{error}\n\nDetalhes:\n{traceback.format_exc()}",
+            error=True,
         )
-        root.destroy()
 
 
 if __name__ == "__main__":

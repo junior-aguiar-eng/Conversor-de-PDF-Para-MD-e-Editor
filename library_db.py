@@ -225,14 +225,16 @@ class LibraryDatabase:
         snip_open_html = '<mark class="bg-amber-200 text-amber-900 font-bold px-0.5 rounded">'
         sql = f"""
             SELECT
-                file_path,
-                file_name,
-                page_number,
-                content_type,
-                title,
+                doc_fts.file_path,
+                doc_fts.file_name,
+                doc_fts.page_number,
+                doc_fts.content_type,
+                doc_fts.title,
+                d.markdown_path,
                 snippet(doc_fts, 4, '{snip_open_marker}', '{snip_close_marker}', '...', 22) AS match_snippet,
                 bm25(doc_fts) AS rank
             FROM doc_fts
+            LEFT JOIN documents AS d ON d.file_path = doc_fts.file_path
             WHERE doc_fts MATCH ?
             ORDER BY rank
             LIMIT ?
@@ -258,6 +260,7 @@ class LibraryDatabase:
                         "file_name": row["file_name"],
                         "page_number": int(row["page_number"]),
                         "content_type": row["content_type"],
+                        "markdown_path": row["markdown_path"],
                         "title": row["title"],
                         "snippet": safe_snippet,
                         "rank": float(row["rank"]),
@@ -348,11 +351,19 @@ class LibraryDatabase:
                 for row in rows
             ]
 
-    def delete_bookmark(self, bookmark_id: int) -> bool:
+    def delete_bookmark(self, bookmark_id: int, file_path: str | None = None) -> bool:
         """Remove um marcador de página."""
 
+        path_str = str(Path(file_path).resolve()) if file_path else None
+
         def _do_del_bm(conn: sqlite3.Connection) -> bool:
-            cursor = conn.execute("DELETE FROM bookmarks WHERE id = ?", (bookmark_id,))
+            if path_str is None:
+                cursor = conn.execute("DELETE FROM bookmarks WHERE id = ?", (bookmark_id,))
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM bookmarks WHERE id = ? AND file_path = ?",
+                    (bookmark_id, path_str),
+                )
             return cursor.rowcount > 0
 
         return bool(self._execute_write(_do_del_bm))

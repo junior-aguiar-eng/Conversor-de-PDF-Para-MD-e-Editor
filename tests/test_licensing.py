@@ -98,18 +98,16 @@ class LicensingUnitTests(IsolatedLicensingTestCase):
         self.assertEqual(require_software_activation(), self.machine_id)
 
     def test_quick_convert_rejects_unlicensed_machine_before_converter(self) -> None:
-        fake_root = MagicMock()
         with (
-            patch.object(app_module, "Tk", return_value=fake_root),
             patch.object(app_module, "PdfMarkdownConverter") as converter_class,
-            patch.object(app_module.messagebox, "showerror") as showerror,
+            patch.object(app_module, "_show_message") as show_message,
         ):
             app_module.run_quick_convert(["documento.pdf"])
 
         converter_class.assert_not_called()
-        showerror.assert_called_once()
-        self.assertIn(self.machine_id, showerror.call_args.args[1])
-        fake_root.destroy.assert_called_once()
+        show_message.assert_called_once()
+        self.assertIn(self.machine_id, show_message.call_args.args[0])
+        self.assertTrue(show_message.call_args.kwargs["error"])
 
     def test_admin_private_key_roundtrip(self) -> None:
         private_path = Path(self.tmp_dir.name) / "admin.pem"
@@ -144,7 +142,7 @@ class WebApiLicensingBridgeTests(IsolatedLicensingTestCase):
         output_dir = Path(self.tmp_dir.name) / "must-not-exist"
         with patch("web_api.threading.Thread") as thread_class:
             result = self.api.start_conversion(
-                {"files": [{"path": "documento.pdf"}], "output_dir": str(output_dir)}
+                {"files": [{"file_id": "não-autorizado"}], "output_directory_id": "não-autorizado"}
             )
 
         self.assertFalse(result["started"])
@@ -157,9 +155,13 @@ class WebApiLicensingBridgeTests(IsolatedLicensingTestCase):
     def test_bridge_starts_conversion_after_valid_activation(self) -> None:
         self.assertTrue(self.api.activate_software(self.issue_key())["ok"])
         output_dir = Path(self.tmp_dir.name) / "licensed-output"
+        source = Path(self.tmp_dir.name) / "documento.pdf"
+        source.write_bytes(b"%PDF-1.4\n%%EOF")
+        file_id = self.api._register_pdf(source, "test")["file_id"]
+        directory_id = self.api._register_directory(output_dir, "test")["directory_id"]
         with patch("web_api.threading.Thread") as thread_class:
             result = self.api.start_conversion(
-                {"files": [{"path": "documento.pdf"}], "output_dir": str(output_dir)}
+                {"files": [{"file_id": file_id}], "output_directory_id": directory_id}
             )
 
         self.assertTrue(result["started"])

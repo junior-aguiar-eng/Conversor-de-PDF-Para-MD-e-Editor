@@ -59,9 +59,11 @@ class WebApiTests(unittest.TestCase):
             pdf_file.write_bytes(b"%PDF-1.4 test")
             txt_file.write_text("not a pdf")
 
-            processed = api.process_file_paths([str(pdf_file), str(txt_file), "arquivo_inexistente.pdf"])
+            api.set_window(SimpleNamespace(create_confirmation_dialog=lambda *_: True))
+            processed = api.register_dropped_files([str(pdf_file), str(txt_file), "arquivo_inexistente.pdf"])
             self.assertEqual(len(processed), 1)
             self.assertEqual(processed[0]["name"], "teste.pdf")
+            self.assertTrue(processed[0]["file_id"])
             self.assertGreater(processed[0]["size"], 0)
 
     def test_read_markdown_preview_returns_content(self) -> None:
@@ -70,7 +72,8 @@ class WebApiTests(unittest.TestCase):
             md_file = Path(tmp_dir) / "documento.md"
             md_file.write_text("# Título\n\nConteúdo em markdown.", encoding="utf-8")
 
-            res = api.read_markdown_preview(str(md_file))
+            markdown_id = api._register_markdown(md_file, "test")["markdown_id"]
+            res = api.read_markdown_preview(markdown_id)
             self.assertTrue(res["ok"])
             self.assertEqual(res["name"], "documento.md")
             self.assertIn("# Título", res["content"])
@@ -79,7 +82,7 @@ class WebApiTests(unittest.TestCase):
         api = BridgeApi()
         res = api.read_markdown_preview("inexistente.md")
         self.assertFalse(res["ok"])
-        self.assertIn("não encontrado", res["error"])
+        self.assertIn("não autorizado", res["error"])
 
     def test_start_conversion_validates_empty_files(self) -> None:
         api = BridgeApi()
@@ -89,7 +92,7 @@ class WebApiTests(unittest.TestCase):
 
     def test_start_conversion_validates_small_chunk_limit(self) -> None:
         api = BridgeApi()
-        res = api.start_conversion({"files": [{"path": "a.pdf"}], "max_chunk_characters": 500})
+        res = api.start_conversion({"files": [{"file_id": "desconhecido"}], "max_chunk_characters": 500})
         self.assertFalse(res["started"])
         self.assertIn("pelo menos 1.000", res["error"])
 
@@ -103,12 +106,12 @@ class WebApiTests(unittest.TestCase):
             doc.save(pdf_path)
             doc.close()
 
-            api = BridgeApi.__new__(BridgeApi)
-            api._pdf_passwords = {}
+            api = BridgeApi()
+            file_id = api._register_pdf(pdf_path, "test")["file_id"]
             long_text = "Texto longo efetivamente persistido no documento. " * 12
             result = api.save_pdf_annotations(
                 {
-                    "file_path": str(pdf_path),
+                    "file_id": file_id,
                     "annotations": [
                         {
                             "type": "text",
@@ -141,11 +144,11 @@ class WebApiTests(unittest.TestCase):
             doc.close()
             original_bytes = pdf_path.read_bytes()
 
-            api = BridgeApi.__new__(BridgeApi)
-            api._pdf_passwords = {}
+            api = BridgeApi()
+            file_id = api._register_pdf(pdf_path, "test")["file_id"]
             result = api.save_pdf_annotations(
                 {
-                    "file_path": str(pdf_path),
+                    "file_id": file_id,
                     "annotations": [
                         {
                             "type": "text",
@@ -269,29 +272,30 @@ class WebApiTests(unittest.TestCase):
             page.insert_text((50, 100), "Texto Juridico de Teste para Extracao e Super PDF", fontsize=14)
             doc.save(str(pdf_path))
             doc.close()
+            file_id = api._register_pdf(pdf_path, "test")["file_id"]
 
             # 1. get_pdf_info
-            info = api.get_pdf_info(str(pdf_path))
+            info = api.get_pdf_info(file_id)
             self.assertTrue(info["ok"])
             self.assertEqual(info["page_count"], 1)
             self.assertEqual(len(info["pages"]), 1)
 
             # 2. render_page_hq (verifica compatibilidade com ambos os formatos image e image_base64)
-            render_res = api.render_page_hq(str(pdf_path), page_number=0, dpi=72)
+            render_res = api.render_page_hq(file_id, page_number=0, dpi=72)
             self.assertTrue(render_res["ok"])
             self.assertIn("data:image/png;base64,", render_res["image"])
             self.assertIn("data:image/png;base64,", render_res["image_base64"])
             self.assertEqual(render_res["page_count"], 1)
 
             # 3. rotate_pdf_page
-            rot_res = api.rotate_pdf_page(str(pdf_path), page_number=0, degrees=90)
+            rot_res = api.rotate_pdf_page(file_id, page_number=0, degrees=90)
             self.assertTrue(rot_res["ok"])
             self.assertEqual(rot_res["new_rotation"], 90)
 
             # 4. extract_snippet
             snippet_res = api.extract_snippet(
                 {
-                    "file_path": str(pdf_path),
+                    "file_id": file_id,
                     "page_number": 0,
                     "rect": [40, 80, 500, 120],
                     "dpi": 72,
@@ -303,7 +307,7 @@ class WebApiTests(unittest.TestCase):
 
             # 5. save_pdf_annotations (ink, highlight, freetext)
             annot_payload = {
-                "file_path": str(pdf_path),
+                "file_id": file_id,
                 "annotations": [
                     {
                         "type": "ink",
@@ -333,7 +337,7 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(save_annot_res["saved_count"], 3)
 
             # 6. protect_pdf
-            prot_res = api.protect_pdf(str(pdf_path), user_pw="senha123", owner_pw="mestre123")
+            prot_res = api.protect_pdf(file_id, user_pw="senha123", owner_pw="mestre123")
             self.assertTrue(prot_res["ok"])
 
             # Verify encryption
@@ -344,7 +348,7 @@ class WebApiTests(unittest.TestCase):
             doc_check.close()
 
             # 7. unprotect_pdf
-            unprot_res = api.unprotect_pdf(str(pdf_path), current_pw="senha123")
+            unprot_res = api.unprotect_pdf(file_id, current_pw="senha123")
             self.assertTrue(unprot_res["ok"])
 
             # Verify that document is now unencrypted

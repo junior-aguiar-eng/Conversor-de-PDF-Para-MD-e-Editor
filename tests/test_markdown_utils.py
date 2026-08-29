@@ -72,14 +72,13 @@ class MarkdownUtilsTests(unittest.TestCase):
             max_chunk_characters=70,
         )
 
-        self.assertEqual(result.chunk_count, 2)
+        self.assertEqual(result.chunk_count, 3)
         self.assertTrue(markdown_path.exists())
 
-        first_chunk = output_dir / "documento_partes" / "parte_001.md"
-        self.assertTrue(first_chunk.exists())
+        chunk_files = sorted((output_dir / "documento_partes").glob("parte_*.md"))
         self.assertIn(
             f"../images/{asset_directory_name('documento')}/",
-            first_chunk.read_text(encoding="utf-8"),
+            "\n".join(path.read_text(encoding="utf-8") for path in chunk_files),
         )
 
     def test_normalize_heading_levels_reclassifies_comentario_label_regardless_of_origin_level(

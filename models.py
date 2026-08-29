@@ -4,6 +4,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+PageExtractionStatus = Literal["native", "ocr", "fallback", "empty", "failed"]
+
+
+@dataclass(frozen=True)
+class OutputReservation:
+    markdown_path: Path
+    assets_dir: Path
+    chunks_dir: Path
+
+
+@dataclass(frozen=True)
+class PageCoverage:
+    page_number: int
+    status: PageExtractionStatus
+    warning: str = ""
 
 
 def format_duration(seconds: float) -> str:
@@ -21,6 +38,15 @@ class ConversionResult:
     asset_count: int
     chunk_count: int
     extraction_seconds: float = 0.0
+    page_coverage: tuple[PageCoverage, ...] = ()
+
+    @property
+    def failed_pages(self) -> tuple[int, ...]:
+        return tuple(item.page_number for item in self.page_coverage if item.status == "failed")
+
+    @property
+    def warning_pages(self) -> tuple[int, ...]:
+        return tuple(item.page_number for item in self.page_coverage if item.warning)
 
 
 @dataclass(frozen=True)
@@ -51,6 +77,13 @@ def build_summary_message(
     ]
     if summary.successes:
         message.extend(["", f"Arquivos salvos em:\n{output_dir}"])
+        problematic = [result for result in summary.successes if result.failed_pages]
+        if problematic:
+            page_lines = "\n".join(
+                f"- {result.source.name}: {', '.join(map(str, result.failed_pages))}"
+                for result in problematic
+            )
+            message.extend(["", f"Páginas não recuperadas:\n{page_lines}"])
     if summary.failures:
         failed_names = "\n".join(f"- {failure.source.name}" for failure in summary.failures[:10])
         message.extend(["", f"Falhas nesta execução:\n{failed_names}"])

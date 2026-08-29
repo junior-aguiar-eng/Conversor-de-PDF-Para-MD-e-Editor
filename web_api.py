@@ -6,15 +6,18 @@ import asyncio
 import base64
 import json
 import logging
+import mimetypes
 import os
 import subprocess
 import threading
 import time
 import traceback
+import webbrowser
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import edge_tts
 import fitz
@@ -33,6 +36,7 @@ from converter import (
     init_worker,
     validate_runtime_dependencies,
 )
+from file_authorization import AuthorizedResourceRegistry, ResourceAccessError
 from library_db import LibraryDatabase
 from licensing import (
     LicenseRequiredError,
@@ -42,8 +46,8 @@ from licensing import (
 from licensing import (
     activate_software as lic_activate_software,
 )
-from markdown_utils import HeadingProfile
-from models import ConversionFailure, ConversionResult, format_duration
+from markdown_utils import HeadingProfile, SplitMode, reserve_batch_output_paths
+from models import ConversionFailure, ConversionResult, OutputReservation, format_duration
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +177,72 @@ class BridgeApi:
         self._batch_start_time = 0.0
         self._pdf_passwords: dict[str, str] = {}
         self._library = LibraryDatabase()
+        self._resources = AuthorizedResourceRegistry()
+        self._default_output_resource = self._register_directory(DEFAULT_OUTPUT_DIR, "default_output")
+
+    def _register_pdf(self, path: str | Path, origin: str) -> dict[str, Any]:
+        resolved = Path(path).expanduser().resolve()
+        if not resolved.is_file() or resolved.suffix.lower() != ".pdf":
+            raise ResourceAccessError("O recurso selecionado não é um PDF válido.")
+        resource = self._resources.register(
+            resolved,
+            kind="pdf",
+            origin=origin,
+            capabilities={"read", "write", "convert", "open"},
+        )
+        size = resolved.stat().st_size
+        return {
+            "file_id": resource.resource_id,
+            "path": str(resolved),
+            "name": resolved.name,
+            "size": size,
+            "size_formatted": format_file_size(size),
+        }
+
+    def _register_markdown(self, path: str | Path, origin: str) -> dict[str, Any]:
+        resolved = Path(path).expanduser().resolve()
+        if not resolved.is_file() or resolved.suffix.lower() not in {".md", ".markdown"}:
+            raise ResourceAccessError("O recurso selecionado não é um Markdown válido.")
+        resource = self._resources.register(
+            resolved,
+            kind="markdown",
+            origin=origin,
+            capabilities={"read", "open", "asset_read"},
+        )
+        return {
+            "markdown_id": resource.resource_id,
+            "markdown_path": str(resolved),
+            "name": resolved.name,
+        }
+
+    def _register_directory(self, path: str | Path, origin: str) -> dict[str, Any]:
+        resolved = Path(path).expanduser().resolve()
+        resolved.mkdir(parents=True, exist_ok=True)
+        resource = self._resources.register(
+            resolved,
+            kind="directory",
+            origin=origin,
+            capabilities={"write", "open"},
+        )
+        return {"directory_id": resource.resource_id, "path": str(resolved)}
+
+    def _resolve_pdf(self, file_id: str, capability: str = "read") -> Path:
+        path = self._resources.resolve(file_id, kind="pdf", capability=capability)
+        if not path.is_file() or path.suffix.lower() != ".pdf":
+            raise ResourceAccessError("O PDF autorizado não está disponível.")
+        return path
+
+    def _resolve_markdown(self, markdown_id: str, capability: str = "read") -> Path:
+        path = self._resources.resolve(markdown_id, kind="markdown", capability=capability)
+        if not path.is_file() or path.suffix.lower() not in {".md", ".markdown"}:
+            raise ResourceAccessError("O Markdown autorizado não está disponível.")
+        return path
+
+    def _resolve_directory(self, directory_id: str, capability: str = "write") -> Path:
+        path = self._resources.resolve(directory_id, kind="directory", capability=capability)
+        if not path.is_dir():
+            raise ResourceAccessError("A pasta autorizada não está disponível.")
+        return path
 
     def _open_doc_with_auth(
         self, file_path: str | Path, password: str | None = None
@@ -217,6 +287,7 @@ class BridgeApi:
             "app_name": APP_NAME,
             "app_version": APP_VERSION,
             "default_output_dir": str(DEFAULT_OUTPUT_DIR),
+            "default_output_dir_id": self._default_output_resource["directory_id"],
             "default_chunk_limit": DEFAULT_MAX_CHUNK_CHARACTERS,
             "max_page_count": MAX_PAGE_COUNT,
         }
@@ -277,12 +348,12 @@ class BridgeApi:
             )
             if not result:
                 return []
-            return self.process_file_paths(list(result))
+            return self._process_file_paths(list(result), origin="native_dialog")
         except Exception as error:
             self._emit("toast", {"type": "error", "message": f"Falha ao abrir diálogo: {error}"})
             return []
 
-    def choose_output_directory(self) -> str | None:
+    def choose_output_directory(self) -> dict[str, Any] | None:
         """Abre o diálogo nativo para seleção da pasta de saída."""
         if not self._window:
             return None
@@ -291,32 +362,54 @@ class BridgeApi:
         try:
             result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
             if result and len(result) > 0:
-                return str(Path(result[0]).resolve())
+                return self._register_directory(result[0], "native_output_dialog")
             return None
         except Exception as error:
             self._emit("toast", {"type": "error", "message": f"Falha ao selecionar pasta: {error}"})
             return None
 
-    def process_file_paths(self, paths: list[str]) -> list[dict[str, Any]]:
-        """Processa uma lista de caminhos (vindos de diálogo ou Drag & Drop)."""
+    def _process_file_paths(self, paths: list[str], *, origin: str) -> list[dict[str, Any]]:
+        """Valida PDFs de uma origem de ingresso antes de conceder IDs opacos."""
         file_entries: list[dict[str, Any]] = []
         for raw_path in paths:
             try:
-                path = Path(raw_path).resolve()
-                if not path.is_file() or path.suffix.lower() != ".pdf":
-                    continue
-                size = path.stat().st_size
-                file_entries.append(
-                    {
-                        "path": str(path),
-                        "name": path.name,
-                        "size": size,
-                        "size_formatted": format_file_size(size),
-                    }
-                )
-            except OSError:
+                file_entries.append(self._register_pdf(raw_path, origin))
+            except (OSError, ResourceAccessError):
                 continue
         return file_entries
+
+    def register_dropped_files(self, paths: list[str]) -> list[dict[str, Any]]:
+        """Confirma nativamente o drop antes de conceder autoridade sobre caminhos do renderer."""
+        if not self._window or not isinstance(paths, list) or len(paths) > 100:
+            return []
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for raw_path in paths:
+            try:
+                path = Path(raw_path).expanduser().resolve()
+                key = str(path).casefold()
+                if path.is_file() and path.suffix.lower() == ".pdf" and key not in seen:
+                    candidates.append(str(path))
+                    seen.add(key)
+            except (OSError, TypeError, ValueError):
+                continue
+        if not candidates:
+            return []
+        names = "\n".join(f"• {Path(path).name}" for path in candidates[:10])
+        remainder = len(candidates) - 10
+        if remainder > 0:
+            names += f"\n• e mais {remainder} arquivo(s)"
+        try:
+            confirmed = self._window.create_confirmation_dialog(
+                "Autorizar PDFs arrastados",
+                f"Deseja conceder acesso a {len(candidates)} PDF(s)?\n\n{names}",
+            )
+        except Exception as error:
+            logger.debug(f"Falha ao confirmar arquivos arrastados: {error}")
+            return []
+        if not confirmed:
+            return []
+        return self._process_file_paths(candidates, origin="confirmed_drag_drop")
 
     def start_conversion(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Inicia a conversão em lote em uma thread em segundo plano."""
@@ -337,8 +430,11 @@ class BridgeApi:
         if not files_data:
             return {"started": False, "error": "Nenhum PDF selecionado."}
 
-        output_dir_str = payload.get("output_dir", str(DEFAULT_OUTPUT_DIR))
+        output_directory_id = payload.get("output_directory_id", "")
         split_output = bool(payload.get("split_output", False))
+        split_mode: SplitMode = payload.get("split_mode", "semantic")
+        if split_mode not in {"semantic", "strict"}:
+            return {"started": False, "error": "Modo de divisão inválido."}
         max_chunk_characters = int(payload.get("max_chunk_characters", DEFAULT_MAX_CHUNK_CHARACTERS))
         heading_profile: HeadingProfile = payload.get("heading_profile", "jurisprudencia")
 
@@ -349,13 +445,28 @@ class BridgeApi:
                 "error": f"O limite das partes deve ter pelo menos {formatted_limit} caracteres.",
             }
 
-        output_dir = Path(output_dir_str).expanduser().resolve()
         try:
-            output_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as error:
-            return {"started": False, "error": f"Não foi possível criar a pasta de saída: {error}"}
+            output_dir = self._resolve_directory(output_directory_id, "write")
+            file_paths = [self._resolve_pdf(str(item.get("file_id", "")), "convert") for item in files_data]
+            page_numbers_by_file: list[tuple[int, ...] | None] = []
+            for item in files_data:
+                raw_pages = item.get("page_numbers")
+                if raw_pages is None:
+                    page_numbers_by_file.append(None)
+                    continue
+                if not isinstance(raw_pages, list) or not raw_pages:
+                    raise ResourceAccessError("Lista de páginas para reprocessamento inválida.")
+                pages = tuple(dict.fromkeys(int(value) for value in raw_pages))
+                if any(value < 1 or value > MAX_PAGE_COUNT for value in pages):
+                    raise ResourceAccessError("Página de reprocessamento fora do limite permitido.")
+                page_numbers_by_file.append(pages)
+        except (OSError, ResourceAccessError) as error:
+            return {"started": False, "error": str(error)}
+        except (TypeError, ValueError):
+            return {"started": False, "error": "Lista de páginas para reprocessamento inválida."}
 
-        file_paths = [Path(item["path"]) for item in files_data if "path" in item]
+        if len(file_paths) != len(files_data):
+            return {"started": False, "error": "A fila contém recursos não autorizados."}
 
         self.cancel_requested.clear()
         self.resume_processing.set()
@@ -365,11 +476,37 @@ class BridgeApi:
 
         thread = threading.Thread(
             target=self._convert_in_background,
-            args=(file_paths, output_dir, split_output, max_chunk_characters, heading_profile),
+            args=(
+                file_paths,
+                output_dir,
+                split_output,
+                max_chunk_characters,
+                heading_profile,
+                split_mode,
+                page_numbers_by_file,
+            ),
             daemon=True,
         )
         thread.start()
         return {"started": True, "error": None}
+
+    def retry_failed_pages(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Reprocessa somente as páginas explicitamente indicadas em uma nova saída transacional."""
+        return self.start_conversion(
+            {
+                "files": [
+                    {
+                        "file_id": payload.get("file_id", ""),
+                        "page_numbers": payload.get("page_numbers", []),
+                    }
+                ],
+                "output_directory_id": payload.get("output_directory_id", ""),
+                "split_output": bool(payload.get("split_output", False)),
+                "split_mode": payload.get("split_mode", "semantic"),
+                "max_chunk_characters": payload.get("max_chunk_characters", DEFAULT_MAX_CHUNK_CHARACTERS),
+                "heading_profile": payload.get("heading_profile", "jurisprudencia"),
+            }
+        )
 
     def toggle_pause(self) -> dict[str, Any]:
         """Alterna o estado de pausa da fila de conversão."""
@@ -396,11 +533,12 @@ class BridgeApi:
         self._emit("status", {"message": "Parada solicitada: concluindo extração ativa..."})
         return True
 
-    def open_markdown(self, file_path: str) -> bool:
+    def open_markdown(self, markdown_id: str) -> bool:
         """Abre o arquivo Markdown gerado no editor padrão do Windows."""
-        path = Path(file_path).resolve()
-        if not path.exists():
-            self._emit("toast", {"type": "error", "message": "Arquivo não encontrado."})
+        try:
+            path = self._resolve_markdown(markdown_id, "open")
+        except ResourceAccessError as error:
+            self._emit("toast", {"type": "error", "message": str(error)})
             return False
         try:
             os.startfile(path)  # type: ignore[attr-defined]
@@ -409,53 +547,104 @@ class BridgeApi:
             self._emit("toast", {"type": "error", "message": f"Erro ao abrir arquivo: {error}"})
             return False
 
-    def open_folder(self, file_path: str) -> bool:
-        """Abre o Windows Explorer selecionando o arquivo ou pasta indicada."""
-        path = Path(file_path).resolve()
-        if not path.exists():
-            self._emit("toast", {"type": "error", "message": "Caminho não encontrado."})
+    def open_folder(self, directory_id: str) -> bool:
+        """Abre no Explorer somente uma pasta previamente autorizada."""
+        try:
+            path = self._resolve_directory(directory_id, "open")
+        except ResourceAccessError as error:
+            self._emit("toast", {"type": "error", "message": str(error)})
             return False
         try:
-            if path.is_file():
-                subprocess.run(["explorer", f"/select,{path}"])
-            else:
-                subprocess.run(["explorer", str(path)])
+            subprocess.run(["explorer", str(path)], check=False)
             return True
         except OSError as error:
             self._emit("toast", {"type": "error", "message": f"Erro ao abrir pasta: {error}"})
             return False
 
-    def read_markdown_preview(self, file_path: str) -> dict[str, Any]:
+    def read_markdown_preview(self, markdown_id: str) -> dict[str, Any]:
         """Lê o conteúdo do Markdown gerado para visualização em tempo real."""
-        path = Path(file_path).resolve()
-        if not path.is_file():
-            return {"ok": False, "error": "Arquivo não encontrado."}
         try:
+            path = self._resolve_markdown(markdown_id, "read")
             content = path.read_text(encoding="utf-8")
             size = path.stat().st_size
             return {
                 "ok": True,
                 "name": path.name,
                 "path": str(path),
+                "markdown_id": markdown_id,
                 "content": content,
                 "size_formatted": format_file_size(size),
             }
-        except Exception as error:
+        except (OSError, UnicodeError, ResourceAccessError) as error:
             return {"ok": False, "error": f"Erro ao ler Markdown: {error}"}
+
+    def read_markdown_asset(self, markdown_id: str, relative_ref: str) -> dict[str, Any]:
+        """Lê imagem relativa contida na pasta do Markdown sem expor acesso genérico."""
+        try:
+            markdown_path = self._resolve_markdown(markdown_id, "asset_read")
+            parsed = urlsplit(str(relative_ref))
+            if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+                raise ResourceAccessError("Referência de imagem não permitida.")
+            decoded = unquote(parsed.path)
+            if not decoded or "\x00" in decoded or decoded.startswith(("/", "\\")):
+                raise ResourceAccessError("Referência de imagem inválida.")
+            relative = Path(decoded.replace("/", os.sep))
+            if relative.is_absolute() or relative.drive or ".." in relative.parts:
+                raise ResourceAccessError("A imagem está fora da pasta autorizada.")
+            root = markdown_path.parent.resolve()
+            asset = (root / relative).resolve()
+            if not asset.is_relative_to(root) or not asset.is_file():
+                raise ResourceAccessError("Imagem local não encontrada ou não autorizada.")
+            allowed_types = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+                ".bmp": "image/bmp",
+            }
+            mime = allowed_types.get(asset.suffix.lower())
+            guessed, _ = mimetypes.guess_type(asset.name)
+            if mime is None or guessed != mime:
+                raise ResourceAccessError("Formato de imagem local não permitido.")
+            if asset.stat().st_size > 20 * 1024 * 1024:
+                raise ResourceAccessError("A imagem local excede o limite de 20 MB.")
+            encoded = base64.b64encode(asset.read_bytes()).decode("ascii")
+            return {"ok": True, "data_uri": f"data:{mime};base64,{encoded}"}
+        except (OSError, ResourceAccessError) as error:
+            return {"ok": False, "error": str(error)}
+
+    def open_external_url(self, url: str) -> dict[str, Any]:
+        """Abre apenas links HTTP(S) no navegador padrão do sistema."""
+        parsed = urlsplit(str(url).strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+            return {"ok": False, "error": "Link externo não permitido."}
+        try:
+            return {"ok": bool(webbrowser.open(url, new=2))}
+        except webbrowser.Error as error:
+            return {"ok": False, "error": str(error)}
 
     # --------------------------------------------------------------------------
     # Módulos do Super PDF (Leitor e Editor Integrado)
     # --------------------------------------------------------------------------
-    def set_pdf_password(self, file_path: str, password: str) -> dict[str, Any]:
+    def set_pdf_password(self, file_id: str, password: str) -> dict[str, Any]:
         """Tenta autenticar e memorizar a senha de um PDF protegido."""
+        try:
+            file_path = self._resolve_pdf(file_id)
+        except ResourceAccessError as error:
+            return {"ok": False, "error": str(error)}
         doc, error, needs_password = self._open_doc_with_auth(file_path, password)
         if error or needs_password or doc is None:
             return {"ok": False, "error": error or "Senha incorreta."}
         doc.close()
         return {"ok": True, "message": "Senha autenticada com sucesso."}
 
-    def get_pdf_info(self, file_path: str, password: str | None = None) -> dict[str, Any]:
+    def get_pdf_info(self, file_id: str, password: str | None = None) -> dict[str, Any]:
         """Retorna metadados e lista de páginas do PDF para o Leitor."""
+        try:
+            file_path = self._resolve_pdf(file_id)
+        except ResourceAccessError as error:
+            return {"ok": False, "error": str(error), "needs_password": False}
         doc, error, needs_password = self._open_doc_with_auth(file_path, password)
         if error or needs_password or doc is None:
             return {"ok": False, "error": error or "PDF protegido.", "needs_password": needs_password, "is_encrypted": True}
@@ -482,6 +671,7 @@ class BridgeApi:
                 "ok": True,
                 "file_name": path.name,
                 "file_path": str(path),
+                "file_id": file_id,
                 "page_count": page_count,
                 "is_encrypted": is_encrypted,
                 "pages": pages,
@@ -503,8 +693,12 @@ class BridgeApi:
         finally:
             _safe_close(doc)
 
-    def render_page_hq(self, file_path: str, page_number: int = 0, dpi: int = 150, password: str | None = None) -> dict[str, Any]:
+    def render_page_hq(self, file_id: str, page_number: int = 0, dpi: int = 150, password: str | None = None) -> dict[str, Any]:
         """Renderiza uma página do PDF sob demanda em alta resolução em base64."""
+        try:
+            file_path = self._resolve_pdf(file_id)
+        except ResourceAccessError as error:
+            return {"ok": False, "error": str(error), "needs_password": False}
         doc, error, needs_password = self._open_doc_with_auth(file_path, password)
         if error or needs_password or doc is None:
             return {"ok": False, "error": error or "PDF protegido.", "needs_password": needs_password}
@@ -532,14 +726,19 @@ class BridgeApi:
                 "rotation": page.rotation,
                 "file_name": path.name,
                 "file_path": str(path),
+                "file_id": file_id,
             }
         except Exception as error:
             return {"ok": False, "error": f"Erro ao renderizar: {error}"}
         finally:
             _safe_close(doc)
 
-    def rotate_pdf_page(self, file_path: str, page_number: int, degrees: int, password: str | None = None) -> dict[str, Any]:
+    def rotate_pdf_page(self, file_id: str, page_number: int, degrees: int, password: str | None = None) -> dict[str, Any]:
         """Gira uma página específica em incrementos de 90 graus e salva o PDF."""
+        try:
+            file_path = self._resolve_pdf(file_id, "write")
+        except ResourceAccessError as error:
+            return {"ok": False, "error": str(error), "needs_password": False}
         doc, error, needs_password = self._open_doc_with_auth(file_path, password)
         if error or needs_password or doc is None:
             return {"ok": False, "error": error or "PDF protegido.", "needs_password": needs_password}
@@ -564,15 +763,16 @@ class BridgeApi:
         finally:
             _safe_close(doc)
 
-    def protect_pdf(self, file_path: str, user_pw: str, owner_pw: str = "") -> dict[str, Any]:
+    def protect_pdf(self, file_id: str, user_pw: str, owner_pw: str = "") -> dict[str, Any]:
         """Aplica criptografia AES-256 no arquivo PDF com senhas de proteção."""
-        path = Path(file_path).resolve()
-        if not path.is_file():
-            return {"ok": False, "error": "Arquivo não encontrado."}
+        try:
+            path = self._resolve_pdf(file_id, "write")
+        except ResourceAccessError as error:
+            return {"ok": False, "error": str(error)}
         if not user_pw:
             return {"ok": False, "error": "A senha do usuário não pode ser vazia."}
 
-        doc, error, needs_password = self._open_doc_with_auth(file_path)
+        doc, error, needs_password = self._open_doc_with_auth(path)
         if error or doc is None:
             return {"ok": False, "error": error or "Não foi possível abrir o PDF."}
 
@@ -597,13 +797,14 @@ class BridgeApi:
         finally:
             _safe_close(doc)
 
-    def unprotect_pdf(self, file_path: str, current_pw: str = "") -> dict[str, Any]:
+    def unprotect_pdf(self, file_id: str, current_pw: str = "") -> dict[str, Any]:
         """Remove a proteção por senha de um arquivo PDF, gravando-o descriptografado."""
-        path = Path(file_path).resolve()
-        if not path.is_file():
-            return {"ok": False, "error": "Arquivo não encontrado."}
+        try:
+            path = self._resolve_pdf(file_id, "write")
+        except ResourceAccessError as error:
+            return {"ok": False, "error": str(error)}
 
-        doc, error, needs_password = self._open_doc_with_auth(file_path, current_pw)
+        doc, error, needs_password = self._open_doc_with_auth(path, current_pw)
         if error or doc is None:
             return {"ok": False, "error": error or "Não foi possível abrir o PDF com a senha informada."}
 
@@ -626,9 +827,14 @@ class BridgeApi:
 
     def save_pdf_annotations(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Grava anotações nativas e caixas de texto estruturadas no arquivo PDF."""
-        file_path = payload.get("file_path", "")
+        file_id = payload.get("file_id", "")
         password = payload.get("password")
         annotations = payload.get("annotations", [])
+
+        try:
+            file_path = self._resolve_pdf(str(file_id), "write")
+        except ResourceAccessError as error:
+            return {"ok": False, "error": str(error), "needs_password": False}
 
         doc, error, needs_password = self._open_doc_with_auth(file_path, password)
         if error or needs_password or doc is None:
@@ -798,11 +1004,16 @@ class BridgeApi:
 
     def extract_snippet(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Extrai texto e imagem recortada em alta resolução de uma região retangular do PDF."""
-        file_path = payload.get("file_path", "")
+        file_id = payload.get("file_id", "")
         password = payload.get("password")
         page_number = int(payload.get("page_number", 0))
         rect_coords = payload.get("rect", [0, 0, 100, 100])
         dpi = int(payload.get("dpi", 150))
+
+        try:
+            file_path = self._resolve_pdf(str(file_id), "read")
+        except ResourceAccessError as error:
+            return {"ok": False, "error": str(error), "needs_password": False}
 
         doc, error, needs_password = self._open_doc_with_auth(file_path, password)
         if error or needs_password or doc is None:
@@ -957,7 +1168,22 @@ class BridgeApi:
     def search_library(self, query: str) -> dict[str, Any]:
         """Executa busca textual instantânea em toda a biblioteca via FTS5."""
         try:
-            results = self._library.search(query, limit=50)
+            raw_results = self._library.search(query, limit=50)
+            results: list[dict[str, Any]] = []
+            for item in raw_results:
+                try:
+                    enriched = dict(item)
+                    if item.get("content_type") == "markdown":
+                        markdown = self._register_markdown(item.get("markdown_path", ""), "persisted_library")
+                        enriched["resource_id"] = markdown["markdown_id"]
+                        enriched["display_path"] = markdown["markdown_path"]
+                    else:
+                        pdf = self._register_pdf(item["file_path"], "persisted_library")
+                        enriched["resource_id"] = pdf["file_id"]
+                        enriched["display_path"] = pdf["path"]
+                    results.append(enriched)
+                except (OSError, ResourceAccessError):
+                    continue
             return {"ok": True, "query": query, "results": results, "total": len(results)}
         except Exception as error:
             logger.error(f"Erro na busca do acervo: {error}", exc_info=True)
@@ -966,47 +1192,61 @@ class BridgeApi:
     def get_recent_library(self) -> dict[str, Any]:
         """Retorna os documentos recentes do acervo."""
         try:
-            docs = self._library.get_recent_documents(limit=30)
-            return {"ok": True, "documents": docs}
+            documents: list[dict[str, Any]] = []
+            for doc in self._library.get_recent_documents(limit=30):
+                try:
+                    enriched = dict(doc)
+                    pdf = self._register_pdf(doc["file_path"], "recent_reopen")
+                    enriched["resource_id"] = pdf["file_id"]
+                    enriched["display_path"] = pdf["path"]
+                    documents.append(enriched)
+                except (OSError, ResourceAccessError):
+                    continue
+            return {"ok": True, "documents": documents}
         except Exception as error:
             return {"ok": False, "error": str(error), "documents": []}
 
-    def save_reading_state(self, file_path: str, last_page: int, zoom: str = "1.0") -> dict[str, Any]:
+    def save_reading_state(self, file_id: str, last_page: int, zoom: str = "1.0") -> dict[str, Any]:
         """Salva a última página lida e o zoom preferido no documento."""
         try:
-            self._library.save_session_state(file_path, last_page, zoom)
+            file_path = self._resolve_pdf(file_id)
+            self._library.save_session_state(str(file_path), last_page, zoom)
             return {"ok": True}
         except Exception as error:
             return {"ok": False, "error": str(error)}
 
-    def get_reading_state(self, file_path: str) -> dict[str, Any]:
+    def get_reading_state(self, file_id: str) -> dict[str, Any]:
         """Recupera o histórico de leitura do documento."""
         try:
-            state = self._library.get_session_state(file_path)
+            file_path = self._resolve_pdf(file_id)
+            state = self._library.get_session_state(str(file_path))
             return {"ok": True, "state": state}
         except Exception as error:
             return {"ok": False, "error": str(error)}
 
-    def add_bookmark(self, file_path: str, page_number: int, title: str = "") -> dict[str, Any]:
+    def add_bookmark(self, file_id: str, page_number: int, title: str = "") -> dict[str, Any]:
         """Adiciona um marcador de página no documento."""
         try:
-            res = self._library.add_bookmark(file_path, page_number, title)
+            file_path = self._resolve_pdf(file_id)
+            res = self._library.add_bookmark(str(file_path), page_number, title)
             return res
         except Exception as error:
             return {"ok": False, "error": str(error)}
 
-    def get_bookmarks(self, file_path: str) -> dict[str, Any]:
+    def get_bookmarks(self, file_id: str) -> dict[str, Any]:
         """Retorna todos os marcadores de um documento."""
         try:
-            bookmarks = self._library.get_bookmarks(file_path)
+            file_path = self._resolve_pdf(file_id)
+            bookmarks = self._library.get_bookmarks(str(file_path))
             return {"ok": True, "bookmarks": bookmarks}
         except Exception as error:
             return {"ok": False, "error": str(error), "bookmarks": []}
 
-    def delete_bookmark(self, bookmark_id: int) -> dict[str, Any]:
+    def delete_bookmark(self, file_id: str, bookmark_id: int) -> dict[str, Any]:
         """Exclui um marcador de página."""
         try:
-            success = self._library.delete_bookmark(bookmark_id)
+            file_path = self._resolve_pdf(file_id)
+            success = self._library.delete_bookmark(bookmark_id, str(file_path))
             return {"ok": success}
         except Exception as error:
             return {"ok": False, "error": str(error)}
@@ -1030,14 +1270,41 @@ class BridgeApi:
         split_output: bool,
         max_chunk_characters: int,
         heading_profile: HeadingProfile,
+        split_mode: SplitMode = "semantic",
+        page_numbers_by_file: list[tuple[int, ...] | None] | None = None,
         max_workers: int | None = None,
     ) -> None:
         try:
+            page_numbers_by_file = page_numbers_by_file or [None] * len(files)
+            reservations = reserve_batch_output_paths(
+                output_dir,
+                files,
+                retry=any(pages is not None for pages in page_numbers_by_file),
+            )
             worker_count = self._resolve_worker_count(len(files)) if max_workers is None else max(1, max_workers)
             if worker_count <= 1:
-                self._convert_sequentially(files, output_dir, split_output, max_chunk_characters, heading_profile)
+                self._convert_sequentially(
+                    files,
+                    output_dir,
+                    split_output,
+                    max_chunk_characters,
+                    heading_profile,
+                    reservations,
+                    split_mode,
+                    page_numbers_by_file,
+                )
             else:
-                self._convert_in_parallel(files, output_dir, split_output, max_chunk_characters, heading_profile, worker_count)
+                self._convert_in_parallel(
+                    files,
+                    output_dir,
+                    split_output,
+                    max_chunk_characters,
+                    heading_profile,
+                    worker_count,
+                    reservations,
+                    split_mode,
+                    page_numbers_by_file,
+                )
         except Exception as error:
             self._emit(
                 "batch_error",
@@ -1059,11 +1326,16 @@ class BridgeApi:
         split_output: bool,
         max_chunk_characters: int,
         heading_profile: HeadingProfile,
+        reservations: list[OutputReservation] | None = None,
+        split_mode: SplitMode = "semantic",
+        page_numbers_by_file: list[tuple[int, ...] | None] | None = None,
     ) -> None:
         converter = PdfMarkdownConverter()
         successes: list[ConversionResult] = []
         failures: list[ConversionFailure] = []
         total = len(files)
+        reservations = reservations or reserve_batch_output_paths(output_dir, files)
+        page_numbers_by_file = page_numbers_by_file or [None] * total
         self._emit_progress(0, total)
 
         for index, source in enumerate(files, start=1):
@@ -1078,12 +1350,27 @@ class BridgeApi:
 
             self._emit(
                 "file_start",
-                {"path": str(source), "name": source.name, "index": index, "total": total},
+                {
+                    "file_id": self._resources.id_for_path(source, kind="pdf"),
+                    "path": str(source),
+                    "name": source.name,
+                    "index": index,
+                    "total": total,
+                },
             )
             self._emit("status", {"message": f"Convertendo {index}/{total}: {source.name}"})
 
             try:
-                result = converter.convert(source, output_dir, split_output, max_chunk_characters, heading_profile)
+                result = converter.convert(
+                    source,
+                    output_dir,
+                    split_output,
+                    max_chunk_characters,
+                    heading_profile,
+                    reservations[index - 1],
+                    split_mode,
+                    page_numbers_by_file[index - 1],
+                )
                 successes.append(result)
                 self._emit_file_success(result)
             except Exception as error:
@@ -1103,8 +1390,13 @@ class BridgeApi:
         max_chunk_characters: int,
         heading_profile: HeadingProfile,
         worker_count: int,
+        reservations: list[OutputReservation] | None = None,
+        split_mode: SplitMode = "semantic",
+        page_numbers_by_file: list[tuple[int, ...] | None] | None = None,
     ) -> None:
         total = len(files)
+        reservations = reservations or reserve_batch_output_paths(output_dir, files)
+        page_numbers_by_file = page_numbers_by_file or [None] * total
         self._emit_progress(0, total)
         successes: list[ConversionResult] = []
         failures: list[ConversionFailure] = []
@@ -1119,7 +1411,13 @@ class BridgeApi:
                         next_index += 1
                         self._emit(
                             "file_start",
-                            {"path": str(source), "name": source.name, "index": next_index, "total": total},
+                            {
+                                "file_id": self._resources.id_for_path(source, kind="pdf"),
+                                "path": str(source),
+                                "name": source.name,
+                                "index": next_index,
+                                "total": total,
+                            },
                         )
                         self._emit("status", {"message": f"Convertendo {next_index}/{total}: {source.name}"})
                         try:
@@ -1130,6 +1428,9 @@ class BridgeApi:
                                 split_output,
                                 max_chunk_characters,
                                 heading_profile,
+                                reservations[next_index - 1],
+                                split_mode,
+                                page_numbers_by_file[next_index - 1],
                             )
                         except BrokenProcessPool as error:
                             failure = ConversionFailure(source=source, error_message=str(error), details=traceback.format_exc())
@@ -1176,16 +1477,31 @@ class BridgeApi:
         except Exception as err:
             logger.debug(f"Falha ao indexar markdown {result.markdown_path}: {err}")
 
+        markdown = self._register_markdown(result.markdown_path, "conversion_result")
+        output_directory = self._register_directory(result.markdown_path.parent, "conversion_result")
         self._emit(
             "file_success",
             {
+                "source_id": self._resources.id_for_path(result.source, kind="pdf"),
                 "source": str(result.source),
                 "name": result.source.name,
                 "markdown_path": str(result.markdown_path),
+                "markdown_id": markdown["markdown_id"],
+                "output_directory_id": output_directory["directory_id"],
                 "asset_count": result.asset_count,
                 "chunk_count": result.chunk_count,
                 "duration_formatted": format_duration(result.extraction_seconds),
                 "extraction_seconds": result.extraction_seconds,
+                "page_coverage": [
+                    {
+                        "page_number": item.page_number,
+                        "status": item.status,
+                        "warning": item.warning,
+                    }
+                    for item in result.page_coverage
+                ],
+                "failed_pages": list(result.failed_pages),
+                "warning_pages": list(result.warning_pages),
             },
         )
 
@@ -1193,6 +1509,7 @@ class BridgeApi:
         self._emit(
             "file_error",
             {
+                "source_id": self._resources.id_for_path(failure.source, kind="pdf"),
                 "source": str(failure.source),
                 "name": failure.source.name,
                 "error_message": failure.error_message,
@@ -1212,6 +1529,11 @@ class BridgeApi:
         output_dir: Path,
     ) -> None:
         elapsed_seconds = time.perf_counter() - self._batch_start_time
+        problem_pages = [
+            {"name": result.source.name, "pages": list(result.failed_pages)}
+            for result in successes
+            if result.failed_pages
+        ]
         self._emit(
             "batch_done",
             {
@@ -1221,6 +1543,8 @@ class BridgeApi:
                 "elapsed_seconds": elapsed_seconds,
                 "elapsed_formatted": format_duration(elapsed_seconds),
                 "output_dir": str(output_dir),
+                "problem_pages": problem_pages,
+                "problem_page_count": sum(len(item["pages"]) for item in problem_pages),
             },
         )
 

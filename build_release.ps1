@@ -16,6 +16,11 @@ $webDist = Join-Path $work "web_dist"
 $versionFile = Join-Path $work "version_info.txt"
 $venvPython = Join-Path $project ".venv\Scripts\python.exe"
 
+& uv run python (Join-Path $project "scripts\verify_web_assets.py")
+if ($LASTEXITCODE -ne 0) {
+    throw "A validação dos assets web falhou. Execute npm ci e npm run build:web."
+}
+
 Remove-Item -LiteralPath $release -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $dist, $work, $webDist | Out-Null
 

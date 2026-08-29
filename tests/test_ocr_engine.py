@@ -63,7 +63,6 @@ class OcrEngineTests(unittest.TestCase):
             doc.new_page(width=595, height=842)
             doc.save(str(pdf_path))
             doc.close()
-
             converter = PdfMarkdownConverter()
             output_dir = Path(tmp_dir) / "output"
 
@@ -85,11 +84,12 @@ class OcrEngineTests(unittest.TestCase):
             doc.new_page(width=595, height=842)
             doc.save(str(pdf_path))
             doc.close()
+            file_id = api._register_pdf(pdf_path, "test")["file_id"]
 
             with patch("ocr_engine.ocr_pixmap") as mock_ocr:
                 mock_ocr.return_value = ("Texto do Carimbo Notarial", [])
                 payload = {
-                    "file_path": str(pdf_path),
+                    "file_id": file_id,
                     "page_number": 0,
                     "rect": [50, 50, 200, 200],
                 }

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from constants import APP_NAME, APP_VERSION
+from scripts.verify_web_assets import verify as verify_web_assets
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 RELEASE_DIR = PROJECT_ROOT / "release"
@@ -25,6 +26,7 @@ if not ICON_PATH.exists():
 def prepare_web_assets() -> None:
     """Copia e preserva integralmente os assets web estáticos sem quebrar scripts."""
     print("-> Preparando e sincronizando assets web (HTML/CSS/JS)...")
+    verify_web_assets()
     if WEB_DIST_DIR.exists():
         shutil.rmtree(WEB_DIST_DIR)
 
@@ -82,8 +84,9 @@ def build() -> None:
     print(f"=== Iniciando Build Comercial: {APP_NAME} v{APP_VERSION} ===")
 
     # Limpeza prévia
-    if RELEASE_DIR.exists():
-        shutil.rmtree(RELEASE_DIR, ignore_errors=True)
+    for generated_dir in (DIST_DIR, WORK_DIR):
+        if generated_dir.exists():
+            shutil.rmtree(generated_dir, ignore_errors=True)
 
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     WORK_DIR.mkdir(parents=True, exist_ok=True)

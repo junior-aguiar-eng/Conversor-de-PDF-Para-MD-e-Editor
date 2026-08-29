@@ -5,23 +5,144 @@
 
 // Estado Global da Aplicação
 const state = {
-  files: [],               // Array de { path, name, size, size_formatted, status, markdown_path, asset_count, duration, error_message }
+  files: [],               // Caminhos são apenas de exibição; operações usam file_id/markdown_id.
   outputDir: "",
+  outputDirId: "",
   defaultOutputDir: "",
+  defaultOutputDirId: "",
   selectedProfile: "jurisprudencia", // "jurisprudencia" | "curso"
   splitOutput: false,
+  splitMode: "semantic",
   maxChunkCharacters: 60000,
   isConverting: false,
   isPaused: false,
   soundEnabled: true,
   convertedResults: [],   // Array de { name, path, markdown_path, asset_count }
   currentPreviewPath: null,
+  currentPreviewId: null,
   startTime: 0,
   timerInterval: null
 };
 
+let bridgeInitializationPromise = null;
+let applicationInitializationPromise = null;
+let declarativeEventsInitialized = false;
+
+const ALLOWED_DECLARATIVE_ACTIONS = new Set([
+  "appLicense.copyMachineId", "appLicense.submitActivation",
+  "appManual.close", "appManual.filterContent", "appManual.open", "appManual.printManual",
+  "appManual.scrollToChapter", "appManual.toggleViewMode",
+  "appSearch.clearInput", "appSearch.closeModal", "appSearch.onSearchInput", "appSearch.openModal",
+  "appSearch.openResult", "appSearch.setFilter", "appSelection.copySelectedText",
+  "appTerms.confirmAcceptance", "appTranslator.closeModal", "appTranslator.copyResult",
+  "appTranslator.retranslate", "appTranslator.translateSelectedText", "appTranslator.translateSnippetText",
+  "appTts.playSelectedText", "appTts.playSnippetText", "appTts.playText", "appTts.seek",
+  "appTts.setSpeed", "appTts.setVoice", "appTts.stopAndHide", "appTts.togglePlay",
+  "appWelcome.close", "appWelcome.open", "appWelcome.switchTab",
+  "clearActivityLogs", "clearAllFiles", "copyCurrentPreviewContent", "handlePreviewDocChange",
+  "openCurrentOutputFolder", "openCurrentPreviewFile", "openLastMarkdownResult", "openQueuedMarkdown",
+  "openQueuedPdf", "previewQueuedMarkdown", "removeFile", "requestStop", "resetOutputDirToDefault", "retryFailedPages",
+  "selectProfile", "startConversion", "switchView", "toggleAdvancedOptions", "toggleAudioFeedback",
+  "togglePause", "triggerFileSelect", "triggerSelectOutputDir",
+  "superPdf.addBookmark", "superPdf.chooseDocumentSwitchAction", "superPdf.clearPageAnnotations",
+  "superPdf.closeProtectModal", "superPdf.closeSnippetModal", "superPdf.closeUnlockModal",
+  "superPdf.copySnippetImage", "superPdf.copySnippetText", "superPdf.deleteBookmark",
+  "superPdf.goToPage", "superPdf.handleToolMainClick", "superPdf.nextPage", "superPdf.onHlWidthChange",
+  "superPdf.onPenWidthChange", "superPdf.onSelectDocument", "superPdf.onTextSizeChange",
+  "superPdf.openFileDialog", "superPdf.openProtectModal", "superPdf.prevPage", "superPdf.printDocument",
+  "superPdf.rotatePage", "superPdf.saveAnnotations", "superPdf.setHighlightColor",
+  "superPdf.setHighlightMode", "superPdf.setPenColor", "superPdf.setSidebarTab", "superPdf.setTextBoxStyle",
+  "superPdf.setTextColor", "superPdf.setTool", "superPdf.setZoom", "superPdf.submitProtectPdf",
+  "superPdf.submitUnlockPdf", "superPdf.submitUnprotectPdf", "superPdf.toggleBookmark",
+  "superPdf.toggleFlyout", "superPdf.toggleTextBold", "superPdf.undoAnnotation", "superPdf.zoomIn",
+  "superPdf.zoomOut",
+]);
+
+function parseDeclarativeArgument(raw, element, event) {
+  const value = raw.trim();
+  if (value === "event") return event;
+  if (value === "this.value") return element.value;
+  if (value === "parseInt(this.value) - 1") return parseInt(element.value, 10) - 1;
+  const inputMatch = value.match(/^document\.getElementById\('([A-Za-z][\w-]*)'\)\.value$/);
+  if (inputMatch) return document.getElementById(inputMatch[1])?.value || "";
+  if (/^-?\d+(?:\.\d+)?$/.test(value)) return Number(value);
+  const stringMatch = value.match(/^'([^'\\]*)'$/);
+  if (stringMatch) return stringMatch[1];
+  throw new Error("Argumento declarativo não permitido.");
+}
+
+function resolveDeclarativeAction(actionName) {
+  if (!ALLOWED_DECLARATIVE_ACTIONS.has(actionName)) return null;
+  const parts = actionName.split(".");
+  if (parts.length === 1) {
+    const actions = {
+      clearActivityLogs, clearAllFiles, copyCurrentPreviewContent, handlePreviewDocChange,
+      openCurrentOutputFolder, openCurrentPreviewFile, openLastMarkdownResult, openQueuedMarkdown,
+      openQueuedPdf, previewQueuedMarkdown, removeFile, requestStop, resetOutputDirToDefault,
+      retryFailedPages, selectProfile, startConversion, switchView, toggleAdvancedOptions, toggleAudioFeedback,
+      togglePause, triggerFileSelect, triggerSelectOutputDir,
+    };
+    return actions[actionName] || null;
+  }
+  const roots = { appLicense, appManual, appSearch, appSelection, appTerms, appTranslator, appTts, appWelcome, superPdf };
+  const owner = roots[parts[0]];
+  const method = owner?.[parts[1]];
+  return typeof method === "function" ? method.bind(owner) : null;
+}
+
+function invokeDeclarativeAction(expression, element, event) {
+  const match = String(expression || "").match(/^([A-Za-z]\w*(?:\.[A-Za-z]\w*)?)\((.*)\)$/);
+  if (!match) return;
+  const action = resolveDeclarativeAction(match[1]);
+  if (!action) return;
+  const rawArgs = match[2].trim();
+  const args = rawArgs ? rawArgs.split(/,(?=(?:[^']*'[^']*')*[^']*$)/).map((arg) => parseDeclarativeArgument(arg, element, event)) : [];
+  action(...args);
+}
+
+function setupDeclarativeEvents() {
+  if (declarativeEventsInitialized) return;
+  declarativeEventsInitialized = true;
+  document.addEventListener("click", (event) => {
+    const element = event.target.closest?.("[data-action]");
+    if (element) invokeDeclarativeAction(element.dataset.action, element, event);
+  });
+  document.addEventListener("change", (event) => {
+    const element = event.target.closest?.("[data-change]");
+    if (element) invokeDeclarativeAction(element.dataset.change, element, event);
+  });
+  document.addEventListener("input", (event) => {
+    const element = event.target.closest?.("[data-input]");
+    if (element) invokeDeclarativeAction(element.dataset.input, element, event);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    const element = event.target.closest?.("[data-enter-action]");
+    if (element) invokeDeclarativeAction(element.dataset.enterAction, element, event);
+  });
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function safeSearchSnippetHtml(value) {
+  const allowedOpen = '<mark class="bg-amber-200 text-amber-900 font-bold px-0.5 rounded">';
+  return String(value ?? "")
+    .split(new RegExp(`(${allowedOpen.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|</mark>)`, "g"))
+    .map((part) => (part === allowedOpen || part === "</mark>" ? part : escapeHtml(part)))
+    .join("");
+}
+
 // Inicialização ao carregar a página
 document.addEventListener("DOMContentLoaded", () => {
+  setupDeclarativeEvents();
+  setupMarkdownPreviewInteractions();
   initAudioPreference();
   setupDragAndDrop();
   superPdf.init();
@@ -34,66 +155,78 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function waitForPyWebViewReady() {
   if (window.pywebview && window.pywebview.api) {
-    onBridgeReady();
+    void onBridgeReady();
   } else {
-    window.addEventListener("pywebviewready", onBridgeReady);
+    window.addEventListener("pywebviewready", onBridgeReady, { once: true });
     // Fallback polling de segurança
     setTimeout(() => {
       if (window.pywebview && window.pywebview.api) {
-        onBridgeReady();
+        void onBridgeReady();
       }
     }, 500);
   }
 }
 
-async function onBridgeReady() {
-  try {
-    const termsStatus = await window.pywebview.api.get_terms_acceptance_status();
-    if (termsStatus && termsStatus.accepted) {
-      await initializeAfterTerms();
-    } else {
-      const modal = document.getElementById("termsModal");
-      if (modal) {
-        modal.classList.remove("hidden");
-        appTerms.init();
+function onBridgeReady() {
+  if (!bridgeInitializationPromise) {
+    bridgeInitializationPromise = (async () => {
+      try {
+        const termsStatus = await window.pywebview.api.get_terms_acceptance_status();
+        if (termsStatus && termsStatus.accepted) {
+          await initializeAfterTerms();
+        } else {
+          const modal = document.getElementById("termsModal");
+          if (modal) {
+            modal.classList.remove("hidden");
+            appTerms.init();
+          }
+        }
+      } catch (error) {
+        console.error("Erro ao verificar termos/inicializar Bridge API:", error);
       }
-    }
-  } catch (error) {
-    console.error("Erro ao verificar termos/inicializar Bridge API:", error);
+    })();
   }
+  return bridgeInitializationPromise;
 }
 
-async function initializeAfterTerms() {
-  try {
-    // 1. Verificação de Licenciamento por Hardware (Node-Locking)
-    await appLicense.checkActivation();
+function initializeAfterTerms() {
+  if (!applicationInitializationPromise) {
+    applicationInitializationPromise = (async () => {
+      try {
+        // 1. Verificação de Licenciamento por Hardware (Node-Locking)
+        await appLicense.checkActivation();
 
-    const info = await window.pywebview.api.get_app_info();
-    state.defaultOutputDir = info.default_output_dir;
-    state.outputDir = info.default_output_dir;
-    state.maxChunkCharacters = info.default_chunk_limit;
-    
-    if (info.app_version) {
-      const badge = document.getElementById("appVersionBadge");
-      if (badge) {
-        badge.innerText = `MOTOR NATIVO LOCAL • v${info.app_version} • OCR ONNX INTEGRADO • SEM TESSERACT EXTERNO`;
+        const info = await window.pywebview.api.get_app_info();
+        state.defaultOutputDir = info.default_output_dir;
+        state.defaultOutputDirId = info.default_output_dir_id;
+        state.outputDir = info.default_output_dir;
+        state.outputDirId = info.default_output_dir_id;
+        state.maxChunkCharacters = info.default_chunk_limit;
+
+        if (info.app_version) {
+          const badge = document.getElementById("appVersionBadge");
+          if (badge) {
+            badge.innerText = `MOTOR NATIVO LOCAL • v${info.app_version} • OCR ONNX INTEGRADO • SEM TESSERACT EXTERNO`;
+          }
+        }
+
+        document.getElementById("inputOutputDir").value = state.outputDir;
+        document.getElementById("inputMaxChars").value = state.maxChunkCharacters;
+
+        superPdf.updateDocumentDropdown();
+
+        // Validação de runtime
+        const envCheck = await window.pywebview.api.validate_environment();
+        if (!envCheck.ok) {
+          showToast(envCheck.error, "error");
+          appendLog("ERRO", envCheck.error);
+        }
+      } catch (error) {
+        console.error("Erro ao inicializar após os termos:", error);
       }
-    }
-    
-    document.getElementById("inputOutputDir").value = state.outputDir;
-    document.getElementById("inputMaxChars").value = state.maxChunkCharacters;
-    
-    superPdf.updateDocumentDropdown();
-
-    // Validação de runtime
-    const envCheck = await window.pywebview.api.validate_environment();
-    if (!envCheck.ok) {
-      showToast(envCheck.error, "error");
-      appendLog("ERRO", envCheck.error);
-    }
-  } catch (error) {
-    console.error("Erro ao inicializar após os termos:", error);
+    })();
   }
+  return applicationInitializationPromise;
 }
 
 // --------------------------------------------------------------------------
@@ -219,7 +352,7 @@ function switchView(viewName) {
 
   if (viewName === "superpdf" && window.superPdf) {
     if (!superPdf.currentFilePath && state.files.length > 0) {
-      superPdf.loadDocument(state.files[0].path);
+      superPdf.loadDocument(state.files[0].file_id, null, state.files[0].path);
     }
   }
 }
@@ -263,7 +396,7 @@ function setupDragAndDrop() {
     }
 
     if (filePaths.length > 0 && window.pywebview && window.pywebview.api) {
-      const processed = await window.pywebview.api.process_file_paths(filePaths);
+      const processed = await window.pywebview.api.register_dropped_files(filePaths);
       addProcessedFiles(processed);
     }
   });
@@ -285,24 +418,28 @@ async function triggerFileSelect() {
 
 function addProcessedFiles(newFiles) {
   if (!newFiles || newFiles.length === 0) return;
-  const existingPaths = new Set(state.files.map((f) => f.path));
+  const existingIds = new Set(state.files.map((f) => f.file_id));
   let addedCount = 0;
 
   for (const item of newFiles) {
-    if (!existingPaths.has(item.path)) {
+    if (item.file_id && !existingIds.has(item.file_id)) {
       state.files.push({
+        file_id: item.file_id,
         path: item.path,
         name: item.name,
         size: item.size,
         size_formatted: item.size_formatted,
         status: "pending", // "pending" | "converting" | "success" | "error"
         markdown_path: "",
+        markdown_id: "",
         asset_count: 0,
         chunk_count: 0,
+        failed_pages: [],
+        warning_pages: [],
         duration: "",
         error_message: ""
       });
-      existingPaths.add(item.path);
+      existingIds.add(item.file_id);
       addedCount++;
     }
   }
@@ -318,26 +455,26 @@ function addProcessedFiles(newFiles) {
   }
 }
 
-function openInSuperPdf(filePath) {
+function openInSuperPdf(fileId, displayPath = "") {
   if (window.superPdf) {
-    superPdf.loadDocument(filePath);
+    superPdf.loadDocument(fileId, null, displayPath);
     switchView("superpdf");
   }
 }
 
 function openQueuedPdf(index) {
   const file = state.files[index];
-  if (file) openInSuperPdf(file.path);
+  if (file) openInSuperPdf(file.file_id, file.path);
 }
 
 function previewQueuedMarkdown(index) {
   const file = state.files[index];
-  if (file?.markdown_path) previewSpecificMarkdown(file.markdown_path);
+  if (file?.markdown_id) previewSpecificMarkdown(file.markdown_id, file.markdown_path);
 }
 
 function openQueuedMarkdown(index) {
   const file = state.files[index];
-  if (file?.markdown_path) openMarkdownDirectly(file.markdown_path);
+  if (file?.markdown_id) openMarkdownDirectly(file.markdown_id);
 }
 
 function removeFile(index) {
@@ -383,10 +520,10 @@ function renderFileList() {
   container.innerHTML = state.files.map((file, idx) => {
     let statusBadge = `<span class="px-2.5 py-0.5 rounded-lg text-[10.5px] font-semibold bg-slate-100 text-slate-600">Pendente</span>`;
     let actionButtons = `
-      <button onclick="openQueuedPdf(${idx})" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Abrir no Super PDF">
+      <button data-action="openQueuedPdf(${idx})" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Abrir no Super PDF">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
       </button>
-      <button onclick="removeFile(${idx})" class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition" title="Remover da lista">
+      <button data-action="removeFile(${idx})" class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition" title="Remover da lista">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
       </button>
     `;
@@ -395,17 +532,21 @@ function renderFileList() {
       statusBadge = `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10.5px] font-semibold bg-sky-100 text-sky-800 animate-pulse"><span class="w-1.5 h-1.5 rounded-full bg-sky-600"></span>Convertendo...</span>`;
       actionButtons = ``;
     } else if (file.status === "success") {
-      statusBadge = `<span class="px-2.5 py-0.5 rounded-lg text-[10.5px] font-semibold bg-emerald-100 text-emerald-800">Concluído (${file.duration})</span>`;
+      const problemCount = file.failed_pages?.length || 0;
+      statusBadge = problemCount
+        ? `<span class="px-2.5 py-0.5 rounded-lg text-[10.5px] font-semibold bg-amber-100 text-amber-800" title="Páginas: ${file.failed_pages.join(", ")}">Concluído com ${problemCount} falha(s)</span>`
+        : `<span class="px-2.5 py-0.5 rounded-lg text-[10.5px] font-semibold bg-emerald-100 text-emerald-800">Concluído (${file.duration})</span>`;
       actionButtons = `
-        <button onclick="openQueuedPdf(${idx})" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Abrir no Super PDF">
+        <button data-action="openQueuedPdf(${idx})" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Abrir no Super PDF">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
         </button>
-        <button onclick="previewQueuedMarkdown(${idx})" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Visualizar Markdown">
+        <button data-action="previewQueuedMarkdown(${idx})" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Visualizar Markdown">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
         </button>
-        <button onclick="openQueuedMarkdown(${idx})" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Abrir no Editor do Windows">
+        <button data-action="openQueuedMarkdown(${idx})" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Abrir no Editor do Windows">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
         </button>
+        ${problemCount ? `<button data-action="retryFailedPages(${idx})" class="px-2 py-1 rounded-lg text-amber-800 bg-amber-100 hover:bg-amber-200 transition font-semibold" title="Reprocessar somente as páginas falhas">Reprocessar</button>` : ""}
       `;
     } else if (file.status === "error") {
       statusBadge = `<span class="px-2.5 py-0.5 rounded-lg text-[10.5px] font-semibold bg-rose-100 text-rose-800" title="${escapeHtml(file.error_message)}">Falhou</span>`;
@@ -447,8 +588,9 @@ async function triggerSelectOutputDir() {
   if (!window.pywebview || !window.pywebview.api) return;
   const selected = await window.pywebview.api.choose_output_directory();
   if (selected) {
-    state.outputDir = selected;
-    document.getElementById("inputOutputDir").value = selected;
+    state.outputDir = selected.path;
+    state.outputDirId = selected.directory_id;
+    document.getElementById("inputOutputDir").value = selected.path;
     showToast("Pasta de destino alterada.", "info");
   }
 }
@@ -457,6 +599,7 @@ function resetOutputDirToDefault() {
   if (state.isConverting) return;
   playBeep("click");
   state.outputDir = state.defaultOutputDir;
+  state.outputDirId = state.defaultOutputDirId;
   document.getElementById("inputOutputDir").value = state.outputDir;
   showToast("Pasta de destino restaurada para o padrão.", "info");
 }
@@ -510,6 +653,7 @@ async function startConversion() {
 
   playBeep("click");
   state.splitOutput = document.getElementById("chkSplitOutput").checked;
+  state.splitMode = document.getElementById("selectSplitMode").value || "semantic";
   state.maxChunkCharacters = parseInt(document.getElementById("inputMaxChars").value) || 60000;
 
   // Reset status of files
@@ -517,9 +661,10 @@ async function startConversion() {
   renderFileList();
 
   const payload = {
-    files: state.files.map((f) => ({ path: f.path })),
-    output_dir: state.outputDir,
+    files: state.files.map((f) => ({ file_id: f.file_id })),
+    output_directory_id: state.outputDirId,
     split_output: state.splitOutput,
+    split_mode: state.splitMode,
     max_chunk_characters: state.maxChunkCharacters,
     heading_profile: state.selectedProfile
   };
@@ -543,6 +688,33 @@ async function startConversion() {
   startTimer();
   updateControlsState();
   appendLog("INFO", `Iniciando conversão de ${state.files.length} arquivo(s)...`);
+}
+
+async function retryFailedPages(index) {
+  if (state.isConverting) return;
+  const file = state.files[index];
+  if (!file?.file_id || !file.failed_pages?.length) return;
+  const response = await window.pywebview.api.retry_failed_pages({
+    file_id: file.file_id,
+    page_numbers: file.failed_pages,
+    output_directory_id: state.outputDirId,
+    split_output: state.splitOutput,
+    split_mode: state.splitMode,
+    max_chunk_characters: state.maxChunkCharacters,
+    heading_profile: state.selectedProfile,
+  });
+  if (!response.started) {
+    showToast(response.error || "Não foi possível reprocessar as páginas.", "error");
+    return;
+  }
+  state.isConverting = true;
+  state.startTime = performance.now();
+  file.status = "converting";
+  renderFileList();
+  progressController.startConversion();
+  startTimer();
+  updateControlsState();
+  appendLog("INFO", `Reprocessando páginas ${file.failed_pages.join(", ")} de ${file.name}.`);
 }
 
 async function togglePause() {
@@ -715,7 +887,7 @@ window.onBackendEvent = function (eventName, data) {
   if (eventName === "status") {
     document.getElementById("statusMessage").innerText = data.message;
   } else if (eventName === "file_start") {
-    const file = state.files.find((f) => f.path === data.path);
+    const file = state.files.find((f) => f.file_id === data.file_id);
     if (file) {
       file.status = "converting";
       renderFileList();
@@ -725,13 +897,16 @@ window.onBackendEvent = function (eventName, data) {
     progressController.onProgress(data.completed || 0, data.total || state.files.length);
   } else if (eventName === "file_success") {
     playBeep("success");
-    const file = state.files.find((f) => f.path === data.source);
+    const file = state.files.find((f) => f.file_id === data.source_id);
     if (file) {
       file.status = "success";
       file.markdown_path = data.markdown_path;
+      file.markdown_id = data.markdown_id;
       file.duration = data.duration_formatted;
       file.asset_count = data.asset_count;
       file.chunk_count = data.chunk_count;
+      file.failed_pages = data.failed_pages || [];
+      file.warning_pages = data.warning_pages || [];
     }
     state.convertedResults.push(data);
     updatePreviewDropdown();
@@ -741,10 +916,11 @@ window.onBackendEvent = function (eventName, data) {
     
     const completedCount = state.files.filter((f) => f.status === "success" || f.status === "error").length;
     progressController.onFileDone(completedCount, state.files.length);
-    appendLog("OK", `${data.name} -> ${data.markdown_path} (${data.asset_count} imgs, ${data.duration_formatted})`);
+    const pageWarning = data.failed_pages?.length ? `; páginas não recuperadas: ${data.failed_pages.join(", ")}` : "";
+    appendLog("OK", `${data.name} -> ${data.markdown_path} (${data.asset_count} imgs, ${data.duration_formatted}${pageWarning})`);
   } else if (eventName === "file_error") {
     playBeep("error");
-    const file = state.files.find((f) => f.path === data.source);
+    const file = state.files.find((f) => f.file_id === data.source_id);
     if (file) {
       file.status = "error";
       file.error_message = data.error_message;
@@ -761,9 +937,13 @@ window.onBackendEvent = function (eventName, data) {
     updateControlsState();
     clearInterval(state.timerInterval);
     progressController.finishSuccess();
-    document.getElementById("statusMessage").innerText = `Concluído: ${data.success_count} convertido(s), ${data.failure_count} com erro.`;
-    showToast(`Conversão finalizada em ${data.elapsed_formatted}!`, "success");
+    const pageWarning = data.problem_page_count ? `, ${data.problem_page_count} página(s) não recuperada(s)` : "";
+    document.getElementById("statusMessage").innerText = `Concluído: ${data.success_count} convertido(s), ${data.failure_count} com erro${pageWarning}.`;
+    showToast(`Conversão finalizada em ${data.elapsed_formatted}${pageWarning}!`, data.problem_page_count ? "info" : "success");
     appendLog("INFO", `Lote concluído em ${data.elapsed_formatted}. Arquivos salvos em: ${data.output_dir}`);
+    for (const item of data.problem_pages || []) {
+      appendLog("AVISO", `${item.name}: páginas não recuperadas ${item.pages.join(", ")}.`);
+    }
   } else if (eventName === "batch_stopped") {
     state.isConverting = false;
     updateControlsState();
@@ -796,29 +976,35 @@ function updatePreviewDropdown() {
   }
 
   select.innerHTML = state.convertedResults.map(
-    (item) => `<option value="${item.markdown_path}">${item.name}</option>`
+    (item) => `<option value="${escapeHtml(item.markdown_id)}">${escapeHtml(item.name)}</option>`
   ).join("");
 
-  if (!state.currentPreviewPath && state.convertedResults.length > 0) {
-    previewSpecificMarkdown(state.convertedResults[state.convertedResults.length - 1].markdown_path);
+  if (!state.currentPreviewId && state.convertedResults.length > 0) {
+    const last = state.convertedResults[state.convertedResults.length - 1];
+    previewSpecificMarkdown(last.markdown_id, last.markdown_path);
   }
 }
 
-async function previewSpecificMarkdown(markdownPath) {
-  state.currentPreviewPath = markdownPath;
+async function previewSpecificMarkdown(markdownId, displayPath = "") {
+  state.currentPreviewId = markdownId;
+  state.currentPreviewPath = displayPath;
   switchView("preview");
   
   const select = document.getElementById("previewDocSelect");
-  select.value = markdownPath;
+  select.value = markdownId;
 
-  const res = await window.pywebview.api.read_markdown_preview(markdownPath);
+  const res = await window.pywebview.api.read_markdown_preview(markdownId);
   const container = document.getElementById("previewRenderArea");
   const subtitle = document.getElementById("previewSubtitle");
   const btnOpen = document.getElementById("btnOpenInApp");
   const btnCopy = document.getElementById("btnCopyPreview");
 
   if (!res.ok) {
-    container.innerHTML = `<div class="p-4 text-rose-600">${res.error}</div>`;
+    container.replaceChildren();
+    const errorMessage = document.createElement("div");
+    errorMessage.className = "p-4 text-rose-600";
+    errorMessage.textContent = res.error || "Falha ao ler Markdown.";
+    container.appendChild(errorMessage);
     btnOpen.disabled = true;
     btnCopy.disabled = true;
     return;
@@ -829,23 +1015,26 @@ async function previewSpecificMarkdown(markdownPath) {
   btnCopy.disabled = false;
 
   container.innerHTML = renderMarkdownToHtml(res.content);
+  state.currentPreviewPath = res.path;
+  await hydrateMarkdownAssets(container, markdownId);
 }
 
 function handlePreviewDocChange() {
   const select = document.getElementById("previewDocSelect");
   if (select.value) {
-    previewSpecificMarkdown(select.value);
+    const item = state.convertedResults.find((result) => result.markdown_id === select.value);
+    previewSpecificMarkdown(select.value, item?.markdown_path || "");
   }
 }
 
 function openCurrentPreviewFile() {
-  if (!state.currentPreviewPath) return;
-  openMarkdownDirectly(state.currentPreviewPath);
+  if (!state.currentPreviewId) return;
+  openMarkdownDirectly(state.currentPreviewId);
 }
 
 async function copyCurrentPreviewContent() {
-  if (!state.currentPreviewPath) return;
-  const res = await window.pywebview.api.read_markdown_preview(state.currentPreviewPath);
+  if (!state.currentPreviewId) return;
+  const res = await window.pywebview.api.read_markdown_preview(state.currentPreviewId);
   if (res.ok) {
     navigator.clipboard.writeText(res.content);
     playBeep("success");
@@ -856,55 +1045,113 @@ async function copyCurrentPreviewContent() {
 function openLastMarkdownResult() {
   if (state.convertedResults.length === 0) return;
   const last = state.convertedResults[state.convertedResults.length - 1];
-  openMarkdownDirectly(last.markdown_path);
+  openMarkdownDirectly(last.markdown_id);
 }
 
-async function openMarkdownDirectly(markdownPath) {
+async function openMarkdownDirectly(markdownId) {
   playBeep("click");
-  await window.pywebview.api.open_markdown(markdownPath);
+  await window.pywebview.api.open_markdown(markdownId);
 }
 
 async function openCurrentOutputFolder() {
   playBeep("click");
-  await window.pywebview.api.open_folder(state.outputDir);
+  await window.pywebview.api.open_folder(state.outputDirId);
 }
 
-// Parser Markdown Leve, Seguro e Rápido Integrado
+let markdownSanitizerConfigured = false;
+
+function isSafeHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!/^https?:\/\//i.test(raw) || /[\u0000-\u001f\u007f]/.test(raw)) return false;
+  try {
+    const parsed = new URL(raw);
+    return ["http:", "https:"].includes(parsed.protocol) && Boolean(parsed.hostname) && !parsed.username && !parsed.password;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function isSafeRelativeAssetRef(value) {
+  let decoded = String(value || "").trim();
+  if (!decoded || decoded.startsWith("/") || decoded.startsWith("\\") || decoded.includes("\\")) return false;
+  if (decoded.includes("?") || decoded.includes("#") || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(decoded)) return false;
+  try {
+    for (let i = 0; i < 3; i += 1) {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    }
+  } catch (_error) {
+    return false;
+  }
+  const parts = decoded.split("/");
+  return !parts.some((part) => part === ".." || part === "." || part === "");
+}
+
+function configureMarkdownSanitizer() {
+  if (markdownSanitizerConfigured) return;
+  if (!window.DOMPurify || !window.marked) throw new Error("Renderizador Markdown local indisponível.");
+  window.DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
+    const tagName = String(node.tagName || "").toLowerCase();
+    if (tagName === "a" && data.attrName === "href" && !isSafeHttpUrl(data.attrValue)) data.keepAttr = false;
+    if (tagName === "img" && data.attrName === "src" && !isSafeRelativeAssetRef(data.attrValue)) data.keepAttr = false;
+  });
+  window.DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+    const tagName = String(node.tagName || "").toLowerCase();
+    if (tagName === "a" && node.hasAttribute("href")) {
+      node.setAttribute("target", "_blank");
+      node.setAttribute("rel", "noopener noreferrer");
+      node.className = "text-sky-600 underline";
+    }
+    if (tagName === "img" && node.hasAttribute("src")) {
+      node.className = "max-w-full rounded-xl border border-sky-100 shadow-sm my-3";
+    }
+  });
+  markdownSanitizerConfigured = true;
+}
+
 function renderMarkdownToHtml(markdown) {
   if (!markdown) return "";
-  let html = markdown
-    // Escape de tags html nativas perigosas
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    // Blocos de código: ```language ... ```
-    .replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/gm, (match, lang, code) => {
-      return `<pre class="custom-scrollbar"><code>${code.trim()}</code></pre>`;
-    })
-    // Código inline: `code`
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    // Headers
-    .replace(/^###### (.*$)/gim, '<h6>$1</h6>')
-    .replace(/^##### (.*$)/gim, '<h5>$1</h5>')
-    .replace(/^#### (.*$)/gim, '<h4>$1</h4>')
-    .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-    .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-    .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-    // Blockquote
-    .replace(/^\> (.*$)/gim, '<blockquote>$1</blockquote>')
-    // Negrito e Itálico
-    .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
-    .replace(/\*(.*?)\*/gim, '<em>$1</em>')
-    // Imagens: ![alt](url)
-    .replace(/\!\[(.*?)\]\((.*?)\)/gim, '<div class="my-3"><img alt="$1" src="$2" class="max-w-full rounded-xl border border-sky-100 shadow-sm"><span class="text-[11px] text-slate-400 block mt-1">$1</span></div>')
-    // Links: [text](url)
-    .replace(/\[(.*?)\]\((.*?)\)/gim, '<a href="$2" class="text-sky-600 underline" target="_blank" rel="noopener">$1</a>')
-    // Linhas de separação horizontal
-    .replace(/^---$/gim, '<hr class="my-4 border-sky-100">')
-    // Quebras de parágrafo
-    .replace(/\n\n/gim, '</p><p>');
+  configureMarkdownSanitizer();
+  const parsed = window.marked.parse(String(markdown), { gfm: true, breaks: false, async: false });
+  return window.DOMPurify.sanitize(parsed, {
+    ALLOWED_TAGS: [
+      "h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "li", "blockquote",
+      "pre", "code", "table", "thead", "tbody", "tr", "th", "td", "hr", "br", "strong",
+      "em", "del", "a", "img",
+    ],
+    ALLOWED_ATTR: ["href", "title", "src", "alt"],
+    ALLOW_DATA_ATTR: false,
+    ALLOW_ARIA_ATTR: false,
+    FORBID_TAGS: ["script", "style", "svg", "math", "iframe", "object", "embed", "form", "input", "button", "video", "audio"],
+  });
+}
 
-  return `<p>${html}</p>`;
+async function hydrateMarkdownAssets(container, markdownId) {
+  if (!container || !markdownId || !window.pywebview?.api) return;
+  const images = Array.from(container.querySelectorAll("img[src]")).slice(0, 200);
+  for (let offset = 0; offset < images.length; offset += 8) {
+    const batch = images.slice(offset, offset + 8);
+    await Promise.all(batch.map(async (image) => {
+      const relativeRef = image.getAttribute("src");
+      image.removeAttribute("src");
+      if (!isSafeRelativeAssetRef(relativeRef)) return;
+      const result = await window.pywebview.api.read_markdown_asset(markdownId, relativeRef);
+      if (result?.ok) image.src = result.data_uri;
+    }));
+  }
+}
+
+function setupMarkdownPreviewInteractions() {
+  const container = document.getElementById("previewRenderArea");
+  if (!container || container.dataset.externalLinksReady === "true") return;
+  container.dataset.externalLinksReady = "true";
+  container.addEventListener("click", (event) => {
+    const link = event.target.closest?.("a[href]");
+    if (!link || !isSafeHttpUrl(link.href)) return;
+    event.preventDefault();
+    void window.pywebview?.api?.open_external_url(link.href);
+  });
 }
 
 // --------------------------------------------------------------------------
@@ -912,6 +1159,7 @@ function renderMarkdownToHtml(markdown) {
 // --------------------------------------------------------------------------
 function appendLog(type, message) {
   const consoleEl = document.getElementById("logConsole");
+  if (!consoleEl) return;
   const timeStr = new Date().toLocaleTimeString("pt-BR");
   
   let badgeColor = "text-sky-600";
@@ -921,11 +1169,16 @@ function appendLog(type, message) {
 
   const entry = document.createElement("div");
   entry.className = "flex items-start gap-2 text-[11px] leading-relaxed border-b border-sky-50 pb-1";
-  entry.innerHTML = `
-    <span class="text-slate-400 flex-shrink-0">[${timeStr}]</span>
-    <span class="${badgeColor} flex-shrink-0 uppercase font-bold">[${type}]</span>
-    <span class="text-slate-700 flex-1 break-words">${message}</span>
-  `;
+  const timeEl = document.createElement("span");
+  timeEl.className = "text-slate-400 flex-shrink-0";
+  timeEl.textContent = `[${timeStr}]`;
+  const typeEl = document.createElement("span");
+  typeEl.className = `${badgeColor} flex-shrink-0 uppercase font-bold`;
+  typeEl.textContent = `[${String(type ?? "INFO")}]`;
+  const messageEl = document.createElement("span");
+  messageEl.className = "text-slate-700 flex-1 break-words whitespace-pre-wrap";
+  messageEl.textContent = String(message ?? "");
+  entry.append(timeEl, typeEl, messageEl);
   
   // Remove placeholder inicial se existir
   if (consoleEl.children.length === 1 && consoleEl.children[0].innerText.includes("Aguardando")) {
@@ -967,6 +1220,7 @@ document.addEventListener("keydown", (event) => {
 // ==========================================================================
 class SuperPdfController {
   constructor() {
+    this.currentFileId = null;
     this.currentFilePath = null;
     this.currentFileName = "";
     this.currentPage = 0;
@@ -989,7 +1243,9 @@ class SuperPdfController {
     this.textFontSize = 14;
     this.textBold = false;
     this.textBoxStyle = "none"; // "none" | "postit" | "white" | "danger"
-    
+
+    this.documentStates = new Map();
+    this.activeDocumentState = null;
     this.annotations = new Map(); // pageIndex -> Array of annotation objects
     this.undoStack = [];
     this.isInteracting = false;
@@ -999,11 +1255,17 @@ class SuperPdfController {
     this.pageCache = new Map();
     this.isRendering = false;
     this.pendingPasswordFile = null;
+    this.pendingPasswordFileId = null;
     this.isEncrypted = false;
     this.currentPassword = "";
     this.bookmarks = [];
     this.sidebarTab = "pages";
     this.saveStateTimeout = null;
+    this.loadRequestId = 0;
+    this.renderRequestId = 0;
+    this.documentSwitchResolver = null;
+    this.documentSwitchDecisionProvider = null;
+    this.initialized = false;
 
     // 24 Cores no estilo Microsoft Edge PDF
     this.penPalette = [
@@ -1025,10 +1287,119 @@ class SuperPdfController {
   }
 
   init() {
+    if (this.initialized) return;
+    this.initialized = true;
     this.bindCanvasEvents();
     this.bindWindowEvents();
     this.bindFlyoutEvents();
     this.buildColorPalettes();
+  }
+
+  documentIdentity(fileId) {
+    return String(fileId || "");
+  }
+
+  getOrCreateDocumentState(fileId, filePath = "") {
+    const identity = this.documentIdentity(fileId);
+    let documentState = this.documentStates.get(identity);
+    if (!documentState) {
+      documentState = {
+        identity,
+        fileId,
+        filePath,
+        pages: [],
+        pageCache: new Map(),
+        annotations: new Map(),
+        undoStack: [],
+        password: "",
+        currentPage: 0,
+        zoom: "1.0",
+        bookmarks: [],
+        metadata: {},
+        opened: false,
+      };
+      this.documentStates.set(identity, documentState);
+    }
+    return documentState;
+  }
+
+  captureActiveDocumentState() {
+    if (!this.activeDocumentState || !this.currentFileId) return;
+    const zoomSelect = document.getElementById("pdfZoomSelect");
+    this.activeDocumentState.fileId = this.currentFileId;
+    this.activeDocumentState.filePath = this.currentFilePath;
+    this.activeDocumentState.pageCache = this.pageCache;
+    this.activeDocumentState.annotations = this.annotations;
+    this.activeDocumentState.undoStack = this.undoStack;
+    this.activeDocumentState.password = this.currentPassword;
+    this.activeDocumentState.currentPage = this.currentPage;
+    this.activeDocumentState.zoom = zoomSelect?.value || this.activeDocumentState.zoom || "1.0";
+    this.activeDocumentState.bookmarks = this.bookmarks;
+  }
+
+  activateDocumentState(fileId, filePath, password = null) {
+    const documentState = this.getOrCreateDocumentState(fileId, filePath);
+    this.activeDocumentState = documentState;
+    this.annotations = documentState.annotations;
+    this.undoStack = documentState.undoStack;
+    this.pageCache = documentState.pageCache;
+    this.currentPassword = password ?? documentState.password;
+    this.currentPage = documentState.currentPage;
+    this.bookmarks = documentState.bookmarks;
+    return documentState;
+  }
+
+  hasPendingAnnotations() {
+    for (const list of this.annotations.values()) {
+      if (list.length > 0) return true;
+    }
+    return false;
+  }
+
+  requestDocumentSwitchDecision(nextFilePath) {
+    if (this.documentSwitchDecisionProvider) {
+      return Promise.resolve(this.documentSwitchDecisionProvider(this.currentFilePath, nextFilePath));
+    }
+    const modal = document.getElementById("documentSwitchModal");
+    const currentPath = document.getElementById("documentSwitchCurrentPath");
+    const nextPath = document.getElementById("documentSwitchNextPath");
+    if (!modal) return Promise.resolve("draft");
+    if (this.documentSwitchResolver) {
+      this.documentSwitchResolver("cancel");
+      this.documentSwitchResolver = null;
+    }
+    if (currentPath) currentPath.textContent = this.currentFilePath || "";
+    if (nextPath) nextPath.textContent = nextFilePath || "";
+    modal.classList.remove("hidden");
+    return new Promise((resolve) => {
+      this.documentSwitchResolver = resolve;
+    });
+  }
+
+  chooseDocumentSwitchAction(action) {
+    const modal = document.getElementById("documentSwitchModal");
+    if (modal) modal.classList.add("hidden");
+    const resolver = this.documentSwitchResolver;
+    this.documentSwitchResolver = null;
+    if (resolver) resolver(action);
+  }
+
+  async prepareDocumentSwitch(nextFileId, nextFilePath) {
+    if (!this.currentFileId || this.documentIdentity(this.currentFileId) === this.documentIdentity(nextFileId)) {
+      return true;
+    }
+    this.captureActiveDocumentState();
+    if (!this.hasPendingAnnotations()) return true;
+
+    const action = await this.requestDocumentSwitchDecision(nextFilePath);
+    if (action === "cancel") return false;
+    if (action === "save") return this.saveAnnotations();
+    if (action === "discard") {
+      this.annotations.clear();
+      this.undoStack.length = 0;
+      this.captureActiveDocumentState();
+    }
+    return action === "draft" || action === "discard";
   }
 
   bindCanvasEvents() {
@@ -1065,7 +1436,7 @@ class SuperPdfController {
       penGrid.innerHTML = this.penPalette
         .map(
           (c) =>
-            `<button onclick="superPdf.setPenColor('${c}')" class="swatch-btn ${
+            `<button data-action="superPdf.setPenColor('${c}')" class="swatch-btn ${
               c === this.penColor ? "selected" : ""
             }" style="background-color: ${c};" title="${c}"></button>`
         )
@@ -1078,7 +1449,7 @@ class SuperPdfController {
       hlGrid.innerHTML = this.hlPalette
         .map(
           (c) =>
-            `<button onclick="superPdf.setHighlightColor('${c}')" class="swatch-btn ${
+            `<button data-action="superPdf.setHighlightColor('${c}')" class="swatch-btn ${
               c === this.highlightColor ? "selected" : ""
             }" style="background-color: ${c};" title="${c}"></button>`
         )
@@ -1091,7 +1462,7 @@ class SuperPdfController {
       textGrid.innerHTML = this.textPalette
         .map(
           (c) =>
-            `<button onclick="superPdf.setTextColor('${c}')" class="swatch-btn ${
+            `<button data-action="superPdf.setTextColor('${c}')" class="swatch-btn ${
               c === this.textColor ? "selected" : ""
             }" style="background-color: ${c};" title="${c}"></button>`
         )
@@ -1232,7 +1603,7 @@ class SuperPdfController {
     const selected = await window.pywebview.api.choose_files();
     if (selected && selected.length > 0) {
       addProcessedFiles(selected);
-      this.loadDocument(selected[0].path);
+      this.loadDocument(selected[0].file_id, null, selected[0].path);
     }
   }
 
@@ -1250,43 +1621,62 @@ class SuperPdfController {
       ${state.files
         .map(
           (f) =>
-            `<option value="${f.path}" ${f.path === this.currentFilePath ? "selected" : ""}>${f.name}</option>`
+            `<option value="${escapeHtml(f.file_id)}" ${f.file_id === this.currentFileId ? "selected" : ""}>${escapeHtml(f.name)}</option>`
         )
         .join("")}
     `;
   }
 
-  onSelectDocument(filePath) {
-    if (!filePath) return;
-    this.loadDocument(filePath);
+  async onSelectDocument(fileId) {
+    if (!fileId) return;
+    const selected = state.files.find((file) => file.file_id === fileId);
+    const opened = await this.loadDocument(fileId, null, selected?.path || "");
+    if (!opened) {
+      const select = document.getElementById("pdfViewerSelect");
+      if (select) select.value = this.currentFileId || "";
+    }
   }
 
-  async loadDocument(filePath, password = null) {
-    if (!filePath) return;
-    playBeep("click");
-    this.currentFilePath = filePath;
-    this.currentPage = 0;
-    this.pageCache.clear();
+  async loadDocument(fileId, password = null, displayPath = "") {
+    if (!fileId) return false;
+    const knownFile = state.files.find((file) => file.file_id === fileId);
+    const filePath = displayPath || knownFile?.path || this.documentStates.get(this.documentIdentity(fileId))?.filePath || "";
+    const requestId = ++this.loadRequestId;
+    const canSwitch = await this.prepareDocumentSwitch(fileId, filePath);
+    if (!canSwitch || requestId !== this.loadRequestId) return false;
 
-    const info = await window.pywebview.api.get_pdf_info(filePath, password);
+    playBeep("click");
+    const info = await window.pywebview.api.get_pdf_info(fileId, password);
+    if (requestId !== this.loadRequestId) return false;
     if (!info.ok) {
       if (info.needs_password) {
         this.pendingPasswordFile = filePath;
+        this.pendingPasswordFileId = fileId;
         this.openUnlockModal();
-        return;
+        return false;
       }
       showToast(`Erro ao abrir PDF: ${info.error}`, "error");
-      return;
+      return false;
     }
 
+    this.captureActiveDocumentState();
+    this.currentFileId = fileId;
+    this.currentFilePath = info.file_path || filePath;
+    const documentState = this.activateDocumentState(fileId, this.currentFilePath, password);
     this.currentFileName = info.file_name;
     this.totalPages = info.page_count;
     this.isEncrypted = Boolean(info.is_encrypted);
-    this.currentPassword = password || "";
     this.bookmarks = info.bookmarks || [];
+    documentState.pages = info.pages || [];
+    documentState.bookmarks = this.bookmarks;
+    documentState.metadata = info.metadata || {};
 
-    // Restaura sessão anterior se disponível
-    if (info.session_state && info.session_state.found) {
+    // Restaura primeiro o rascunho da sessão; na primeira abertura, usa o histórico persistido.
+    if (documentState.opened) {
+      this.currentPage = Math.min(Math.max(0, documentState.currentPage), Math.max(0, this.totalPages - 1));
+      const zoomSelect = document.getElementById("pdfZoomSelect");
+      if (zoomSelect) zoomSelect.value = documentState.zoom || "1.0";
+    } else if (info.session_state && info.session_state.found) {
       if (info.session_state.last_page_read > 0 && info.session_state.last_page_read < this.totalPages) {
         this.currentPage = info.session_state.last_page_read;
       } else {
@@ -1299,10 +1689,13 @@ class SuperPdfController {
     } else {
       this.currentPage = 0;
     }
+    documentState.currentPage = this.currentPage;
+    documentState.password = this.currentPassword;
+    documentState.opened = true;
 
     this.updateDocumentDropdown();
     const select = document.getElementById("pdfViewerSelect");
-    if (select) select.value = filePath;
+    if (select) select.value = fileId;
 
     const totalPagesLabel = document.getElementById("pdfTotalPagesLabel");
     if (totalPagesLabel) totalPagesLabel.innerText = `/ ${this.totalPages}`;
@@ -1327,10 +1720,11 @@ class SuperPdfController {
     const canvasWrapper = document.getElementById("pdfCanvasWrapper");
     if (canvasWrapper) canvasWrapper.classList.remove("hidden");
 
-    this.renderThumbnails(info.pages || []);
+    this.renderThumbnails(documentState.pages);
     this.renderBookmarksList();
     this.updateBookmarkButtonState();
     await this.renderCurrentPage();
+    return requestId === this.loadRequestId;
   }
 
   renderThumbnails(pages) {
@@ -1355,7 +1749,7 @@ class SuperPdfController {
     container.innerHTML = pages
       .map(
         (p, idx) => `
-      <div onclick="superPdf.goToPage(${idx})" id="thumb-card-${idx}" class="pdf-thumb-card p-2 rounded-xl border border-sky-100 bg-white shadow-xs flex items-center justify-between text-xs font-semibold cursor-pointer hover:border-sky-300 transition ${
+      <div data-action="superPdf.goToPage(${idx})" id="thumb-card-${idx}" class="pdf-thumb-card p-2 rounded-xl border border-sky-100 bg-white shadow-xs flex items-center justify-between text-xs font-semibold cursor-pointer hover:border-sky-300 transition ${
           idx === this.currentPage ? "active" : ""
         }">
         <span class="text-slate-700">Pág. ${idx + 1}</span>
@@ -1381,7 +1775,10 @@ class SuperPdfController {
   }
 
   async renderCurrentPage(forceReload = false) {
-    if (!this.currentFilePath || this.isRendering) return;
+    if (!this.currentFileId) return;
+    const requestId = ++this.renderRequestId;
+    const requestedFileId = this.currentFileId;
+    const requestedPage = this.currentPage;
     this.isRendering = true;
 
     const loader = document.getElementById("pdfLoadingIndicator");
@@ -1392,14 +1789,22 @@ class SuperPdfController {
     this.updateActiveThumbnail();
 
     try {
-      const cacheKey = `${this.currentFilePath}:${this.currentPage}`;
+      const cacheKey = `${requestedFileId}:${requestedPage}`;
       let pageData = this.pageCache.get(cacheKey);
 
       if (!pageData || forceReload) {
-        pageData = await window.pywebview.api.render_page_hq(this.currentFilePath, this.currentPage, 150);
+        pageData = await window.pywebview.api.render_page_hq(requestedFileId, requestedPage, 150);
+        if (
+          requestId !== this.renderRequestId ||
+          requestedFileId !== this.currentFileId ||
+          requestedPage !== this.currentPage
+        ) {
+          return;
+        }
         if (!pageData.ok) {
           if (pageData.needs_password) {
             this.pendingPasswordFile = this.currentFilePath;
+            this.pendingPasswordFileId = requestedFileId;
             this.openUnlockModal();
           } else {
             showToast(pageData.error, "error");
@@ -1447,6 +1852,13 @@ class SuperPdfController {
         const ctx = pageCanvas.getContext("2d");
         const img = new Image();
         img.onload = () => {
+          if (
+            requestId !== this.renderRequestId ||
+            requestedFileId !== this.currentFileId ||
+            requestedPage !== this.currentPage
+          ) {
+            return;
+          }
           ctx.clearRect(0, 0, pageCanvas.width, pageCanvas.height);
           ctx.drawImage(img, 0, 0);
           this.redrawAnnotations();
@@ -1454,8 +1866,10 @@ class SuperPdfController {
           this.isRendering = false;
         };
         img.onerror = () => {
-          if (loader) loader.classList.add("hidden");
-          this.isRendering = false;
+          if (requestId === this.renderRequestId) {
+            if (loader) loader.classList.add("hidden");
+            this.isRendering = false;
+          }
         };
         img.src = imageUrl;
       } else {
@@ -1464,8 +1878,10 @@ class SuperPdfController {
       }
     } catch (err) {
       console.error("Erro ao renderizar página:", err);
-      if (loader) loader.classList.add("hidden");
-      this.isRendering = false;
+      if (requestId === this.renderRequestId) {
+        if (loader) loader.classList.add("hidden");
+        this.isRendering = false;
+      }
     }
   }
 
@@ -1488,6 +1904,7 @@ class SuperPdfController {
   setZoom(val) {
     const select = document.getElementById("pdfZoomSelect");
     if (select) select.value = val;
+    if (this.activeDocumentState) this.activeDocumentState.zoom = val;
     this.renderCurrentPage();
   }
 
@@ -1516,15 +1933,16 @@ class SuperPdfController {
   goToPage(pageIdx) {
     if (pageIdx < 0 || pageIdx >= this.totalPages) return;
     this.currentPage = pageIdx;
+    if (this.activeDocumentState) this.activeDocumentState.currentPage = pageIdx;
     this.updateBookmarkButtonState();
     this.renderCurrentPage();
 
     // Auto-salvamento debounced do histórico de leitura
     if (this.saveStateTimeout) clearTimeout(this.saveStateTimeout);
     this.saveStateTimeout = setTimeout(() => {
-      if (this.currentFilePath && window.pywebview && window.pywebview.api) {
+      if (this.currentFileId && window.pywebview && window.pywebview.api) {
         const zoomVal = document.getElementById("pdfZoomSelect")?.value || "1.0";
-        window.pywebview.api.save_reading_state(this.currentFilePath, this.currentPage, zoomVal);
+        window.pywebview.api.save_reading_state(this.currentFileId, this.currentPage, zoomVal);
       }
     }, 500);
   }
@@ -1582,11 +2000,11 @@ class SuperPdfController {
       .map(
         (bm) => `
       <div class="p-2 rounded-xl border border-sky-100 bg-white shadow-xs flex items-center justify-between text-xs group hover:border-amber-300 transition">
-        <div onclick="superPdf.goToPage(${bm.page_number})" class="flex-1 cursor-pointer truncate">
+        <div data-action="superPdf.goToPage(${bm.page_number})" class="flex-1 cursor-pointer truncate">
           <div class="font-bold text-slate-800 truncate">${escapeHtml(bm.title || `Página ${bm.page_number + 1}`)}</div>
           <div class="text-[10px] text-amber-700 font-mono">Pág. ${bm.page_number + 1}</div>
         </div>
-        <button onclick="superPdf.deleteBookmark(${bm.id}, event)" class="p-1 text-slate-300 hover:text-rose-600 opacity-0 group-hover:opacity-100 transition" title="Remover Marcador">
+        <button data-action="superPdf.deleteBookmark(${bm.id}, event)" class="p-1 text-slate-300 hover:text-rose-600 opacity-0 group-hover:opacity-100 transition" title="Remover Marcador">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
         </button>
       </div>
@@ -1602,7 +2020,7 @@ class SuperPdfController {
       await this.deleteBookmark(existing.id);
     } else {
       const title = `Página ${this.currentPage + 1}`;
-      const res = await window.pywebview.api.add_bookmark(this.currentFilePath, this.currentPage, title);
+      const res = await window.pywebview.api.add_bookmark(this.currentFileId, this.currentPage, title);
       if (res.ok) {
         this.bookmarks.push(res);
         this.updateBookmarkButtonState();
@@ -1615,7 +2033,7 @@ class SuperPdfController {
 
   async deleteBookmark(id, event) {
     if (event) event.stopPropagation();
-    const res = await window.pywebview.api.delete_bookmark(id);
+    const res = await window.pywebview.api.delete_bookmark(this.currentFileId, id);
     if (res.ok) {
       this.bookmarks = this.bookmarks.filter((b) => b.id !== id);
       this.updateBookmarkButtonState();
@@ -2190,7 +2608,7 @@ class SuperPdfController {
   async rotatePage(degrees) {
     if (!this.currentFilePath) return;
     playBeep("click");
-    const res = await window.pywebview.api.rotate_pdf_page(this.currentFilePath, this.currentPage, degrees);
+    const res = await window.pywebview.api.rotate_pdf_page(this.currentFileId, this.currentPage, degrees);
     if (res.ok) {
       showToast(res.message, "success");
       playBeep("success");
@@ -2198,6 +2616,7 @@ class SuperPdfController {
     } else {
       if (res.needs_password) {
         this.pendingPasswordFile = this.currentFilePath;
+        this.pendingPasswordFileId = this.currentFileId;
         this.openUnlockModal();
       } else {
         showToast(`Erro ao rotacionar: ${res.error}`, "error");
@@ -2206,7 +2625,7 @@ class SuperPdfController {
   }
 
   async saveAnnotations() {
-    if (!this.currentFilePath) return;
+    if (!this.currentFilePath) return false;
     playBeep("click");
 
     // Sincroniza qualquer card que esteja atualmente em edição antes de coletar
@@ -2222,12 +2641,13 @@ class SuperPdfController {
 
     if (allAnnots.length === 0) {
       showToast("Nenhuma nova anotação para gravar.", "info");
-      return;
+      return true;
     }
 
     const res = await window.pywebview.api.save_pdf_annotations({
-      file_path: this.currentFilePath,
+      file_id: this.currentFileId,
       annotations: allAnnots,
+      password: this.currentPassword || null,
     });
 
     if (res.ok) {
@@ -2236,22 +2656,29 @@ class SuperPdfController {
       appendLog("OK", `${this.currentFileName}: ${res.saved_count} anotação(ões) gravada(s) nativamente no PDF.`);
       this.annotations.clear();
       this.undoStack = [];
+      if (this.activeDocumentState) {
+        this.activeDocumentState.annotations = this.annotations;
+        this.activeDocumentState.undoStack = this.undoStack;
+      }
       await this.renderCurrentPage(true);
+      return true;
     } else {
       playBeep("error");
       if (res.needs_password) {
         this.pendingPasswordFile = this.currentFilePath;
+        this.pendingPasswordFileId = this.currentFileId;
         this.openUnlockModal();
       } else {
         showToast(`Erro ao salvar: ${res.error}`, "error");
       }
+      return false;
     }
   }
 
   async triggerSnippetExtraction(x0, y0, x1, y1) {
     playBeep("click");
     const res = await window.pywebview.api.extract_snippet({
-      file_path: this.currentFilePath,
+      file_id: this.currentFileId,
       page_number: this.currentPage,
       rect: [x0, y0, x1, y1],
       dpi: 150,
@@ -2260,6 +2687,7 @@ class SuperPdfController {
     if (!res.ok) {
       if (res.needs_password) {
         this.pendingPasswordFile = this.currentFilePath;
+        this.pendingPasswordFileId = this.currentFileId;
         this.openUnlockModal();
       } else {
         showToast(`Erro ao capturar trecho: ${res.error}`, "error");
@@ -2369,13 +2797,14 @@ class SuperPdfController {
     }
 
     playBeep("click");
-    const res = await window.pywebview.api.protect_pdf(this.currentFilePath, userPw, ownerPw);
+    const res = await window.pywebview.api.protect_pdf(this.currentFileId, userPw, ownerPw);
     this.closeProtectModal();
 
     if (res.ok) {
       playBeep("success");
       this.isEncrypted = true;
       this.currentPassword = userPw;
+      if (this.activeDocumentState) this.activeDocumentState.password = userPw;
       showToast(res.message, "success");
       appendLog("OK", `${this.currentFileName}: Protegido com criptografia AES-256.`);
     } else {
@@ -2390,7 +2819,7 @@ class SuperPdfController {
 
     playBeep("click");
     const res = await window.pywebview.api.unprotect_pdf(
-      this.currentFilePath,
+      this.currentFileId,
       currentPw || this.currentPassword
     );
     this.closeProtectModal();
@@ -2399,9 +2828,10 @@ class SuperPdfController {
       playBeep("success");
       this.isEncrypted = false;
       this.currentPassword = "";
+      if (this.activeDocumentState) this.activeDocumentState.password = "";
       showToast(res.message, "success");
       appendLog("OK", `${this.currentFileName}: Proteção por senha removida com sucesso.`);
-      await this.loadDocument(this.currentFilePath);
+      await this.loadDocument(this.currentFileId, null, this.currentFilePath);
     } else {
       playBeep("error");
       showToast(`Erro ao remover senha: ${res.error}`, "error");
@@ -2438,14 +2868,16 @@ class SuperPdfController {
       return;
     }
 
-    if (!this.pendingPasswordFile) return;
+    if (!this.pendingPasswordFileId) return;
 
-    const res = await window.pywebview.api.set_pdf_password(this.pendingPasswordFile, pw);
+    const unlockedFilePath = this.pendingPasswordFile;
+    const unlockedFileId = this.pendingPasswordFileId;
+    const res = await window.pywebview.api.set_pdf_password(unlockedFileId, pw);
     if (res.ok) {
       this.closeUnlockModal();
       showToast("PDF desbloqueado com sucesso!", "success");
       playBeep("success");
-      await this.loadDocument(this.pendingPasswordFile, pw);
+      await this.loadDocument(unlockedFileId, pw, unlockedFilePath);
     } else {
       if (errorMsg) {
         errorMsg.innerText = res.error || "Senha incorreta.";
@@ -2595,12 +3027,19 @@ class SuperPdfController {
             }
           </style>
         </head>
-        <body>
-          <img src="${compositeDataUrl}" onload="setTimeout(() => { window.focus(); window.print(); }, 150);" />
-        </body>
+        <body></body>
         </html>
       `);
       doc.close();
+      const printImage = doc.createElement("img");
+      printImage.addEventListener("load", () => {
+        setTimeout(() => {
+          iframe.contentWindow.focus();
+          iframe.contentWindow.print();
+        }, 150);
+      }, { once: true });
+      printImage.src = compositeDataUrl;
+      doc.body.appendChild(printImage);
     } catch (err) {
       console.error("Erro no motor de impressão:", err);
       showToast("Não foi possível gerar a impressão.", "error");
@@ -3161,7 +3600,9 @@ class GlobalSearchController {
       const res = await window.pywebview.api.get_recent_library();
       if (res.ok && res.documents && res.documents.length > 0) {
         this.allResults = res.documents.map((doc) => ({
+          resource_id: doc.resource_id,
           file_path: doc.file_path,
+          display_path: doc.display_path || doc.file_path,
           file_name: doc.file_name,
           page_number: doc.last_page_read || 0,
           content_type: "pdf_page",
@@ -3220,17 +3661,17 @@ class GlobalSearchController {
                 <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${badgeColor} flex-shrink-0">
                   ${typeLabel}
                 </span>
-                <span class="text-xs font-bold text-slate-800 truncate" title="${escapeHtml(item.file_path)}">
+                <span class="text-xs font-bold text-slate-800 truncate" title="${escapeHtml(item.display_path || item.file_path)}">
                   ${escapeHtml(item.file_name)}
                 </span>
               </div>
-              <button onclick="appSearch.openResult(${index})" class="px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-sky-600 hover:bg-sky-700 text-white transition flex items-center gap-1 shadow-xs flex-shrink-0">
+              <button data-action="appSearch.openResult(${index})" class="px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-sky-600 hover:bg-sky-700 text-white transition flex items-center gap-1 shadow-xs flex-shrink-0">
                 <span>Abrir</span>
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
               </button>
             </div>
             <div class="text-xs text-slate-600 font-sans leading-relaxed bg-slate-50/80 p-2 rounded-xl border border-slate-100">
-              ${item.snippet || "(Correspondência no título do documento)"}
+              ${safeSearchSnippetHtml(item.snippet || "(Correspondência no título do documento)")}
             </div>
           </div>
         `;
@@ -3242,15 +3683,17 @@ class GlobalSearchController {
     const item = this.visibleResults[index];
     if (!item) return;
 
-    const { file_path: filePath, page_number: pageNumber, content_type: contentType } = item;
+    const { resource_id: resourceId, page_number: pageNumber, content_type: contentType } = item;
+    const displayPath = item.display_path || item.file_path || "";
+    if (!resourceId) return;
     this.closeModal();
     if (contentType === "pdf_page") {
       switchView("superpdf");
-      await superPdf.loadDocument(filePath);
+      await superPdf.loadDocument(resourceId, null, displayPath);
       superPdf.goToPage(pageNumber);
       showToast(`Saltando para Página ${pageNumber + 1}`, "info");
     } else {
-      await previewSpecificMarkdown(filePath);
+      await previewSpecificMarkdown(resourceId, displayPath);
       showToast("Visualizando documento no acervo.", "info");
     }
   }
@@ -3377,6 +3820,7 @@ class TermsManager {
     this.scrollArea = null;
     this.notice = null;
     this.lbl = null;
+    this.eventsBound = false;
   }
 
   init() {
@@ -3400,14 +3844,15 @@ class TermsManager {
     this.notice.innerText = "Por favor, role os termos de uso até o fim para liberar as opções de consentimento.";
     this.notice.className = "text-center text-[10px] text-amber-600 font-semibold bg-amber-50 border border-amber-100 p-2 rounded-xl";
 
-    // Event listener for scroll
-    this.scrollArea.onscroll = () => this.handleScroll();
+    if (!this.eventsBound) {
+      this.scrollArea.addEventListener("scroll", () => this.handleScroll());
+      this.checkbox.addEventListener("change", () => this.handleCheckboxChange());
+      this.eventsBound = true;
+    }
     
     // Check if scrollbar is not needed (e.g. large screen/height) and enable directly
     setTimeout(() => this.handleScroll(), 100);
 
-    // Checkbox change listener
-    this.checkbox.onchange = () => this.handleCheckboxChange();
   }
 
   handleScroll() {

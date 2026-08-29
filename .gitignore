@@ -1,5 +1,7 @@
 .venv/
 .uv-cache/
+node_modules/
+.npm-cache/
 .secrets/
 /data/nexojuris_acervo.db
 /data/nexojuris_acervo.db-*

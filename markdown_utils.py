@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import unicodedata
+import uuid
 from hashlib import sha1
 from pathlib import Path
 from typing import Literal
 
-from models import ConversionResult
+from models import ConversionResult, OutputReservation, PageCoverage
 
 HeadingProfile = Literal["jurisprudencia", "curso"]
+SplitMode = Literal["semantic", "strict"]
 
 HEADING_PATTERN = re.compile(r"(?m)^#{1,2}\s+.+?\s*$")
 # O pymupdf4llm rankeia até 6 tamanhos de fonte distintos como níveis de
@@ -88,15 +92,11 @@ _ROMAN_AMBIGUOUS_LETTERS = frozenset("IVXLCDM")
 COURSE_ATTENTION_PATTERN = re.compile(r"^ATENCAO!")
 
 
-def split_markdown_by_headings(markdown: str, max_characters: int) -> list[str]:
-    """Divide textos longos em blocos, respeitando títulos # e ##."""
-    if len(markdown) <= max_characters:
-        return []
-
-    headings = list(HEADING_PATTERN.finditer(markdown))
+def _semantic_sections(markdown: str) -> list[str]:
+    """Cria unidades semânticas iniciadas por headings, sem partir seu conteúdo."""
+    headings = list(RAW_HEADING_PATTERN.finditer(markdown))
     if not headings:
-        return []
-
+        return [block.strip() for block in re.split(r"\n{2,}", markdown) if block.strip()]
     sections: list[str] = []
     preamble = markdown[: headings[0].start()].strip()
     for index, heading in enumerate(headings):
@@ -105,18 +105,151 @@ def split_markdown_by_headings(markdown: str, max_characters: int) -> list[str]:
         if index == 0 and preamble:
             section = f"{preamble}\n\n{section}"
         sections.append(section)
+    return sections
 
+
+_FENCE_START = re.compile(r"^\s*(`{3,}|~{3,})")
+_TABLE_SEPARATOR = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
+_IMAGE_REFERENCE = re.compile(r"!\[[^\]]*]\([^\n)]+\)")
+
+
+def _markdown_blocks(markdown: str) -> list[tuple[str, bool, bool]]:
+    """Retorna (texto, protegido, heading), preservando código, tabela e imagem."""
+    lines = markdown.splitlines()
+    blocks: list[tuple[str, bool, bool]] = []
+    index = 0
+    while index < len(lines):
+        if not lines[index].strip():
+            index += 1
+            continue
+        line = lines[index]
+        fence = _FENCE_START.match(line)
+        if fence:
+            marker = fence.group(1)
+            collected = [line]
+            index += 1
+            closing = re.compile(rf"^\s*{re.escape(marker[0])}{{{len(marker)},}}\s*$")
+            while index < len(lines):
+                collected.append(lines[index])
+                current = lines[index]
+                index += 1
+                if closing.match(current):
+                    break
+            blocks.append(("\n".join(collected), True, False))
+            continue
+        if index + 1 < len(lines) and "|" in line and _TABLE_SEPARATOR.match(lines[index + 1]):
+            collected = [line, lines[index + 1]]
+            index += 2
+            while index < len(lines) and lines[index].strip() and "|" in lines[index]:
+                collected.append(lines[index])
+                index += 1
+            blocks.append(("\n".join(collected), True, False))
+            continue
+        if _IMAGE_REFERENCE.search(line):
+            blocks.append((line.strip(), True, False))
+            index += 1
+            continue
+        collected = [line]
+        index += 1
+        while index < len(lines) and lines[index].strip():
+            if _FENCE_START.match(lines[index]):
+                break
+            if index + 1 < len(lines) and "|" in lines[index] and _TABLE_SEPARATOR.match(lines[index + 1]):
+                break
+            if _IMAGE_REFERENCE.search(lines[index]):
+                break
+            collected.append(lines[index])
+            index += 1
+        text = "\n".join(collected).strip()
+        blocks.append((text, False, bool(re.match(r"^#{1,6}\s", text))))
+    return blocks
+
+
+def _strict_text_pieces(text: str, max_characters: int) -> list[str]:
+    pieces: list[str] = []
+    remaining = text.strip()
+    while len(remaining) > max_characters:
+        boundary = remaining.rfind("\n", 0, max_characters + 1)
+        if boundary < max_characters // 2:
+            boundary = remaining.rfind(" ", 0, max_characters + 1)
+        if boundary <= 0:
+            boundary = max_characters
+        pieces.append(remaining[:boundary].rstrip())
+        remaining = remaining[boundary:].lstrip()
+    if remaining:
+        pieces.append(remaining)
+    return pieces
+
+
+def _pack_chunks(units: list[str], max_characters: int) -> list[str]:
     chunks: list[str] = []
     current = ""
-    for section in sections:
-        if current and len(current) + len(section) + 2 > max_characters:
+    for unit in units:
+        candidate = f"{current}\n\n{unit}".strip() if current else unit
+        if current and len(candidate) > max_characters:
             chunks.append(current.strip())
-            current = section
+            current = unit
         else:
-            current = f"{current}\n\n{section}".strip() if current else section
+            current = candidate
     if current:
         chunks.append(current.strip())
     return chunks
+
+
+def split_markdown(markdown: str, max_characters: int, mode: SplitMode = "semantic") -> list[str]:
+    """Divide sem quebrar silenciosamente tabelas, imagens ou código cercado."""
+    if len(markdown) <= max_characters:
+        return []
+    if mode == "semantic":
+        units: list[str] = []
+        for section in _semantic_sections(markdown):
+            if len(section) <= max_characters:
+                units.append(section)
+                continue
+            pending_heading = ""
+            for block, _protected, heading in _markdown_blocks(section):
+                if heading:
+                    if pending_heading:
+                        units.append(pending_heading)
+                    pending_heading = block
+                elif pending_heading:
+                    units.append(f"{pending_heading}\n\n{block}")
+                    pending_heading = ""
+                else:
+                    units.append(block)
+            if pending_heading:
+                units.append(pending_heading)
+        return _pack_chunks(units, max_characters)
+    if mode != "strict":
+        raise ValueError("Modo de divisão inválido.")
+    pieces: list[str] = []
+    pending_heading = ""
+    for block, protected, heading in _markdown_blocks(markdown):
+        if heading:
+            if pending_heading:
+                pieces.append(pending_heading)
+            pending_heading = block
+            continue
+        block_pieces = [block] if protected or len(block) <= max_characters else _strict_text_pieces(block, max_characters)
+        if pending_heading:
+            combined = f"{pending_heading}\n\n{block_pieces[0]}"
+            if len(combined) <= max_characters:
+                block_pieces[0] = combined
+            elif protected:
+                pieces.append(pending_heading)
+            else:
+                pieces.extend(_strict_text_pieces(combined, max_characters)[:-1])
+                block_pieces[0] = _strict_text_pieces(combined, max_characters)[-1]
+            pending_heading = ""
+        pieces.extend(block_pieces)
+    if pending_heading:
+        pieces.append(pending_heading)
+    return _pack_chunks(pieces, max_characters)
+
+
+def split_markdown_by_headings(markdown: str, max_characters: int) -> list[str]:
+    """Compatibilidade: o comportamento histórico passa a ser semântico."""
+    return split_markdown(markdown, max_characters, "semantic")
 
 
 def _strip_accents(text: str) -> str:
@@ -436,6 +569,35 @@ def output_paths(output_dir: Path, source: Path) -> tuple[Path, Path]:
     return markdown_path, output_dir / "images" / asset_directory_name(markdown_path.stem)
 
 
+def reserve_batch_output_paths(
+    output_dir: Path,
+    sources: list[Path],
+    *,
+    retry: bool = False,
+) -> list[OutputReservation]:
+    """Reserva nomes exclusivos para todo o lote antes de iniciar workers."""
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    reserved: set[str] = set()
+    reservations: list[OutputReservation] = []
+    suffix = " - páginas reprocessadas" if retry else ""
+    for source in sources:
+        stem = f"{source.stem}{suffix}"
+        index = 1
+        while True:
+            candidate_stem = stem if index == 1 else f"{stem} ({index})"
+            markdown_path = output_dir / f"{candidate_stem}.md"
+            assets_dir = output_dir / "images" / asset_directory_name(candidate_stem)
+            chunks_dir = output_dir / f"{candidate_stem}_partes"
+            key = str(markdown_path).casefold()
+            if key not in reserved and not markdown_path.exists() and not assets_dir.exists() and not chunks_dir.exists():
+                reserved.add(key)
+                reservations.append(OutputReservation(markdown_path, assets_dir, chunks_dir))
+                break
+            index += 1
+    return reservations
+
+
 def finalize_markdown(
     source: Path,
     markdown_path: Path,
@@ -445,6 +607,10 @@ def finalize_markdown(
     max_chunk_characters: int,
     extraction_seconds: float = 0.0,
     heading_profile: HeadingProfile = "jurisprudencia",
+    split_mode: SplitMode = "semantic",
+    page_coverage: tuple[PageCoverage, ...] = (),
+    reservation: OutputReservation | None = None,
+    temporary_assets_dir: Path | None = None,
 ) -> ConversionResult:
     # Reclassifica os níveis de título por conteúdo antes de qualquer outra
     # função consumir o texto: o corte em partes deve ver a hierarquia
@@ -456,12 +622,48 @@ def finalize_markdown(
         markdown = normalize_course_heading_levels(markdown)
     else:
         markdown = normalize_heading_levels(markdown)
-    chunks = split_markdown_by_headings(markdown, max_chunk_characters) if split_output else []
-    markdown_path.write_text(markdown, encoding="utf-8")
-    if chunks:
-        chunks_dir = markdown_path.parent / f"{markdown_path.stem}_partes"
-        chunks_dir.mkdir(parents=True, exist_ok=True)
-        for index, chunk in enumerate(chunks, start=1):
-            portable_chunk = chunk.replace("images/", "../images/")
-            (chunks_dir / f"parte_{index:03}.md").write_text(portable_chunk, encoding="utf-8")
-    return ConversionResult(source, markdown_path, asset_count, len(chunks), extraction_seconds)
+    chunks = split_markdown(markdown, max_chunk_characters, split_mode) if split_output else []
+    target = reservation or OutputReservation(
+        markdown_path,
+        markdown_path.parent / "images" / asset_directory_name(markdown_path.stem),
+        markdown_path.parent / f"{markdown_path.stem}_partes",
+    )
+    token = uuid.uuid4().hex
+    markdown_temp = target.markdown_path.with_name(f".{target.markdown_path.name}.{token}.tmp")
+    chunks_temp = target.chunks_dir.with_name(f".{target.chunks_dir.name}.{token}.tmp")
+    promoted_assets = False
+    promoted_chunks = False
+    promoted_markdown = False
+    try:
+        if target.markdown_path.exists() or target.assets_dir.exists() or target.chunks_dir.exists():
+            raise FileExistsError(f"Destino reservado deixou de estar disponível: {target.markdown_path}")
+        markdown_temp.write_text(markdown, encoding="utf-8")
+        if chunks:
+            chunks_temp.mkdir(parents=True, exist_ok=False)
+            for index, chunk in enumerate(chunks, start=1):
+                portable_chunk = chunk.replace("images/", "../images/")
+                (chunks_temp / f"parte_{index:03}.md").write_text(portable_chunk, encoding="utf-8")
+        if asset_count and temporary_assets_dir is not None:
+            target.assets_dir.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(temporary_assets_dir, target.assets_dir)
+            promoted_assets = True
+        elif temporary_assets_dir is not None:
+            shutil.rmtree(temporary_assets_dir, ignore_errors=True)
+        if chunks:
+            os.replace(chunks_temp, target.chunks_dir)
+            promoted_chunks = True
+        os.replace(markdown_temp, target.markdown_path)
+        promoted_markdown = True
+    except Exception:
+        markdown_temp.unlink(missing_ok=True)
+        shutil.rmtree(chunks_temp, ignore_errors=True)
+        if temporary_assets_dir is not None:
+            shutil.rmtree(temporary_assets_dir, ignore_errors=True)
+        if promoted_markdown:
+            target.markdown_path.unlink(missing_ok=True)
+        if promoted_chunks:
+            shutil.rmtree(target.chunks_dir, ignore_errors=True)
+        if promoted_assets:
+            shutil.rmtree(target.assets_dir, ignore_errors=True)
+        raise
+    return ConversionResult(source, target.markdown_path, asset_count, len(chunks), extraction_seconds, page_coverage)

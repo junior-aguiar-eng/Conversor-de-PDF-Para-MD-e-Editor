@@ -131,7 +131,17 @@ class ConverterTests(unittest.TestCase):
 
         fake_open.assert_not_called()
 
-    def test_converter_converts_whole_document_in_a_single_call(self) -> None:
+    def test_converter_tracks_every_page_independently(self) -> None:
+        class FakePage:
+            def __init__(self, number: int) -> None:
+                self.number = number
+
+            def get_text(self, _kind: str = "text") -> str:
+                return ""
+
+            def get_images(self) -> list[object]:
+                return []
+
         class FakeDocument:
             page_count = 3
 
@@ -141,11 +151,14 @@ class ConverterTests(unittest.TestCase):
             def __exit__(self, *_):
                 return False
 
+            def load_page(self, page_index: int) -> FakePage:
+                return FakePage(page_index)
+
         calls: list[tuple[object, dict]] = []
 
         def fake_to_markdown(doc, **kwargs):
             calls.append((doc, kwargs))
-            return "conteudo"
+            return f"conteudo pagina {kwargs['pages'][0] + 1}"
 
         fake_document = FakeDocument()
         converter = converter_module.PdfMarkdownConverter.__new__(converter_module.PdfMarkdownConverter)
@@ -153,27 +166,22 @@ class ConverterTests(unittest.TestCase):
         converter._to_markdown = fake_to_markdown
 
         with (
-            patch.object(
-                converter_module,
-                "output_paths",
-                return_value=(
-                    Path.cwd() / "single-call-test.md",
-                    Path.cwd() / "assets" / "single-call-test",
-                ),
-            ),
-            patch.object(converter_module, "finalize_markdown"),
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.object(converter_module, "is_scanned_page", return_value=False),
         ):
-            converter.convert(
+            result = converter.convert(
                 source=Path("documento.pdf"),
-                output_dir=Path.cwd(),
+                output_dir=Path(tmp_dir),
                 split_output=False,
                 max_chunk_characters=1000,
             )
 
-        self.assertEqual(len(calls), 1)
-        called_doc, called_kwargs = calls[0]
-        self.assertIs(called_doc, fake_document)
-        self.assertNotIn("pages", called_kwargs)
+            self.assertEqual(result.failed_pages, ())
+            self.assertEqual([item.status for item in result.page_coverage], ["native"] * 3)
+            self.assertIn("conteudo pagina 3", result.markdown_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([kwargs["pages"] for _, kwargs in calls], [[0], [1], [2]])
 
 
 if __name__ == "__main__":

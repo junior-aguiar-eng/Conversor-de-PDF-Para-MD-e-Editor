@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -41,11 +42,11 @@ class WebFrontendRegressionTests(unittest.TestCase):
     def test_dynamic_file_paths_are_not_interpolated_into_inline_javascript(self) -> None:
         app_js = self._read_project_file("web", "app.js")
 
-        self.assertNotRegex(app_js, r'onclick="[^"]*\$\{[^}]*\.(?:path|markdown_path)')
-        self.assertIn('onclick="openQueuedPdf(${idx})"', app_js)
-        self.assertIn('onclick="previewQueuedMarkdown(${idx})"', app_js)
-        self.assertIn('onclick="openQueuedMarkdown(${idx})"', app_js)
-        self.assertIn('onclick="appSearch.openResult(${index})"', app_js)
+        self.assertNotRegex(app_js, r'data-action="[^"]*\$\{[^}]*\.(?:path|markdown_path)')
+        self.assertIn('data-action="openQueuedPdf(${idx})"', app_js)
+        self.assertIn('data-action="previewQueuedMarkdown(${idx})"', app_js)
+        self.assertIn('data-action="openQueuedMarkdown(${idx})"', app_js)
+        self.assertIn('data-action="appSearch.openResult(${index})"', app_js)
         self.assertNotIn("function escapeJsString", app_js)
 
     def test_manual_discloses_online_translation_and_voice_services(self) -> None:
@@ -59,6 +60,55 @@ class WebFrontendRegressionTests(unittest.TestCase):
         self.assertNotIn("Todo o ecossistema roda de forma 100% offline", index_html)
         self.assertNotIn("traduza o texto selecionado em tempo real com processamento local", index_html)
         self.assertIn("exigem internet", app_js)
+
+    def test_phase1_frontend_integrity_executes_in_javascript(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        completed = subprocess.run(
+            ["node", str(project_root / "tests" / "phase1_frontend.test.js")],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertIn("phase1_frontend_ok", completed.stdout)
+
+    def test_document_switch_modal_exposes_every_required_decision(self) -> None:
+        index_html = self._read_project_file("web", "index.html")
+        self.assertIn("Salvar e abrir outro", index_html)
+        self.assertIn("Manter rascunho e abrir", index_html)
+        self.assertIn("Descartar e abrir outro", index_html)
+        self.assertIn("Cancelar a troca", index_html)
+
+    def test_phase2_renderer_and_self_contained_csp(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        index_html = self._read_project_file("web", "index.html")
+        app_js = self._read_project_file("web", "app.js")
+        style_css = self._read_project_file("web", "style.css")
+
+        self.assertIn("Content-Security-Policy", index_html)
+        self.assertIn("script-src 'self'", index_html)
+        self.assertNotRegex(index_html, r"<(?:script|link)[^>]+https?://")
+        self.assertNotRegex(index_html, r"\son[a-z]+\s*=")
+        self.assertNotRegex(app_js, r"\son[a-z]+\s*=")
+        self.assertNotIn("fonts.googleapis.com", style_css)
+        for relative in (
+            "web/tailwind.css",
+            "web/vendor/marked.umd.js",
+            "web/vendor/purify.min.js",
+            "web/fonts/plus-jakarta-sans-latin.woff2",
+        ):
+            self.assertTrue((project_root / relative).is_file(), relative)
+
+        completed = subprocess.run(
+            ["node", str(project_root / "tests" / "phase2_renderer.test.js")],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertIn("phase2_renderer_ok", completed.stdout)
 
 
 if __name__ == "__main__":

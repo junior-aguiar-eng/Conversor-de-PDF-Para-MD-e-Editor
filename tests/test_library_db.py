@@ -157,27 +157,30 @@ class WebApiLibraryTests(unittest.TestCase):
         self.assertIsInstance(res["results"], list)
 
     def test_reading_state_and_bookmarks_bridge(self) -> None:
-        pdf_path = str(Path(self.tmp_dir.name) / "doc.pdf")
+        pdf_path = Path(self.tmp_dir.name) / "doc.pdf"
         doc = fitz.open()
         doc.new_page()
-        self.api._library.index_pdf_document(pdf_path, doc)
+        doc.save(pdf_path)
         doc.close()
+        with fitz.open(pdf_path) as saved:
+            self.api._library.index_pdf_document(str(pdf_path), saved)
+        file_id = self.api._register_pdf(pdf_path, "test")["file_id"]
 
-        save_res = self.api.save_reading_state(pdf_path, 2, "1.5")
+        save_res = self.api.save_reading_state(file_id, 2, "1.5")
         self.assertTrue(save_res["ok"])
 
-        get_res = self.api.get_reading_state(pdf_path)
+        get_res = self.api.get_reading_state(file_id)
         self.assertTrue(get_res["ok"])
         self.assertEqual(get_res["state"]["last_page_read"], 2)
 
-        bm_res = self.api.add_bookmark(pdf_path, 2, "Ponto Crítico")
+        bm_res = self.api.add_bookmark(file_id, 2, "Ponto Crítico")
         self.assertTrue(bm_res["ok"])
 
-        list_bms = self.api.get_bookmarks(pdf_path)
+        list_bms = self.api.get_bookmarks(file_id)
         self.assertTrue(list_bms["ok"])
         self.assertEqual(len(list_bms["bookmarks"]), 1)
 
-        del_res = self.api.delete_bookmark(bm_res["id"])
+        del_res = self.api.delete_bookmark(file_id, bm_res["id"])
         self.assertTrue(del_res["ok"])
 
     def test_terms_acceptance_bridge(self) -> None:
