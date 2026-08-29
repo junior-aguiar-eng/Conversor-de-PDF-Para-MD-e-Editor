@@ -172,7 +172,7 @@ class WebApiLicensingBridgeTests(IsolatedLicensingTestCase):
     def setUp(self) -> None:
         super().setUp()
         with patch("web_api.LibraryDatabase", return_value=MagicMock()):
-            self.api = BridgeApi()
+            self.api = BridgeApi(conversion_journal_path=Path(self.tmp_dir.name) / "conversion-journal.json")
         self.api._window = MagicMock()
 
     def test_bridge_license_endpoints(self) -> None:

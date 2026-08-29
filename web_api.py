@@ -10,10 +10,12 @@ import math
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
 import traceback
+import uuid
 import webbrowser
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
@@ -31,11 +33,17 @@ from constants import (
     CURRENT_TERMS_VERSION,
     DEFAULT_MAX_CHUNK_CHARACTERS,
     DEFAULT_OUTPUT_DIR,
+    DISK_SPACE_SOURCE_MULTIPLIER,
     MAX_ANNOTATION_FONT_SIZE,
     MAX_ANNOTATION_TEXT_CHARACTERS,
     MAX_ANNOTATIONS_PER_OPERATION,
+    MAX_CONVERSION_MEMORY_BYTES,
+    MAX_CONVERSION_SECONDS,
+    MAX_EXTRACTED_ASSET_BYTES,
+    MAX_IMAGES_PER_DOCUMENT,
     MAX_PAGE_COUNT,
     MAX_PDF_COORDINATE,
+    MAX_PDF_FILE_SIZE_BYTES,
     MAX_POINTS_PER_STROKE,
     MAX_RENDER_DPI,
     MAX_RENDER_PIXEL_AREA,
@@ -45,14 +53,20 @@ from constants import (
     MAX_STROKES_PER_ANNOTATION,
     MAX_TRANSLATION_CHARACTERS,
     MAX_TTS_CHARACTERS,
+    MEMORY_RESERVATION_PER_WORKER_BYTES,
+    MIN_FREE_DISK_BYTES,
     MIN_RENDER_DPI,
     TRANSLATION_CHUNK_CHARACTERS,
     TTS_CHUNK_CHARACTERS,
+    application_root,
 )
 from converter import (
     PdfMarkdownConverter,
+    ResourceBudgetExceeded,
+    available_memory_bytes,
     convert_worker,
     init_worker,
+    process_rss_bytes,
     validate_runtime_dependencies,
 )
 from file_authorization import AuthorizedResourceRegistry, ResourceAccessError
@@ -72,6 +86,7 @@ logger = logging.getLogger(__name__)
 
 MAX_PARALLEL_WORKERS = 4
 MIN_CHUNK_CHARACTERS = 1_000
+CONVERSION_JOURNAL_PATH = application_root() / "data" / "conversion-journal.json"
 
 ANNOTATION_TYPES = {
     "ink",
@@ -364,51 +379,98 @@ def _safe_close(doc: fitz.Document | None) -> None:
             pass
 
 
-def _save_doc_safely(doc: fitz.Document, file_path: Path, **save_kwargs: Any) -> None:
-    """Salva o documento PDF de forma segura, tratando criptografia, novas cópias e salvamento incremental."""
+def _pdf_backup_path(file_path: Path) -> Path:
+    """Retorna o caminho estável do backup imediatamente anterior ao PDF."""
+    return file_path.with_name(f"{file_path.stem}.nexojuris-backup{file_path.suffix}")
+
+
+def _flush_file(file_path: Path) -> None:
+    """Força a entrega dos bytes do arquivo ao sistema operacional antes da promoção."""
+    with file_path.open("rb+") as stream:
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _atomic_write_json(file_path: Path, payload: dict[str, Any]) -> None:
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = file_path.with_name(f".{file_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            json.dump(payload, stream, ensure_ascii=False, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, file_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _validate_saved_pdf(file_path: Path, expected_page_count: int) -> None:
+    """Recusa promover uma saída que o PyMuPDF não consiga reabrir integralmente."""
+    with fitz.open(str(file_path)) as candidate:
+        if not candidate.is_pdf or candidate.page_count != expected_page_count:
+            raise RuntimeError("O PDF temporário não passou na validação de integridade.")
+
+
+def _save_doc_safely(doc: fitz.Document, file_path: Path, **save_kwargs: Any) -> Path | None:
+    """Salva em temporário e substitui atomicamente; ao sobrescrever, mantém backup recuperável."""
     target_path = file_path.resolve()
-    temp_file: Path | None = None
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex
+    temp_file = target_path.with_name(f".{target_path.stem}.{token}.tmp.pdf")
+    backup_temp = target_path.with_name(f".{target_path.stem}.{token}.backup.tmp.pdf")
+    backup_path: Path | None = None
     try:
         doc_path = Path(doc.name).resolve() if (doc.name and Path(doc.name).is_file()) else None
-        # 1. Se for para alterar criptografia OU for gravação em novo arquivo ("Salvar como cópia"), usa doc.save()
-        if "encryption" in save_kwargs or (doc_path and doc_path != target_path):
-            temp_file = target_path.with_name(f"{target_path.stem}.tmp_{int(time.time() * 1000)}.pdf")
-            doc.save(str(temp_file), **save_kwargs)
-            _safe_close(doc)
-            temp_file.replace(target_path)
-            temp_file = None
-            return
+        overwriting_original = doc_path == target_path
+        expected_page_count = doc.page_count
+        effective_save_kwargs = dict(save_kwargs)
+        effective_save_kwargs.setdefault("encryption", fitz.PDF_ENCRYPT_KEEP)
 
-        # 2. Para edições no mesmo arquivo original, Incremental Save é mais rápido e preserva assinaturas
-        try:
-            doc.saveIncr()
-            _safe_close(doc)
-        except Exception:
-            if doc is not None and not doc.is_closed and not doc.is_encrypted:
-                temp_file = target_path.with_name(f"{target_path.stem}.tmp_{int(time.time() * 1000)}.pdf")
-                doc.save(str(temp_file))
-                _safe_close(doc)
-                temp_file.replace(target_path)
-                temp_file = None
-            else:
-                raise
+        doc.save(str(temp_file), **effective_save_kwargs)
+        _safe_close(doc)
+        _validate_saved_pdf(temp_file, expected_page_count)
+        _flush_file(temp_file)
+
+        if overwriting_original:
+            backup_path = _pdf_backup_path(target_path)
+            shutil.copy2(target_path, backup_temp)
+            _flush_file(backup_temp)
+            os.replace(backup_temp, backup_path)
+
+        os.replace(temp_file, target_path)
+        return backup_path
     finally:
-        if temp_file and temp_file.exists():
-            temp_file.unlink(missing_ok=True)
+        temp_file.unlink(missing_ok=True)
+        backup_temp.unlink(missing_ok=True)
         _safe_close(doc)
 
 
 class BridgeApi:
     """API exposta para o JavaScript via window.pywebview.api."""
 
-    def __init__(self) -> None:
+    def __init__(self, conversion_journal_path: Path | str | None = None) -> None:
         self._window: Any = None
         self.cancel_requested = threading.Event()
         self.resume_processing = threading.Event()
         self.resume_processing.set()
         self.is_paused = False
         self.is_converting = False
+        self._shutdown_requested = False
         self._batch_start_time = 0.0
+        self._conversion_thread: threading.Thread | None = None
+        self._conversion_finished = threading.Event()
+        self._conversion_finished.set()
+        self._journal_path = (
+            Path(conversion_journal_path).resolve()
+            if conversion_journal_path is not None
+            else CONVERSION_JOURNAL_PATH.resolve()
+        )
+        self._journal_lock = threading.Lock()
+        self._recovery_token: str | None = None
+        self._recovery_payload: dict[str, Any] | None = None
+        self._resuming_interrupted = False
+        self._close_lock = threading.Lock()
+        self._services_shutdown = False
         self._pdf_passwords: dict[str, str] = {}
         self._library = LibraryDatabase()
         self._resources = AuthorizedResourceRegistry()
@@ -562,6 +624,12 @@ class BridgeApi:
             "default_output_dir_id": self._default_output_resource["directory_id"],
             "default_chunk_limit": DEFAULT_MAX_CHUNK_CHARACTERS,
             "max_page_count": MAX_PAGE_COUNT,
+            "max_pdf_file_size_bytes": MAX_PDF_FILE_SIZE_BYTES,
+            "max_images_per_document": MAX_IMAGES_PER_DOCUMENT,
+            "max_extracted_asset_bytes": MAX_EXTRACTED_ASSET_BYTES,
+            "max_conversion_memory_bytes": MAX_CONVERSION_MEMORY_BYTES,
+            "max_conversion_seconds": MAX_CONVERSION_SECONDS,
+            "min_free_disk_bytes": MIN_FREE_DISK_BYTES,
         }
 
     def get_terms_acceptance_status(self) -> dict[str, Any]:
@@ -729,6 +797,211 @@ class BridgeApi:
             return []
         return self._process_file_paths(candidates, origin="confirmed_drag_drop")
 
+    @staticmethod
+    def _checkpoint_dir(reservation: OutputReservation) -> Path:
+        return reservation.markdown_path.with_name(f".{reservation.markdown_path.name}.nexojuris-checkpoint")
+
+    def _read_conversion_journal(self) -> dict[str, Any] | None:
+        with self._journal_lock:
+            try:
+                payload = json.loads(self._journal_path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return None
+            except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+                logger.warning(f"Journal de conversão inválido: {error}")
+                return None
+        return payload if isinstance(payload, dict) and payload.get("version") == 1 else None
+
+    def _write_conversion_journal(
+        self,
+        files: list[Path],
+        output_dir: Path,
+        split_output: bool,
+        max_chunk_characters: int,
+        heading_profile: HeadingProfile,
+        split_mode: SplitMode,
+        page_numbers_by_file: list[tuple[int, ...] | None],
+        max_workers: int | None,
+        reservations: list[OutputReservation],
+    ) -> None:
+        entries = []
+        for source, page_numbers, reservation in zip(files, page_numbers_by_file, reservations, strict=True):
+            stat = source.stat()
+            entries.append(
+                {
+                    "source": str(source),
+                    "source_size": stat.st_size,
+                    "source_mtime_ns": stat.st_mtime_ns,
+                    "page_numbers": list(page_numbers) if page_numbers is not None else None,
+                    "status": "pending",
+                    "reservation": {
+                        "markdown_path": str(reservation.markdown_path),
+                        "assets_dir": str(reservation.assets_dir),
+                        "chunks_dir": str(reservation.chunks_dir),
+                    },
+                }
+            )
+        payload = {
+            "version": 1,
+            "state": "running",
+            "created_at": time.time(),
+            "output_dir": str(output_dir),
+            "split_output": split_output,
+            "split_mode": split_mode,
+            "max_chunk_characters": max_chunk_characters,
+            "heading_profile": heading_profile,
+            "max_workers": max_workers,
+            "files": entries,
+        }
+        with self._journal_lock:
+            _atomic_write_json(self._journal_path, payload)
+
+    def _mark_journal_file_finished(self, source: Path, status: str) -> None:
+        with self._journal_lock:
+            try:
+                payload = json.loads(self._journal_path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
+                return
+            for entry in payload.get("files", []):
+                if entry.get("source") == str(source.resolve()):
+                    entry["status"] = status
+                    _atomic_write_json(self._journal_path, payload)
+                    return
+
+    def _clear_conversion_journal(self, *, remove_checkpoints: bool) -> None:
+        payload = self._read_conversion_journal() if remove_checkpoints else None
+        if payload:
+            try:
+                output_root = Path(payload.get("output_dir", "")).resolve()
+            except (OSError, TypeError, ValueError):
+                output_root = None
+            for entry in payload.get("files", []):
+                markdown_path = entry.get("reservation", {}).get("markdown_path")
+                if not markdown_path or output_root is None:
+                    continue
+                try:
+                    path = Path(markdown_path).resolve()
+                except (OSError, TypeError, ValueError):
+                    continue
+                if path.parent != output_root:
+                    logger.warning(f"Checkpoint fora do destino autorizado foi ignorado: {path}")
+                    continue
+                checkpoint = path.with_name(f".{path.name}.nexojuris-checkpoint")
+                if checkpoint.parent == output_root:
+                    shutil.rmtree(checkpoint, ignore_errors=True)
+        with self._journal_lock:
+            self._journal_path.unlink(missing_ok=True)
+
+    def get_interrupted_conversion(self) -> dict[str, Any]:
+        """Reconstrói uma fila interrompida sem reutilizar IDs antigos da interface."""
+        if self.is_converting:
+            return {"available": False, "reason": "conversion_active"}
+        payload = self._read_conversion_journal()
+        if not payload:
+            return {"available": False}
+        try:
+            output_dir = Path(payload["output_dir"]).resolve()
+            output_resource = self._register_directory(output_dir, "conversion_recovery")
+            recovered_files: list[dict[str, Any]] = []
+            files_payload: list[dict[str, Any]] = []
+            missing_files: list[str] = []
+            for entry in payload.get("files", []):
+                reservation_data = entry.get("reservation", {})
+                expected_output = Path(reservation_data.get("markdown_path", "")).resolve()
+                expected_assets = Path(reservation_data.get("assets_dir", "")).resolve()
+                expected_chunks = Path(reservation_data.get("chunks_dir", "")).resolve()
+                if (
+                    expected_output.parent != output_dir
+                    or expected_assets.parent != output_dir / "images"
+                    or expected_chunks.parent != output_dir
+                ):
+                    raise ResourceAccessError("O journal contém um destino fora da pasta autorizada.")
+                self._cleanup_conversion_temps(
+                    OutputReservation(expected_output, expected_assets, expected_chunks)
+                )
+                if entry.get("status") in {"completed", "failed"} or expected_output.is_file():
+                    continue
+                source = Path(entry.get("source", "")).resolve()
+                try:
+                    stat = source.stat()
+                    if (
+                        source.suffix.casefold() != ".pdf"
+                        or stat.st_size != int(entry.get("source_size", -1))
+                        or stat.st_mtime_ns != int(entry.get("source_mtime_ns", -1))
+                    ):
+                        raise OSError("arquivo alterado")
+                    recovered = self._register_pdf(source, "conversion_recovery")
+                except (OSError, ResourceAccessError, TypeError, ValueError):
+                    missing_files.append(source.name or "PDF indisponível")
+                    continue
+                recovered_files.append(recovered)
+                files_payload.append(
+                    {"file_id": recovered["file_id"], "page_numbers": entry.get("page_numbers")}
+                )
+            if not files_payload:
+                if not missing_files:
+                    self._clear_conversion_journal(remove_checkpoints=True)
+                    return {"available": False}
+                token = uuid.uuid4().hex
+                self._recovery_token = token
+                self._recovery_payload = None
+                return {
+                    "available": True,
+                    "can_resume": False,
+                    "resume_token": token,
+                    "files": [],
+                    "missing_files": missing_files,
+                }
+            token = uuid.uuid4().hex
+            resume_payload = {
+                "files": files_payload,
+                "output_directory_id": output_resource["directory_id"],
+                "split_output": bool(payload.get("split_output", False)),
+                "split_mode": payload.get("split_mode", "semantic"),
+                "max_chunk_characters": payload.get("max_chunk_characters", DEFAULT_MAX_CHUNK_CHARACTERS),
+                "heading_profile": payload.get("heading_profile", "jurisprudencia"),
+                "max_workers": payload.get("max_workers"),
+            }
+            self._recovery_token = token
+            self._recovery_payload = resume_payload
+            return {
+                "available": True,
+                "can_resume": True,
+                "resume_token": token,
+                "files": recovered_files,
+                "missing_files": missing_files,
+                "output_dir": str(output_dir),
+                "output_directory_id": output_resource["directory_id"],
+                "split_output": resume_payload["split_output"],
+                "split_mode": resume_payload["split_mode"],
+                "max_chunk_characters": resume_payload["max_chunk_characters"],
+                "heading_profile": resume_payload["heading_profile"],
+            }
+        except (KeyError, OSError, ResourceAccessError, TypeError, ValueError) as error:
+            return {"available": False, "error": f"Não foi possível recuperar a fila: {error}"}
+
+    def resume_interrupted_conversion(self, resume_token: str) -> dict[str, Any]:
+        if not resume_token or resume_token != self._recovery_token or self._recovery_payload is None:
+            return {"started": False, "error": "Token de retomada inválido ou expirado."}
+        payload = self._recovery_payload
+        self._resuming_interrupted = True
+        try:
+            result = self.start_conversion(payload)
+        finally:
+            self._resuming_interrupted = False
+        if result.get("started"):
+            self._recovery_token = None
+            self._recovery_payload = None
+        return result
+
+    def discard_interrupted_conversion(self, resume_token: str) -> dict[str, Any]:
+        if not resume_token or resume_token != self._recovery_token:
+            return {"ok": False, "error": "Token de retomada inválido ou expirado."}
+        self._clear_conversion_journal(remove_checkpoints=True)
+        self._recovery_token = None
+        self._recovery_payload = None
+        return {"ok": True}
+
     def start_conversion(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Inicia a conversão em lote em uma thread em segundo plano."""
         if not isinstance(payload, dict):
@@ -745,6 +1018,12 @@ class BridgeApi:
 
         if self.is_converting:
             return {"started": False, "error": "Uma conversão já está em andamento."}
+        if self._journal_path.is_file() and not self._resuming_interrupted:
+            return {
+                "started": False,
+                "error": "Há uma conversão interrompida aguardando retomada ou descarte.",
+                "error_code": "interrupted_conversion_pending",
+            }
 
         files_data = payload.get("files", [])
         if not isinstance(files_data, list) or not files_data:
@@ -806,10 +1085,33 @@ class BridgeApi:
         if len(file_paths) != len(files_data):
             return {"started": False, "error": "A fila contém recursos não autorizados."}
 
+        try:
+            self._validate_batch_budget(file_paths, output_dir)
+            reservations = reserve_batch_output_paths(
+                output_dir,
+                file_paths,
+                retry=any(pages is not None for pages in page_numbers_by_file),
+            )
+            self._write_conversion_journal(
+                file_paths,
+                output_dir,
+                split_output,
+                max_chunk_characters,
+                heading_profile,
+                split_mode,
+                page_numbers_by_file,
+                requested_workers,
+                reservations,
+            )
+        except (OSError, ResourceBudgetExceeded) as error:
+            return {"started": False, "error": str(error), "error_code": "resource_budget"}
+
         self.cancel_requested.clear()
         self.resume_processing.set()
         self.is_paused = False
         self.is_converting = True
+        self._shutdown_requested = False
+        self._conversion_finished.clear()
         self._batch_start_time = time.perf_counter()
 
         thread = threading.Thread(
@@ -823,10 +1125,19 @@ class BridgeApi:
                 split_mode,
                 page_numbers_by_file,
                 requested_workers,
+                reservations,
             ),
-            daemon=True,
+            daemon=False,
+            name="ConversionCoordinator",
         )
-        thread.start()
+        self._conversion_thread = thread
+        try:
+            thread.start()
+        except RuntimeError as error:
+            self.is_converting = False
+            self._conversion_finished.set()
+            self._clear_conversion_journal(remove_checkpoints=True)
+            return {"started": False, "error": f"Não foi possível iniciar a conversão: {error}"}
         return {"started": True, "error": None}
 
     def retry_failed_pages(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -865,13 +1176,62 @@ class BridgeApi:
         return {"is_paused": True}
 
     def request_stop(self) -> bool:
-        """Solicita a interrupção graciosa do lote."""
+        """Solicita a interrupção imediata dos processos de conversão."""
         if not self.is_converting:
             return False
         self.cancel_requested.set()
         self.resume_processing.set()
-        self._emit("status", {"message": "Parada solicitada: concluindo extração ativa..."})
+        self._emit("status", {"message": "Parada solicitada: interrompendo a extração ativa..."})
         return True
+
+    def has_active_work(self) -> bool:
+        with self._indexing_lock, self._page_indexing_lock:
+            return bool(
+                self.is_converting
+                or any(thread.is_alive() for thread in self._indexing_threads.values())
+                or self._pending_page_indexes
+            )
+
+    def shutdown_for_close(self, timeout_seconds: float = 15.0) -> bool:
+        """Interrompe coordenadamente tarefas e só confirma quando nenhuma escrita continua ativa."""
+        with self._close_lock:
+            if self._services_shutdown:
+                return True
+            deadline = time.monotonic() + max(0.1, timeout_seconds)
+            self._shutdown_requested = True
+            self.cancel_requested.set()
+            self.resume_processing.set()
+
+            with self._indexing_lock:
+                for event in self._indexing_cancel_events.values():
+                    event.set()
+                for event in self._indexing_pause_events.values():
+                    event.set()
+                indexing_threads = list(self._indexing_threads.values())
+
+            conversion_thread = self._conversion_thread
+            if conversion_thread and conversion_thread is not threading.current_thread():
+                conversion_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            for thread in indexing_threads:
+                if thread is not threading.current_thread():
+                    thread.join(timeout=max(0.0, deadline - time.monotonic()))
+
+            while time.monotonic() < deadline:
+                with self._page_indexing_lock:
+                    if not self._pending_page_indexes:
+                        break
+                time.sleep(0.05)
+
+            conversion_alive = bool(conversion_thread and conversion_thread.is_alive())
+            indexing_alive = any(thread.is_alive() for thread in indexing_threads)
+            with self._page_indexing_lock:
+                page_indexing_alive = bool(self._pending_page_indexes)
+            if conversion_alive or indexing_alive or page_indexing_alive:
+                return False
+
+            self._page_indexing_executor.shutdown(wait=True, cancel_futures=True)
+            self._services_shutdown = True
+            return True
 
     def open_markdown(self, markdown_id: str) -> bool:
         """Abre o arquivo Markdown gerado no editor padrão do Windows."""
@@ -1144,7 +1504,8 @@ class BridgeApi:
             thread = threading.Thread(
                 target=self._run_full_indexing_worker,
                 args=(path_str, file_id, password, cancel_evt, pause_evt),
-                daemon=True,
+                daemon=False,
+                name=f"PdfIndexer-{Path(path_str).name}",
             )
             self._indexing_threads[path_str] = thread
             thread.start()
@@ -1268,13 +1629,19 @@ class BridgeApi:
             new_rotation = (page.rotation + degrees) % 360
             page.set_rotation(new_rotation)
 
-            _save_doc_safely(doc, target_path)
+            backup_path = _save_doc_safely(doc, target_path)
             res = {
                 "ok": True,
                 "new_rotation": new_rotation,
-                "message": f"Página {page_number + 1} rotacionada para {new_rotation}°.",
+                "message": (
+                    f"Página {page_number + 1} rotacionada para {new_rotation}°. "
+                    f"Backup anterior: {backup_path.name}."
+                    if backup_path
+                    else f"Página {page_number + 1} rotacionada para {new_rotation}°."
+                ),
                 "target_path": str(target_path),
                 "is_copy": target_path != path,
+                "backup_path": str(backup_path) if backup_path else None,
             }
             if target_path != path:
                 new_pdf = self._register_pdf(target_path, "copy")
@@ -1312,7 +1679,7 @@ class BridgeApi:
             target_path = self._resolve_pdf_destination(output_file_id) if output_file_id else path
             owner = owner_pw if owner_pw else user_pw
             perm = fitz.PDF_PERM_PRINT | fitz.PDF_PERM_COPY | fitz.PDF_PERM_ANNOTATE | fitz.PDF_PERM_ACCESSIBILITY
-            _save_doc_safely(
+            backup_path = _save_doc_safely(
                 doc,
                 target_path,
                 encryption=fitz.PDF_ENCRYPT_AES_256,
@@ -1323,9 +1690,14 @@ class BridgeApi:
             self._pdf_passwords[str(target_path)] = user_pw
             res = {
                 "ok": True,
-                "message": "PDF protegido com sucesso usando criptografia AES-256.",
+                "message": (
+                    f"PDF protegido com AES-256. Backup anterior: {backup_path.name}."
+                    if backup_path
+                    else "PDF protegido com sucesso usando criptografia AES-256."
+                ),
                 "target_path": str(target_path),
                 "is_copy": target_path != path,
+                "backup_path": str(backup_path) if backup_path else None,
             }
             if target_path != path:
                 new_pdf = self._register_pdf(target_path, "copy")
@@ -1353,7 +1725,7 @@ class BridgeApi:
 
         try:
             target_path = self._resolve_pdf_destination(output_file_id) if output_file_id else path
-            _save_doc_safely(
+            backup_path = _save_doc_safely(
                 doc,
                 target_path,
                 encryption=fitz.PDF_ENCRYPT_NONE,
@@ -1362,9 +1734,14 @@ class BridgeApi:
 
             res = {
                 "ok": True,
-                "message": "Proteção por senha removida com sucesso.",
+                "message": (
+                    f"Proteção removida. Backup anterior: {backup_path.name}."
+                    if backup_path
+                    else "Proteção por senha removida com sucesso."
+                ),
                 "target_path": str(target_path),
                 "is_copy": target_path != path,
+                "backup_path": str(backup_path) if backup_path else None,
             }
             if target_path != path:
                 new_pdf = self._register_pdf(target_path, "copy")
@@ -1547,13 +1924,18 @@ class BridgeApi:
                         applied_count += 1
 
             target_path = self._resolve_pdf_destination(str(output_file_id)) if output_file_id else path
-            _save_doc_safely(doc, target_path)
+            backup_path = _save_doc_safely(doc, target_path)
             res = {
                 "ok": True,
                 "saved_count": applied_count,
-                "message": f"{applied_count} anotação(ões) salva(s) com sucesso no PDF.",
+                "message": (
+                    f"{applied_count} anotação(ões) salva(s). Backup anterior: {backup_path.name}."
+                    if backup_path
+                    else f"{applied_count} anotação(ões) salva(s) com sucesso no PDF."
+                ),
                 "target_path": str(target_path),
                 "is_copy": target_path != path,
+                "backup_path": str(backup_path) if backup_path else None,
             }
             if target_path != path:
                 new_pdf = self._register_pdf(target_path, "copy")
@@ -1940,38 +2322,25 @@ class BridgeApi:
         split_mode: SplitMode = "semantic",
         page_numbers_by_file: list[tuple[int, ...] | None] | None = None,
         max_workers: int | None = None,
+        reservations: list[OutputReservation] | None = None,
     ) -> None:
         try:
             page_numbers_by_file = page_numbers_by_file or [None] * len(files)
-            reservations = reserve_batch_output_paths(
-                output_dir,
-                files,
-                retry=any(pages is not None for pages in page_numbers_by_file),
+            reservations = reservations or reserve_batch_output_paths(
+                output_dir, files, retry=any(pages is not None for pages in page_numbers_by_file)
             )
             worker_count = self._resolve_worker_count(len(files), max_workers)
-            if worker_count <= 1:
-                self._convert_sequentially(
-                    files,
-                    output_dir,
-                    split_output,
-                    max_chunk_characters,
-                    heading_profile,
-                    reservations,
-                    split_mode,
-                    page_numbers_by_file,
-                )
-            else:
-                self._convert_in_parallel(
-                    files,
-                    output_dir,
-                    split_output,
-                    max_chunk_characters,
-                    heading_profile,
-                    worker_count,
-                    reservations,
-                    split_mode,
-                    page_numbers_by_file,
-                )
+            self._convert_in_parallel(
+                files,
+                output_dir,
+                split_output,
+                max_chunk_characters,
+                heading_profile,
+                worker_count,
+                reservations,
+                split_mode,
+                page_numbers_by_file,
+            )
         except Exception as error:
             self._emit(
                 "batch_error",
@@ -1980,14 +2349,37 @@ class BridgeApi:
         finally:
             self.is_converting = False
             self.is_paused = False
+            self._conversion_finished.set()
 
     def _resolve_worker_count(self, total_files: int, requested_workers: int | None = None) -> int:
         if total_files <= 1:
             return 1
         automatic_limit = min(total_files, MAX_PARALLEL_WORKERS, os.cpu_count() or 1)
+        available_memory = available_memory_bytes()
+        if available_memory is not None:
+            memory_limit = max(1, available_memory // MEMORY_RESERVATION_PER_WORKER_BYTES)
+            automatic_limit = min(automatic_limit, memory_limit)
         if requested_workers is None:
             return max(1, automatic_limit)
         return max(1, min(automatic_limit, int(requested_workers)))
+
+    @staticmethod
+    def _validate_batch_budget(files: list[Path], output_dir: Path) -> None:
+        source_sizes: list[int] = []
+        for source in files:
+            size = source.stat().st_size
+            if size > MAX_PDF_FILE_SIZE_BYTES:
+                raise ResourceBudgetExceeded(
+                    f"{source.name}: o PDF excede o limite de {MAX_PDF_FILE_SIZE_BYTES // (1024 * 1024)} MB."
+                )
+            source_sizes.append(size)
+        required = MIN_FREE_DISK_BYTES + sum(source_sizes) * DISK_SPACE_SOURCE_MULTIPLIER
+        free = shutil.disk_usage(output_dir).free
+        if free < required:
+            raise ResourceBudgetExceeded(
+                "Espaço livre insuficiente no destino: "
+                f"são necessários ao menos {required // (1024 * 1024)} MB livres para este lote."
+            )
 
     def _convert_sequentially(
         self,
@@ -2071,74 +2463,150 @@ class BridgeApi:
         self._emit_progress(0, total)
         successes: list[ConversionResult] = []
         failures: list[ConversionFailure] = []
-        pending: dict[Future, Path] = {}
+        pending: dict[Future, tuple[Path, ProcessPoolExecutor, float, OutputReservation]] = {}
         next_index = 0
 
-        with ProcessPoolExecutor(max_workers=worker_count, initializer=init_worker) as pool:
-            while pending or (next_index < total and not self.cancel_requested.is_set()):
-                if not self.cancel_requested.is_set() and self.resume_processing.is_set():
-                    while len(pending) < worker_count and next_index < total:
-                        source = files[next_index]
-                        next_index += 1
-                        self._emit(
-                            "file_start",
-                            {
-                                "file_id": self._resources.id_for_path(source, kind="pdf"),
-                                "path": str(source),
-                                "name": source.name,
-                                "index": next_index,
-                                "total": total,
-                            },
-                        )
-                        self._emit("status", {"message": f"Convertendo {next_index}/{total}: {source.name}"})
-                        try:
-                            future = pool.submit(
-                                convert_worker,
-                                source,
-                                output_dir,
-                                split_output,
-                                max_chunk_characters,
-                                heading_profile,
-                                reservations[next_index - 1],
-                                split_mode,
-                                page_numbers_by_file[next_index - 1],
-                            )
-                        except BrokenProcessPool as error:
-                            failure = ConversionFailure(source=source, error_message=str(error), details=traceback.format_exc())
-                            failures.append(failure)
-                            self._emit_file_error(failure)
-                            self._emit_progress(len(successes) + len(failures), total)
-                            continue
-                        pending[future] = source
-
-                if not pending:
-                    self.resume_processing.wait(timeout=0.2)
-                    continue
-
-                done, _ = wait(pending.keys(), timeout=0.2, return_when=FIRST_COMPLETED)
-                for future in done:
-                    source = pending.pop(future)
+        while pending or (next_index < total and not self.cancel_requested.is_set()):
+            if not self.cancel_requested.is_set() and self.resume_processing.is_set():
+                while len(pending) < worker_count and next_index < total:
+                    source = files[next_index]
+                    reservation = reservations[next_index]
+                    page_numbers = page_numbers_by_file[next_index]
+                    next_index += 1
+                    self._emit(
+                        "file_start",
+                        {
+                            "file_id": self._resources.id_for_path(source, kind="pdf"),
+                            "path": str(source),
+                            "name": source.name,
+                            "index": next_index,
+                            "total": total,
+                        },
+                    )
+                    self._emit("status", {"message": f"Convertendo {next_index}/{total}: {source.name}"})
+                    pool = ProcessPoolExecutor(max_workers=1, initializer=init_worker)
                     try:
-                        result = future.result()
-                    except Exception as error:
-                        result = ConversionFailure(source=source, error_message=str(error), details=traceback.format_exc())
+                        future = pool.submit(
+                            convert_worker,
+                            source,
+                            output_dir,
+                            split_output,
+                            max_chunk_characters,
+                            heading_profile,
+                            reservation,
+                            split_mode,
+                            page_numbers,
+                            self._checkpoint_dir(reservation),
+                        )
+                    except (BrokenProcessPool, RuntimeError) as error:
+                        pool.shutdown(wait=False, cancel_futures=True)
+                        failure = ConversionFailure(source=source, error_message=str(error), details=traceback.format_exc())
+                        failures.append(failure)
+                        self._mark_journal_file_finished(source, "failed")
+                        self._emit_file_error(failure)
+                        self._emit_progress(len(successes) + len(failures), total)
+                        continue
+                    pending[future] = (source, pool, time.monotonic(), reservation)
 
-                    if isinstance(result, ConversionFailure):
-                        failures.append(result)
-                        self._emit_file_error(result)
-                    else:
-                        successes.append(result)
-                        self._emit_file_success(result)
+            if not pending:
+                self.resume_processing.wait(timeout=0.2)
+                continue
 
-                    self._emit_progress(len(successes) + len(failures), total)
+            wait_timeout = 0 if self.cancel_requested.is_set() else 0.2
+            done, _ = wait(pending.keys(), timeout=wait_timeout, return_when=FIRST_COMPLETED)
+            for future in done:
+                source, pool, _, _ = pending.pop(future)
+                try:
+                    result = future.result()
+                except Exception as error:
+                    result = ConversionFailure(source=source, error_message=str(error), details=traceback.format_exc())
+                finally:
+                    pool.shutdown(wait=True, cancel_futures=True)
 
-                if self.cancel_requested.is_set() and not pending:
-                    break
+                if isinstance(result, ConversionFailure):
+                    failures.append(result)
+                    self._mark_journal_file_finished(source, "failed")
+                    self._emit_file_error(result)
+                else:
+                    successes.append(result)
+                    self._mark_journal_file_finished(source, "completed")
+                    self._emit_file_success(result)
+                self._emit_progress(len(successes) + len(failures), total)
+
+            if self.cancel_requested.is_set():
+                for _, pool, _, reservation in pending.values():
+                    self._terminate_conversion_pool(pool)
+                    self._cleanup_conversion_temps(reservation)
+                pending.clear()
+                if not self._shutdown_requested:
+                    self._clear_conversion_journal(remove_checkpoints=True)
+                break
+
+            now = time.monotonic()
+            over_budget = [
+                future
+                for future, (_, pool, started, _) in pending.items()
+                if now - started > MAX_CONVERSION_SECONDS or self._pool_memory_exceeded(pool)
+            ]
+            for future in over_budget:
+                source, pool, started, reservation = pending.pop(future)
+                timed_out = now - started > MAX_CONVERSION_SECONDS
+                self._terminate_conversion_pool(pool)
+                self._cleanup_conversion_temps(reservation)
+                failure = ConversionFailure(
+                    source=source,
+                    error_message=(
+                        f"A conversão excedeu o prazo de {MAX_CONVERSION_SECONDS // 60} minutos."
+                        if timed_out
+                        else "A conversão excedeu o limite de memória do processo isolado."
+                    ),
+                    details="O processo isolado foi encerrado pelo watchdog.",
+                )
+                failures.append(failure)
+                self._mark_journal_file_finished(source, "failed")
+                self._emit_file_error(failure)
+                self._emit_progress(len(successes) + len(failures), total)
 
         if self.cancel_requested.is_set():
             self._emit_batch_stopped(successes, failures, total, output_dir)
         else:
+            self._clear_conversion_journal(remove_checkpoints=True)
             self._emit_batch_done(successes, failures, total, output_dir)
+
+    @staticmethod
+    def _terminate_conversion_pool(pool: ProcessPoolExecutor) -> None:
+        try:
+            pool.terminate_workers()
+        except (AttributeError, BrokenProcessPool, RuntimeError):
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    @staticmethod
+    def _pool_memory_exceeded(pool: ProcessPoolExecutor) -> bool:
+        processes = getattr(pool, "_processes", {}) or {}
+        for process in processes.values():
+            pid = getattr(process, "pid", None)
+            if pid is None:
+                continue
+            rss = process_rss_bytes(pid)
+            if rss is not None and rss > MAX_CONVERSION_MEMORY_BYTES:
+                return True
+        return False
+
+    @staticmethod
+    def _cleanup_conversion_temps(reservation: OutputReservation) -> None:
+        patterns = (
+            (reservation.markdown_path.parent, f".{reservation.markdown_path.name}.*.tmp"),
+            (reservation.assets_dir.parent, f".{reservation.assets_dir.name}.*"),
+            (reservation.chunks_dir.parent, f".{reservation.chunks_dir.name}.*.tmp"),
+        )
+        for parent, pattern in patterns:
+            if not parent.is_dir():
+                continue
+            for candidate in parent.glob(pattern):
+                if candidate.is_dir():
+                    shutil.rmtree(candidate, ignore_errors=True)
+                else:
+                    candidate.unlink(missing_ok=True)
 
     def _emit_file_success(self, result: ConversionResult) -> None:
         try:

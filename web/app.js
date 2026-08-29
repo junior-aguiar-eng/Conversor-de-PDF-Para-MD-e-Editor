@@ -224,6 +224,7 @@ function initializeAfterTerms() {
           showToast(envCheck.error, "error");
           appendLog("ERRO", envCheck.error);
         }
+        if (appLicense.isActivated) await offerInterruptedConversion();
       } catch (error) {
         console.error("Erro ao inicializar após os termos:", error);
       }
@@ -697,6 +698,58 @@ function selectProfile(profile) {
 // --------------------------------------------------------------------------
 // Controle da Conversão
 // --------------------------------------------------------------------------
+async function offerInterruptedConversion() {
+  if (typeof window.pywebview?.api?.get_interrupted_conversion !== "function") return;
+  const recovery = await window.pywebview.api.get_interrupted_conversion();
+  if (!recovery?.available) return;
+  if (!recovery.can_resume) {
+    window.alert(
+      `A fila interrompida não pode ser retomada porque os PDFs foram removidos ou alterados: ${recovery.missing_files.join(", ")}. O checkpoint será descartado.`
+    );
+    await window.pywebview.api.discard_interrupted_conversion(recovery.resume_token);
+    return;
+  }
+  const names = recovery.files.map((file) => `• ${file.name}`).join("\n");
+  const missing = recovery.missing_files?.length
+    ? `\n\nIndisponíveis e não retomados: ${recovery.missing_files.join(", ")}`
+    : "";
+  const confirmed = window.confirm(
+    `Uma conversão anterior foi interrompida. Deseja retomá-la do último checkpoint salvo?\n\n${names}${missing}`
+  );
+  if (!confirmed) {
+    await window.pywebview.api.discard_interrupted_conversion(recovery.resume_token);
+    appendLog("INFO", "Checkpoint da conversão anterior descartado pelo usuário.");
+    return;
+  }
+
+  state.files = [];
+  addProcessedFiles(recovery.files);
+  state.outputDir = recovery.output_dir;
+  state.outputDirId = recovery.output_directory_id;
+  state.splitOutput = !!recovery.split_output;
+  state.splitMode = recovery.split_mode || "semantic";
+  state.maxChunkCharacters = recovery.max_chunk_characters || 60000;
+  state.selectedProfile = recovery.heading_profile || "jurisprudencia";
+  document.getElementById("inputOutputDir").value = state.outputDir;
+  document.getElementById("chkSplitOutput").checked = state.splitOutput;
+  document.getElementById("selectSplitMode").value = state.splitMode;
+  document.getElementById("inputMaxChars").value = state.maxChunkCharacters;
+  selectProfile(state.selectedProfile);
+
+  const response = await window.pywebview.api.resume_interrupted_conversion(recovery.resume_token);
+  if (!response.started) {
+    showToast(response.error || "Não foi possível retomar a conversão.", "error");
+    return;
+  }
+  state.isConverting = true;
+  state.isPaused = false;
+  state.startTime = performance.now();
+  progressController.startConversion();
+  startTimer();
+  updateControlsState();
+  appendLog("INFO", `Conversão retomada com ${state.files.length} arquivo(s) pendente(s).`);
+}
+
 async function startConversion() {
   if (state.isConverting) return;
   if (state.files.length === 0) {

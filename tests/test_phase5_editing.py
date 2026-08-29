@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +16,7 @@ from licensing import (
     get_machine_fingerprint_v1,
     get_machine_fingerprint_v2,
 )
-from web_api import BridgeApi
+from web_api import BridgeApi, _pdf_backup_path, _save_doc_safely
 
 
 class TestPhase5LicensingTermsAndEditing(unittest.TestCase):
@@ -72,6 +73,7 @@ class TestPhase5LicensingTermsAndEditing(unittest.TestCase):
         page.insert_text((50, 50), "Texto original para teste de edição.")
         doc.save(str(source_path))
         doc.close()
+        original_bytes = source_path.read_bytes()
 
         with patch("web_api.LibraryDatabase", return_value=self.db):
             api = BridgeApi()
@@ -84,6 +86,9 @@ class TestPhase5LicensingTermsAndEditing(unittest.TestCase):
             self.assertTrue(rot_res["ok"])
             self.assertEqual(rot_res["new_rotation"], 90)
             self.assertFalse(rot_res["is_copy"])
+            backup_path = _pdf_backup_path(source_path)
+            self.assertTrue(os.path.samefile(rot_res["backup_path"], backup_path))
+            self.assertEqual(backup_path.read_bytes(), original_bytes)
 
             # 2. Rotacionar como cópia
             copy_path = self.root / "doc_copia_rotacionada.pdf"
@@ -141,6 +146,62 @@ class TestPhase5LicensingTermsAndEditing(unittest.TestCase):
             self.assertFalse(api.protect_pdf(file_id, "senha", output_file_id="desconhecido")["ok"])
             self.assertFalse(api.unprotect_pdf(file_id, output_file_id="desconhecido")["ok"])
             self.assertFalse(api.remove_library_document(str(source_path))["ok"])
+
+    def test_atomic_original_save_preserves_original_when_promotion_fails(self) -> None:
+        source_path = self.root / "falha-promocao.pdf"
+        document = fitz.open()
+        document.new_page().insert_text((50, 50), "Original intacto")
+        document.save(str(source_path))
+        document.close()
+        original_bytes = source_path.read_bytes()
+
+        document = fitz.open(str(source_path))
+        document[0].set_rotation(90)
+        real_replace = os.replace
+
+        def fail_only_target_promotion(source: str | Path, destination: str | Path) -> None:
+            if Path(destination).resolve() == source_path.resolve():
+                raise OSError("falha sintética antes da promoção")
+            real_replace(source, destination)
+
+        with patch("web_api.os.replace", side_effect=fail_only_target_promotion):
+            with self.assertRaisesRegex(OSError, "falha sintética"):
+                _save_doc_safely(document, source_path)
+
+        self.assertEqual(source_path.read_bytes(), original_bytes)
+        self.assertEqual(_pdf_backup_path(source_path).read_bytes(), original_bytes)
+        self.assertEqual(list(self.root.glob(".*.tmp.pdf")), [])
+        self.assertEqual(list(self.root.glob(".*.backup.tmp.pdf")), [])
+
+    def test_atomic_original_save_keeps_existing_password(self) -> None:
+        source_path = self.root / "protegido.pdf"
+        document = fitz.open()
+        document.new_page().insert_text((50, 50), "Conteúdo protegido")
+        document.save(
+            str(source_path),
+            encryption=fitz.PDF_ENCRYPT_AES_256,
+            user_pw="senha123",
+            owner_pw="senha123",
+        )
+        document.close()
+
+        document = fitz.open(str(source_path))
+        self.assertGreater(document.authenticate("senha123"), 0)
+        document[0].set_rotation(90)
+        backup_path = _save_doc_safely(document, source_path)
+
+        self.assertTrue(os.path.samefile(backup_path, _pdf_backup_path(source_path)))
+        edited = fitz.open(str(source_path))
+        self.assertTrue(edited.is_encrypted)
+        self.assertGreater(edited.authenticate("senha123"), 0)
+        self.assertEqual(edited[0].rotation, 90)
+        edited.close()
+
+        backup = fitz.open(str(backup_path))
+        self.assertTrue(backup.is_encrypted)
+        self.assertGreater(backup.authenticate("senha123"), 0)
+        self.assertEqual(backup[0].rotation, 0)
+        backup.close()
 
     def test_native_save_dialog_grants_destination_and_cancellation_grants_nothing(self) -> None:
         source_path = self.root / "dialogo.pdf"

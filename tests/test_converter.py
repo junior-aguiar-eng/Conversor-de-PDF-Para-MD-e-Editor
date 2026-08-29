@@ -11,6 +11,7 @@ from constants import (
     APP_NAME,
     DEFAULT_MAX_CHUNK_CHARACTERS,
     DEFAULT_OUTPUT_DIR,
+    MAX_CONVERSION_MEMORY_BYTES,
     MAX_PAGE_COUNT,
 )
 from licensing import LicenseRequiredError
@@ -156,8 +157,40 @@ class ConverterTests(unittest.TestCase):
                 1000,
                 activation_verified=True,
             )
-
         activation_check.assert_not_called()
+
+    def test_converter_rejects_source_above_file_size_budget(self) -> None:
+        converter = converter_module.PdfMarkdownConverter.__new__(converter_module.PdfMarkdownConverter)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "grande.pdf"
+            source.write_bytes(b"pdf")
+            with (
+                patch.object(converter_module, "MAX_PDF_FILE_SIZE_BYTES", 2),
+                self.assertRaisesRegex(converter_module.ResourceBudgetExceeded, "limite de 0 MB"),
+            ):
+                converter.convert(source, Path(tmp_dir) / "saida", False, 1000)
+
+    def test_converter_rejects_process_memory_above_budget(self) -> None:
+        converter = converter_module.PdfMarkdownConverter.__new__(converter_module.PdfMarkdownConverter)
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.object(
+                converter_module,
+                "current_process_rss_bytes",
+                return_value=MAX_CONVERSION_MEMORY_BYTES + 1,
+            ),
+            self.assertRaisesRegex(converter_module.ResourceBudgetExceeded, "limite de memória"),
+        ):
+            converter.convert(Path("documento.pdf"), Path(tmp_dir), False, 1000)
+
+    def test_converter_rejects_expired_document_deadline(self) -> None:
+        converter = converter_module.PdfMarkdownConverter.__new__(converter_module.PdfMarkdownConverter)
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.object(converter_module, "MAX_CONVERSION_SECONDS", -1),
+            self.assertRaisesRegex(converter_module.ResourceBudgetExceeded, "prazo"),
+        ):
+            converter.convert(Path("documento.pdf"), Path(tmp_dir), False, 1000)
 
     def test_converter_tracks_every_page_independently(self) -> None:
         class FakePage:
@@ -210,6 +243,83 @@ class ConverterTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 3)
         self.assertEqual([kwargs["pages"] for _, kwargs in calls], [[0], [1], [2]])
+
+    def test_converter_rejects_document_above_image_budget(self) -> None:
+        class FakePage:
+            def get_images(self, full: bool = False) -> list[object]:
+                return [object()]
+
+        class FakeDocument:
+            page_count = 1
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def load_page(self, _page_index: int) -> FakePage:
+                return FakePage()
+
+        converter = converter_module.PdfMarkdownConverter.__new__(converter_module.PdfMarkdownConverter)
+        converter._pymupdf = SimpleNamespace(open=lambda _source: FakeDocument())
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.object(converter_module, "MAX_IMAGES_PER_DOCUMENT", 0),
+            self.assertRaisesRegex(converter_module.ResourceBudgetExceeded, "limite de 0 imagens"),
+        ):
+            converter.convert(Path("documento.pdf"), Path(tmp_dir), False, 1000)
+
+    def test_converter_resumes_from_last_page_checkpoint(self) -> None:
+        class FakePage:
+            def __init__(self, number: int) -> None:
+                self.number = number
+
+            def get_images(self, full: bool = False) -> list[object]:
+                return []
+
+        class FakeDocument:
+            page_count = 3
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def load_page(self, page_index: int) -> FakePage:
+                return FakePage(page_index)
+
+        calls: list[int] = []
+        converter = converter_module.PdfMarkdownConverter.__new__(converter_module.PdfMarkdownConverter)
+        converter._pymupdf = SimpleNamespace(open=lambda _source: FakeDocument())
+        converter._to_markdown = lambda _doc, **kwargs: calls.append(kwargs["pages"][0]) or f"página {kwargs['pages'][0] + 1}"
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source = root / "documento.pdf"
+            source.write_bytes(b"%PDF checkpoint")
+            output = root / "saida"
+            checkpoint = root / "checkpoint"
+            with (
+                patch.object(converter_module, "is_scanned_page", return_value=False),
+                patch.object(
+                    converter_module,
+                    "_directory_usage",
+                    side_effect=[(0, 0), RuntimeError("interrupção")],
+                ),
+                self.assertRaisesRegex(RuntimeError, "interrupção"),
+            ):
+                converter.convert(source, output, False, 1000, checkpoint_dir=checkpoint)
+
+            self.assertTrue((checkpoint / "pages" / "000001.md").is_file())
+            with patch.object(converter_module, "is_scanned_page", return_value=False):
+                result = converter.convert(source, output, False, 1000, checkpoint_dir=checkpoint)
+
+            self.assertEqual(calls, [0, 1, 2])
+            self.assertIn("página 3", result.markdown_path.read_text(encoding="utf-8"))
+            self.assertFalse(checkpoint.exists())
 
 
 if __name__ == "__main__":

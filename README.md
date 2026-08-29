@@ -32,8 +32,9 @@ Para reconstruir o ambiente e remover dependências antigas, com o aplicativo fe
   - **Perfil de normalização de títulos**:
     - **Boletim de jurisprudência (STJ/STF)**: reconhece ramos do direito como `#1`, rótulo "COMENTÁRIO" como `#2` e dispositivos legais como `#3`.
     - **Material de curso**: preserva numeração hierárquica (`1.`, `1.1.`, `A.`, `a)`, `i)`...) e rebaixa falsos títulos em corpo de texto.
-- **Controle de Fila**: **Pausar** suspende a fila antes do próximo PDF e **Parar** encerra a fila após o término do PDF em processamento.
-- **Limites de Proteção**: Limite de 1.000 páginas por arquivo para garantir conversões leves e seguras.
+- **Controle de Fila**: **Pausar** suspende a fila antes do próximo PDF; **Parar** encerra imediatamente os processos isolados ainda ativos.
+- **Encerramento e retomada**: ao fechar durante conversão ou indexação, o aplicativo pede confirmação, encerra coordenadamente os workers e preserva um journal atômico. A conversão grava checkpoint por página e oferece retomar a fila na próxima abertura sem repetir as páginas já concluídas.
+- **Limites de Proteção**: por PDF, até 1.000 páginas, 512 MB de entrada, 5.000 imagens, 512 MB de imagens extraídas, 1,5 GB de memória e 30 minutos. A fila também valida o espaço livre do destino e reduz automaticamente a concorrência conforme a memória disponível.
 
 ## Release Windows
 
@@ -50,7 +51,7 @@ Depois de gerar a release, execute `.\criar_atalho_envio_rapido.ps1` para adicio
 - **Licenciamento e Impressão Digital Evolved**: Ativações do software utilizam fingerprints e chaves Ed25519 versionadas. Licenças legadas v1 (`NXJ-` / `ACT2-01-`) permanecem 100% suportadas e operacionais, enquanto novas ativações utilizam o fingerprint estável v2 (`NXJ2-` / `ACT3-01-`). Instalações ativas são migradas transparentemente sem invalidar chaves prévias. O emissor administrativo `admin_keygen.py` gera e analisa ambas as versões.
 - **Aceite de Termos Versionado**: O aceite dos Termos de Uso é armazenado com a versão vigente (`CURRENT_TERMS_VERSION = "1.0"`). Alterações materiais na versão dos termos exigem reaceite formal do usuário.
 - **Modalidades de Salvamento de Edição**: Funções de edição de PDF (rotação de páginas, gravação de anotações e post-its nativos, e aplicação/remoção de proteção AES-256) oferecem duas opções de destino:
-  - **Salvar no original**: Sobrescreve o arquivo original com substituição atômica e preserva a estrutura incremental quando tecnicamente aplicável. Assinaturas digitais devem ser revalidadas após qualquer alteração.
+  - **Salvar no original**: Gera e valida uma nova cópia, mantém ao lado do documento um backup recuperável com o sufixo `.nexojuris-backup.pdf` e só então substitui o original atomicamente. Assinaturas digitais devem ser revalidadas após qualquer alteração.
   - **Salvar como cópia**: Grava as edições em um novo PDF escolhido por diálogo nativo, autorizado por identificador opaco, e o registra automaticamente no acervo de recursos do aplicativo.
 - **Limites Defensivos e Serviços Online**: Renderização, recortes e edições possuem orçamentos backend superiores aos controles da UI. Tradução e TTS longos são processados em blocos, sem truncamento silencioso. O contexto de áudio dos bipes é reutilizado e suspenso quando ocioso, permanecendo separado do player TTS.
 - **Build e Compatibilidade Administrativa**: O build possui implementação única com comandos históricos preservados. Chaves administrativas PEM podem ser criptografadas opcionalmente, sem invalidar PEMs ou licenças existentes.

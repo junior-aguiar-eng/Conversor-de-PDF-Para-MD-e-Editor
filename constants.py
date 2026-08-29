@@ -11,6 +11,17 @@ CURRENT_TERMS_VERSION = "1.0"
 MAX_PAGE_COUNT = 1_000
 DEFAULT_MAX_CHUNK_CHARACTERS = 60_000
 
+# Orçamento operacional por documento. Esses limites também protegem chamadas
+# diretas ao conversor, não apenas a fila da interface.
+MAX_PDF_FILE_SIZE_BYTES = 512 * 1024 * 1024
+MAX_IMAGES_PER_DOCUMENT = 5_000
+MAX_EXTRACTED_ASSET_BYTES = 512 * 1024 * 1024
+MAX_CONVERSION_MEMORY_BYTES = 1536 * 1024 * 1024
+MEMORY_RESERVATION_PER_WORKER_BYTES = 1024 * 1024 * 1024
+MAX_CONVERSION_SECONDS = 30 * 60
+MIN_FREE_DISK_BYTES = 512 * 1024 * 1024
+DISK_SPACE_SOURCE_MULTIPLIER = 3
+
 # Limites defensivos da ponte. Todos ficam acima dos máximos oferecidos pela UI.
 MIN_RENDER_DPI = 36
 MAX_RENDER_DPI = 300

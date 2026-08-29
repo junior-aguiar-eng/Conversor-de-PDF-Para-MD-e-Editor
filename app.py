@@ -8,6 +8,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
+from typing import Any
 
 import webview
 
@@ -112,6 +113,30 @@ def run_quick_convert(paths: list[str]) -> None:
         _show_message(message, error=True)
 
 
+def configure_shutdown_handlers(window: Any, api: BridgeApi) -> None:
+    """Bloqueia o fechamento até que os serviços locais tenham parado com segurança."""
+
+    def handle_closing() -> bool:
+        if api.has_active_work():
+            confirmed = window.create_confirmation_dialog(
+                "Conversão ou indexação em andamento",
+                "Deseja encerrar o aplicativo? O progresso concluído será preservado "
+                "e a fila poderá ser retomada na próxima abertura.",
+            )
+            if not confirmed:
+                return False
+        if not api.shutdown_for_close(timeout_seconds=15.0):
+            window.create_confirmation_dialog(
+                "Encerramento ainda em andamento",
+                "Uma operação local ainda está finalizando uma escrita. Aguarde alguns segundos e tente fechar novamente.",
+            )
+            return False
+        return True
+
+    window.events.closing += handle_closing
+    window.events.closed += lambda: api.shutdown_for_close(timeout_seconds=2.0)
+
+
 def run_gui() -> None:
     """Inicia a interface gráfica moderna em Chromium com Edge WebView2."""
     api = BridgeApi()
@@ -130,6 +155,7 @@ def run_gui() -> None:
         background_color="#F0F7FF",
     )
     api.set_window(window)
+    configure_shutdown_handlers(window, api)
     webview.start(gui="edgechromium", debug=False)
 
 
