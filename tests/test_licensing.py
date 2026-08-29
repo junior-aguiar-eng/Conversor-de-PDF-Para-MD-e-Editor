@@ -18,7 +18,6 @@ from licensing import (
     LicenseRequiredError,
     activate_software,
     deactivate_software,
-    get_machine_fingerprint,
     get_machine_fingerprint_v1,
     get_machine_fingerprint_v2,
     is_software_activated,

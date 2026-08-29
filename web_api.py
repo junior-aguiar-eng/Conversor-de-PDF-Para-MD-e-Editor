@@ -8,6 +8,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import subprocess
 import threading
 import time
@@ -33,6 +34,7 @@ from constants import (
 )
 from converter import (
     PdfMarkdownConverter,
+    convert_worker,
     init_worker,
     validate_runtime_dependencies,
 )
@@ -42,6 +44,8 @@ from licensing import (
     LicenseRequiredError,
     is_software_activated,
     require_software_activation,
+)
+from licensing import (
     activate_software as lic_activate_software,
 )
 from markdown_utils import HeadingProfile, SplitMode, reserve_batch_output_paths
@@ -217,6 +221,28 @@ class BridgeApi:
             "name": resolved.name,
         }
 
+    def _register_pdf_destination(self, path: str | Path, origin: str) -> dict[str, Any]:
+        """Registra um destino PDF escolhido por diálogo nativo, sem exigir que já exista."""
+        resolved = Path(path).expanduser().resolve()
+        if resolved.suffix.lower() != ".pdf":
+            raise ResourceAccessError("O destino escolhido deve usar a extensão .pdf.")
+        resource = self._resources.register(
+            resolved,
+            kind="pdf_output",
+            origin=origin,
+            capabilities={"write"},
+        )
+        return {"output_file_id": resource.resource_id, "path": str(resolved), "name": resolved.name}
+
+    def _register_library_entry(self, path: str | Path, origin: str) -> str:
+        resource = self._resources.register(
+            path,
+            kind="library_entry",
+            origin=origin,
+            capabilities={"relocate", "remove"},
+        )
+        return resource.resource_id
+
     def _register_directory(self, path: str | Path, origin: str) -> dict[str, Any]:
         resolved = Path(path).expanduser().resolve()
         resolved.mkdir(parents=True, exist_ok=True)
@@ -245,6 +271,15 @@ class BridgeApi:
         if not path.is_dir():
             raise ResourceAccessError("A pasta autorizada não está disponível.")
         return path
+
+    def _resolve_pdf_destination(self, output_file_id: str) -> Path:
+        path = self._resources.resolve(output_file_id, kind="pdf_output", capability="write")
+        if path.suffix.lower() != ".pdf":
+            raise ResourceAccessError("O destino autorizado não é um PDF.")
+        return path
+
+    def _resolve_library_entry(self, entry_id: str, capability: str) -> Path:
+        return self._resources.resolve(entry_id, kind="library_entry", capability=capability)
 
     def _open_doc_with_auth(
         self, file_path: str | Path, password: str | None = None
@@ -388,6 +423,33 @@ class BridgeApi:
         except Exception as error:
             self._emit("toast", {"type": "error", "message": f"Falha ao selecionar pasta: {error}"})
             return None
+
+    def choose_pdf_save_destination(self, file_id: str, suffix: str = "copia") -> dict[str, Any] | None:
+        """Autoriza um destino de cópia exclusivamente por meio do diálogo nativo de salvamento."""
+        if not self._window:
+            return None
+        try:
+            source = self._resolve_pdf(file_id, "read")
+        except ResourceAccessError as error:
+            return {"ok": False, "error": str(error)}
+
+        safe_suffix = re.sub(r"[^0-9A-Za-z_-]+", "-", suffix or "copia").strip("-") or "copia"
+        suggested_name = f"{source.stem}-{safe_suffix}.pdf"
+        try:
+            import webview
+
+            result = self._window.create_file_dialog(
+                webview.SAVE_DIALOG,
+                save_filename=suggested_name,
+                file_types=("Arquivos PDF (*.pdf)",),
+            )
+            if not result:
+                return None
+            selected = result if isinstance(result, str) else result[0]
+            destination = self._register_pdf_destination(selected, "native_save_dialog")
+            return {"ok": True, **destination}
+        except Exception as error:
+            return {"ok": False, "error": f"Falha ao selecionar destino: {error}"}
 
     def _process_file_paths(self, paths: list[str], *, origin: str) -> list[dict[str, Any]]:
         """Valida PDFs de uma origem de ingresso antes de conceder IDs opacos."""
@@ -864,7 +926,7 @@ class BridgeApi:
                     {"file_id": file_id, "current_page": idx + 1, "total_pages": total_pages, "percent": percent},
                 )
 
-            self._library.index_pdf_document(file_path, doc)
+            self._library.finalize_incremental_pdf_index(file_path, total_pages)
             self._emit("indexing_completed", {"file_id": file_id, "total_pages": total_pages})
         except Exception as err:
             self._emit("indexing_error", {"file_id": file_id, "error": str(err)})
@@ -900,14 +962,20 @@ class BridgeApi:
             file_path = str(self._resolve_pdf(file_id).resolve())
         except ResourceAccessError as error:
             return {"ok": False, "error": str(error)}
+        thread: threading.Thread | None = None
         with self._indexing_lock:
             cancel_evt = self._indexing_cancel_events.get(file_path)
             pause_evt = self._indexing_pause_events.get(file_path)
+            thread = self._indexing_threads.get(file_path)
             if cancel_evt:
                 cancel_evt.set()
             if pause_evt:
                 pause_evt.set()
 
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=5)
+            if thread.is_alive():
+                return {"ok": False, "error": "A indexação ainda está encerrando; tente novamente."}
         return {"ok": True, "cancelled": True}
 
     def rotate_pdf_page(
@@ -916,7 +984,7 @@ class BridgeApi:
         page_number: int,
         degrees: int,
         password: str | None = None,
-        output_path: str | None = None,
+        output_file_id: str | None = None,
     ) -> dict[str, Any]:
         """Gira uma página específica em incrementos de 90 graus e salva no original ou como cópia (Item 19)."""
         try:
@@ -924,14 +992,16 @@ class BridgeApi:
         except ResourceAccessError as error:
             return {"ok": False, "error": str(error), "needs_password": False}
 
-        self.cancel_indexing(file_id)
+        cancel_result = self.cancel_indexing(file_id)
+        if not cancel_result.get("ok"):
+            return cancel_result
         doc, error, needs_password = self._open_doc_with_auth(file_path, password)
         if error or needs_password or doc is None:
             return {"ok": False, "error": error or "PDF protegido.", "needs_password": needs_password}
 
         try:
             path = Path(file_path).resolve()
-            target_path = Path(output_path).resolve() if output_path else path
+            target_path = self._resolve_pdf_destination(output_file_id) if output_file_id else path
             if not (0 <= page_number < len(doc)):
                 return {"ok": False, "error": "Página inexistente."}
 
@@ -950,6 +1020,7 @@ class BridgeApi:
             if target_path != path:
                 new_pdf = self._register_pdf(target_path, "copy")
                 res["new_file_id"] = new_pdf["file_id"]
+                res["new_file"] = new_pdf
             return res
         except Exception as error:
             return {"ok": False, "error": f"Erro ao rotacionar página: {error}"}
@@ -961,7 +1032,7 @@ class BridgeApi:
         file_id: str,
         user_pw: str,
         owner_pw: str = "",
-        output_path: str | None = None,
+        output_file_id: str | None = None,
     ) -> dict[str, Any]:
         """Aplica criptografia AES-256 no arquivo PDF com senhas no original ou como cópia (Item 19)."""
         try:
@@ -971,13 +1042,15 @@ class BridgeApi:
         if not user_pw:
             return {"ok": False, "error": "A senha do usuário não pode ser vazia."}
 
-        self.cancel_indexing(file_id)
+        cancel_result = self.cancel_indexing(file_id)
+        if not cancel_result.get("ok"):
+            return cancel_result
         doc, error, needs_password = self._open_doc_with_auth(path)
         if error or doc is None:
             return {"ok": False, "error": error or "Não foi possível abrir o PDF."}
 
         try:
-            target_path = Path(output_path).resolve() if output_path else path
+            target_path = self._resolve_pdf_destination(output_file_id) if output_file_id else path
             owner = owner_pw if owner_pw else user_pw
             perm = fitz.PDF_PERM_PRINT | fitz.PDF_PERM_COPY | fitz.PDF_PERM_ANNOTATE | fitz.PDF_PERM_ACCESSIBILITY
             _save_doc_safely(
@@ -998,26 +1071,29 @@ class BridgeApi:
             if target_path != path:
                 new_pdf = self._register_pdf(target_path, "copy")
                 res["new_file_id"] = new_pdf["file_id"]
+                res["new_file"] = new_pdf
             return res
         except Exception as error:
             return {"ok": False, "error": f"Erro ao proteger PDF: {error}"}
         finally:
             _safe_close(doc)
 
-    def unprotect_pdf(self, file_id: str, current_pw: str = "", output_path: str | None = None) -> dict[str, Any]:
+    def unprotect_pdf(self, file_id: str, current_pw: str = "", output_file_id: str | None = None) -> dict[str, Any]:
         """Remove a proteção por senha de um PDF no original ou como cópia (Item 19)."""
         try:
             path = self._resolve_pdf(file_id, "write")
         except ResourceAccessError as error:
             return {"ok": False, "error": str(error)}
 
-        self.cancel_indexing(file_id)
+        cancel_result = self.cancel_indexing(file_id)
+        if not cancel_result.get("ok"):
+            return cancel_result
         doc, error, needs_password = self._open_doc_with_auth(path, current_pw)
         if error or doc is None:
             return {"ok": False, "error": error or "Não foi possível abrir o PDF com a senha informada."}
 
         try:
-            target_path = Path(output_path).resolve() if output_path else path
+            target_path = self._resolve_pdf_destination(output_file_id) if output_file_id else path
             _save_doc_safely(
                 doc,
                 target_path,
@@ -1034,6 +1110,7 @@ class BridgeApi:
             if target_path != path:
                 new_pdf = self._register_pdf(target_path, "copy")
                 res["new_file_id"] = new_pdf["file_id"]
+                res["new_file"] = new_pdf
             return res
         except Exception as error:
             return {"ok": False, "error": f"Erro ao remover senha do PDF: {error}"}
@@ -1042,17 +1119,21 @@ class BridgeApi:
 
     def save_pdf_annotations(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Grava anotações nativas no arquivo PDF original ou como cópia (Item 19)."""
+        if payload.get("output_path"):
+            return {"ok": False, "error": "Destino por caminho não autorizado."}
         file_id = payload.get("file_id", "")
         password = payload.get("password")
         annotations = payload.get("annotations", [])
-        output_path = payload.get("output_path")
+        output_file_id = payload.get("output_file_id")
 
         try:
             file_path = self._resolve_pdf(str(file_id), "write")
         except ResourceAccessError as error:
             return {"ok": False, "error": str(error), "needs_password": False}
 
-        self.cancel_indexing(str(file_id))
+        cancel_result = self.cancel_indexing(str(file_id))
+        if not cancel_result.get("ok"):
+            return cancel_result
         doc, error, needs_password = self._open_doc_with_auth(file_path, password)
         if error or needs_password or doc is None:
             return {"ok": False, "error": error or "PDF protegido por senha.", "needs_password": needs_password}
@@ -1208,7 +1289,7 @@ class BridgeApi:
                             raise RuntimeError("O mecanismo de PDF não confirmou a inserção do texto.")
                         applied_count += 1
 
-            target_path = Path(output_path).resolve() if output_path else path
+            target_path = self._resolve_pdf_destination(str(output_file_id)) if output_file_id else path
             _save_doc_safely(doc, target_path)
             res = {
                 "ok": True,
@@ -1220,6 +1301,7 @@ class BridgeApi:
             if target_path != path:
                 new_pdf = self._register_pdf(target_path, "copy")
                 res["new_file_id"] = new_pdf["file_id"]
+                res["new_file"] = new_pdf
             return res
         except Exception as error:
             return {"ok": False, "error": f"Erro ao salvar anotações: {error}"}
@@ -1407,6 +1489,9 @@ class BridgeApi:
                         enriched["display_path"] = item.get("markdown_path", "")
                         enriched["availability_status"] = "temporarily_unavailable"
                 else:
+                    enriched["library_entry_id"] = self._register_library_entry(
+                        item["file_path"], "search_library"
+                    )
                     try:
                         pdf = self._register_pdf(item["file_path"], "persisted_library")
                         enriched["resource_id"] = pdf["file_id"]
@@ -1428,6 +1513,9 @@ class BridgeApi:
             documents: list[dict[str, Any]] = []
             for doc in self._library.get_recent_documents(limit=30):
                 enriched = dict(doc)
+                enriched["library_entry_id"] = self._register_library_entry(
+                    doc["file_path"], "recent_library"
+                )
                 try:
                     pdf = self._register_pdf(doc["file_path"], "recent_reopen")
                     enriched["resource_id"] = pdf["file_id"]
@@ -1442,15 +1530,12 @@ class BridgeApi:
         except Exception as error:
             return {"ok": False, "error": str(error), "documents": []}
 
-    def relocate_library_document(self, old_path_or_id: str, new_file_path: str) -> dict[str, Any]:
+    def relocate_library_document(self, library_entry_id: str, new_file_id: str) -> dict[str, Any]:
         """Reconecta um documento ausente do acervo a um novo caminho físico (Item 16)."""
         try:
-            try:
-                old_path = str(self._resolve_pdf(old_path_or_id).resolve())
-            except Exception:
-                old_path = str(Path(old_path_or_id).expanduser().resolve())
-
-            success = self._library.relocate_document(old_path, new_file_path)
+            old_path = str(self._resolve_library_entry(library_entry_id, "relocate"))
+            new_file_path = self._resolve_pdf(new_file_id, "read")
+            success = self._library.relocate_document(old_path, str(new_file_path))
             if not success:
                 return {"ok": False, "error": "Novo arquivo não encontrado ou inválido."}
 
@@ -1459,14 +1544,10 @@ class BridgeApi:
         except Exception as error:
             return {"ok": False, "error": str(error)}
 
-    def remove_library_document(self, file_id_or_path: str) -> dict[str, Any]:
+    def remove_library_document(self, library_entry_id: str) -> dict[str, Any]:
         """Marca um documento como removido do acervo pelo usuário sem excluir marcadores (Item 16)."""
         try:
-            try:
-                file_path = str(self._resolve_pdf(file_id_or_path).resolve())
-            except Exception:
-                file_path = str(Path(file_id_or_path).expanduser().resolve())
-
+            file_path = str(self._resolve_library_entry(library_entry_id, "remove"))
             success = self._library.remove_document_from_library(file_path)
             return {"ok": success}
         except Exception as error:

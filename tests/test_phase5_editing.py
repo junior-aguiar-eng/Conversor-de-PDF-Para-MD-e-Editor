@@ -11,13 +11,9 @@ import fitz
 
 from constants import CURRENT_TERMS_VERSION
 from library_db import LibraryDatabase
-import licensing as licensing_module
 from licensing import (
-    activate_software,
     get_machine_fingerprint_v1,
     get_machine_fingerprint_v2,
-    is_software_activated,
-    verify_license_key,
 )
 from web_api import BridgeApi
 
@@ -91,7 +87,8 @@ class TestPhase5LicensingTermsAndEditing(unittest.TestCase):
 
             # 2. Rotacionar como cópia
             copy_path = self.root / "doc_copia_rotacionada.pdf"
-            rot_copy = api.rotate_pdf_page(file_id, 0, 90, output_path=str(copy_path))
+            copy_id = api._register_pdf_destination(copy_path, "test")["output_file_id"]
+            rot_copy = api.rotate_pdf_page(file_id, 0, 90, output_file_id=copy_id)
             self.assertTrue(rot_copy["ok"], rot_copy.get("error"))
             self.assertTrue(rot_copy["is_copy"])
             self.assertTrue(copy_path.is_file())
@@ -99,6 +96,7 @@ class TestPhase5LicensingTermsAndEditing(unittest.TestCase):
 
             # 3. Anotar como cópia
             annot_copy_path = self.root / "doc_copia_anotada.pdf"
+            annot_copy_id = api._register_pdf_destination(annot_copy_path, "test")["output_file_id"]
             annot_payload = {
                 "file_id": file_id,
                 "annotations": [
@@ -109,7 +107,7 @@ class TestPhase5LicensingTermsAndEditing(unittest.TestCase):
                         "color": "#ffff00",
                     }
                 ],
-                "output_path": str(annot_copy_path),
+                "output_file_id": annot_copy_id,
             }
             annot_res = api.save_pdf_annotations(annot_payload)
             self.assertTrue(annot_res["ok"])
@@ -118,7 +116,8 @@ class TestPhase5LicensingTermsAndEditing(unittest.TestCase):
 
             # 4. Proteger como cópia
             prot_copy_path = self.root / "doc_copia_protegida.pdf"
-            prot_res = api.protect_pdf(file_id, "senha123", output_path=str(prot_copy_path))
+            prot_copy_id = api._register_pdf_destination(prot_copy_path, "test")["output_file_id"]
+            prot_res = api.protect_pdf(file_id, "senha123", output_file_id=prot_copy_id)
             self.assertTrue(prot_res["ok"])
             self.assertTrue(prot_res["is_copy"])
             self.assertTrue(prot_copy_path.is_file())
@@ -127,6 +126,44 @@ class TestPhase5LicensingTermsAndEditing(unittest.TestCase):
             doc_check = fitz.open(str(prot_copy_path))
             self.assertTrue(doc_check.is_encrypted)
             doc_check.close()
+
+            # Caminhos brutos e IDs desconhecidos nunca autorizam destinos de escrita.
+            blocked_path = self.root / "nao_autorizado.pdf"
+            blocked = api.save_pdf_annotations(
+                {"file_id": file_id, "annotations": [], "output_path": str(blocked_path)}
+            )
+            self.assertFalse(blocked["ok"])
+            self.assertFalse(blocked_path.exists())
+            unknown = api.rotate_pdf_page(file_id, 0, 90, output_file_id="desconhecido")
+            self.assertFalse(unknown["ok"])
+            self.assertFalse(blocked_path.exists())
+
+            self.assertFalse(api.protect_pdf(file_id, "senha", output_file_id="desconhecido")["ok"])
+            self.assertFalse(api.unprotect_pdf(file_id, output_file_id="desconhecido")["ok"])
+            self.assertFalse(api.remove_library_document(str(source_path))["ok"])
+
+    def test_native_save_dialog_grants_destination_and_cancellation_grants_nothing(self) -> None:
+        source_path = self.root / "dialogo.pdf"
+        document = fitz.open()
+        document.new_page()
+        document.save(str(source_path))
+        document.close()
+
+        with patch("web_api.LibraryDatabase", return_value=self.db):
+            api = BridgeApi()
+            file_id = api._register_pdf(source_path, "test")["file_id"]
+            window = MagicMock()
+            api.set_window(window)
+            window.create_file_dialog.return_value = None
+            self.assertIsNone(api.choose_pdf_save_destination(file_id, "copia"))
+
+            destination = self.root / "dialogo-copia.pdf"
+            window.create_file_dialog.return_value = (str(destination),)
+            granted = api.choose_pdf_save_destination(file_id, "copia")
+            self.assertTrue(granted["ok"])
+            result = api.rotate_pdf_page(file_id, 0, 90, output_file_id=granted["output_file_id"])
+            self.assertTrue(result["ok"])
+            self.assertTrue(destination.is_file())
 
 
 if __name__ == "__main__":

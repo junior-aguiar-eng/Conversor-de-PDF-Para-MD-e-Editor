@@ -125,6 +125,27 @@ class BridgeAuthorizationTests(unittest.TestCase):
         with patch("web_api.threading.Thread"):
             self.assertTrue(self.api.get_pdf_info(recent["resource_id"])["ok"])
 
+    def test_library_relocation_requires_both_opaque_authorizations(self) -> None:
+        missing = self._pdf("movido.pdf")
+        missing_path = str(missing.resolve())
+        self.api._library.save_session_state(missing_path, last_page=2, zoom="1.25")
+        missing.unlink()
+        recent = self.api.get_recent_library()["documents"][0]
+        replacement = self._pdf("reencontrado.pdf")
+
+        raw_attempt = self.api.relocate_library_document(missing_path, str(replacement))
+        self.assertFalse(raw_attempt["ok"])
+        unknown_attempt = self.api.relocate_library_document("desconhecido", "desconhecido")
+        self.assertFalse(unknown_attempt["ok"])
+
+        replacement_id = self.api._register_pdf(replacement, "native_dialog")["file_id"]
+        relocated = self.api.relocate_library_document(recent["library_entry_id"], replacement_id)
+        self.assertTrue(relocated["ok"])
+        self.assertEqual(
+            self.api._library.get_session_state(str(replacement.resolve()))["last_page_read"],
+            2,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

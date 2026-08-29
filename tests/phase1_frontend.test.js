@@ -119,11 +119,22 @@ const source = fs.readFileSync(appPath, "utf8") + `
 globalThis.__phase1 = {
   escapeHtml, safeSearchSnippetHtml, renderFileList, appendLog, onBridgeReady,
   initializeAfterTerms, state, SuperPdfController, GlobalSearchController, appLicense,
+  appLibrary, appSearch, parseDeclarativeArgument, resolveDeclarativeAction,
 };`;
 vm.runInContext(source, context, { filename: appPath });
 
 async function run() {
   const api = context.__phase1;
+
+  assert.equal(typeof api.resolveDeclarativeAction("appLibrary.removeDocument"), "function");
+  assert.equal(api.parseDeclarativeArgument("true", makeElement(), {}), true);
+
+  let libraryRefreshes = 0;
+  windowObject.pywebview = { api: { remove_library_document: async () => ({ ok: true }) } };
+  windowObject.appSearch = { loadRecentLibrary: () => { libraryRefreshes += 1; } };
+  api.appSearch.loadRecentLibrary = windowObject.appSearch.loadRecentLibrary;
+  await api.appLibrary.removeDocument("entry-id");
+  assert.equal(libraryRefreshes, 1);
 
   assert.equal(
     api.escapeHtml(`<img src=x onerror="alert(1)">'&`),

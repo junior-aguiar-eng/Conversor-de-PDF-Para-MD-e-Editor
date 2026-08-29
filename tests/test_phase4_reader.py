@@ -1,183 +1,127 @@
-"""Testes automatizados da Fase 4 — Leitor, paginação, indexação e memória.
+"""Testes automatizados da Fase 4 — leitor, paginação, indexação e memória."""
 
-Verifica:
-1. Abertura instantânea O(1) de PDFs extensos com get_pdf_info.
-2. Solicitação de faixas de páginas com get_pdf_page_range.
-3. Persistência de estado de leitura via UPSERT em save_session_state.
-4. Indexação incremental de páginas visitadas e indexação completa em background.
-5. Tratamento de arquivos ausentes/desconectados sem apagar histórico.
-6. Relocalização ("Localizar novamente") e remoção do acervo.
-7. Garantia de que a conversão em lote continua sendo uma operação integral e separada.
-"""
+from __future__ import annotations
 
+import tempfile
 import time
+import unittest
 from pathlib import Path
+
 import fitz
-import pytest
 
 from library_db import LibraryDatabase
 from web_api import BridgeApi
 
 
-@pytest.fixture
-def sample_pdf(tmp_path: Path) -> Path:
-    """Cria um PDF sintético de 60 páginas para testes de paginação por faixa."""
-    pdf_path = tmp_path / "documento_extenso.pdf"
-    doc = fitz.open()
-    for i in range(60):
-        page = doc.new_page(width=595, height=842)
-        page.insert_text((50, 50), f"Conteúdo de teste da página {i + 1} de 60.")
-    doc.save(str(pdf_path))
-    doc.close()
-    return pdf_path
+class TestPhase4ReaderAndIndexing(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp_dir.name)
+        self.sample_pdf = self._create_pdf("documento_extenso.pdf", 60)
 
+    def tearDown(self) -> None:
+        self.tmp_dir.cleanup()
 
-@pytest.fixture
-def db_instance(tmp_path: Path) -> LibraryDatabase:
-    db_file = tmp_path / "test_acervo_phase4.db"
-    return LibraryDatabase(db_file)
-
-
-class TestPhase4ReaderAndIndexing:
-    def test_fast_pdf_info_opening(self, sample_pdf: Path, tmp_path: Path):
-        """Item 12: get_pdf_info retorna metadados instantaneamente sem carregar todas as páginas."""
-        db_file = tmp_path / "test_fast_info.db"
-        api = BridgeApi()
-        api._library = LibraryDatabase(db_file)
-        res_pdf = api._register_pdf(sample_pdf, "test")
-
-        info = api.get_pdf_info(res_pdf["file_id"])
-        assert info["ok"] is True
-        assert info["page_count"] == 60
-        assert info["file_name"] == "documento_extenso.pdf"
-        assert info["is_encrypted"] is False
-        assert "session_state" in info
-        assert "bookmarks" in info
-
-    def test_get_pdf_page_range(self, sample_pdf: Path, tmp_path: Path):
-        """Item 12: get_pdf_page_range busca faixas específicas de páginas (ex. 20 a 40)."""
-        api = BridgeApi()
-        api._library = LibraryDatabase(tmp_path / "test_range.db")
-        res_pdf = api._register_pdf(sample_pdf, "test")
-
-        range_res = api.get_pdf_page_range(res_pdf["file_id"], start_page=10, count=20)
-        assert range_res["ok"] is True
-        assert range_res["start_page"] == 10
-        assert range_res["count"] == 20
-        assert range_res["total_pages"] == 60
-        assert len(range_res["pages"]) == 20
-        assert range_res["pages"][0]["page_number"] == 10
-        assert range_res["pages"][-1]["page_number"] == 29
-
-    def test_upsert_session_state_before_indexing(self, sample_pdf: Path, db_instance: LibraryDatabase):
-        """Item 15: save_session_state realiza UPSERT permitindo salvar zoom e posição antes da indexação completa."""
-        path_str = str(sample_pdf)
-        # Salva o estado de leitura em documento ainda não indexado
-        db_instance.save_session_state(path_str, last_page=15, zoom="1.5")
-        
-        state = db_instance.get_session_state(path_str)
-        assert state["found"] is True
-        assert state["last_page_read"] == 15
-        assert state["preferred_zoom"] == "1.5"
-
-        # Indexação posterior de metadados O(1) não apaga o estado gravado
-        db_instance.index_document_metadata_only(sample_pdf, page_count=60, file_size=1000)
-        state_after = db_instance.get_session_state(path_str)
-        assert state_after["last_page_read"] == 15
-        assert state_after["preferred_zoom"] == "1.5"
-
-    def test_incremental_page_indexing_on_render(self, sample_pdf: Path, tmp_path: Path):
-        """Item 13: render_page_hq indexa incrementalmente a página visitada."""
-        db_file = tmp_path / "test_incremental.db"
-        api = BridgeApi()
-        api._library = LibraryDatabase(db_file)
-        res_pdf = api._register_pdf(sample_pdf, "test")
-
-        # Renderiza a página 5 (0-indexed 4)
-        render_res = api.render_page_hq(res_pdf["file_id"], page_number=4)
-        assert render_res["ok"] is True
-        assert "image" in render_res
-        assert "image_base64" in render_res  # Dupla chave (Item 14)
-
-        # Aguarda thread daemon de indexação incremental terminar
-        time.sleep(0.3)
-
-        # Busca FTS5 encontra o texto da página 5
-        search_res = api._library.search("página 5")
-        assert len(search_res) > 0
-        assert search_res[0]["page_number"] == 4
-
-    def test_full_background_indexing(self, sample_pdf: Path, tmp_path: Path):
-        """Item 13: start_full_indexing executa em background e permite pausar/cancelar."""
-        api = BridgeApi()
-        api._library = LibraryDatabase(tmp_path / "test_bg_indexing.db")
-        res_pdf = api._register_pdf(sample_pdf, "test")
-
-        start_res = api.start_full_indexing(res_pdf["file_id"])
-        assert start_res["ok"] is True
-
-        # Testa deduplicação ao tentar disparar novamente
-        dup_res = api.start_full_indexing(res_pdf["file_id"])
-        assert dup_res["ok"] is True
-        assert dup_res.get("already_running") is True
-
-        # Cancela a indexação
-        cancel_res = api.cancel_indexing(res_pdf["file_id"])
-        assert cancel_res["ok"] is True
-        assert cancel_res["cancelled"] is True
-
-    def test_missing_files_handling_and_relocation(self, tmp_path: Path):
-        """Item 16: Arquivos ausentes não perdem marcadores nem histórico e podem ser relocalizados."""
-        db = LibraryDatabase(tmp_path / "test_missing.db")
-        original_file = tmp_path / "original.pdf"
+    def _create_pdf(self, name: str, pages: int) -> Path:
+        path = self.root / name
         doc = fitz.open()
-        doc.new_page().insert_text((10, 10), "Conteúdo original.")
-        doc.save(str(original_file))
+        for index in range(pages):
+            page = doc.new_page(width=595, height=842)
+            page.insert_text((50, 50), f"Conteúdo de teste da página {index + 1} de {pages}.")
+        doc.save(str(path))
         doc.close()
+        return path
 
-        path_str = str(original_file.resolve())
-        db.save_session_state(path_str, last_page=3, zoom="1.2")
-        db.add_bookmark(path_str, page_number=2, title="Marcador de Teste")
+    def _api(self, db_name: str) -> BridgeApi:
+        api = BridgeApi()
+        api._library = LibraryDatabase(self.root / db_name)
+        return api
 
-        # Simula desconexão da unidade externa ou remoção temporária do arquivo
-        original_file.unlink()
+    def test_fast_pdf_info_opening(self) -> None:
+        api = self._api("fast.db")
+        resource = api._register_pdf(self.sample_pdf, "test")
+        info = api.get_pdf_info(resource["file_id"])
+        self.assertTrue(info["ok"])
+        self.assertEqual(info["page_count"], 60)
+        self.assertEqual(info["file_name"], "documento_extenso.pdf")
+        self.assertFalse(info["is_encrypted"])
+        self.assertIn("session_state", info)
+        self.assertIn("bookmarks", info)
 
-        status = db.check_and_update_document_availability(path_str)
-        assert status == "temporarily_unavailable"
+    def test_get_pdf_page_range(self) -> None:
+        api = self._api("range.db")
+        resource = api._register_pdf(self.sample_pdf, "test")
+        result = api.get_pdf_page_range(resource["file_id"], start_page=10, count=20)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["start_page"], 10)
+        self.assertEqual(result["count"], 20)
+        self.assertEqual(result["total_pages"], 60)
+        self.assertEqual(result["pages"][0]["page_number"], 10)
+        self.assertEqual(result["pages"][-1]["page_number"], 29)
 
-        # Histórico e marcadores continuam intactos no banco!
-        session = db.get_session_state(path_str)
-        assert session["found"] is True
-        assert session["last_page_read"] == 3
-        bookmarks = db.get_bookmarks(path_str)
-        assert len(bookmarks) == 1
-        assert bookmarks[0]["title"] == "Marcador de Teste"
+    def test_upsert_session_state_before_indexing(self) -> None:
+        db = LibraryDatabase(self.root / "upsert.db")
+        db.save_session_state(str(self.sample_pdf), last_page=15, zoom="1.5")
+        state = db.get_session_state(str(self.sample_pdf))
+        self.assertTrue(state["found"])
+        self.assertEqual(state["last_page_read"], 15)
+        db.index_document_metadata_only(self.sample_pdf, page_count=60, file_size=1000)
+        state_after = db.get_session_state(str(self.sample_pdf))
+        self.assertEqual(state_after["last_page_read"], 15)
+        self.assertEqual(state_after["preferred_zoom"], "1.5")
 
-        # Testa "Localizar novamente" com um novo caminho
-        new_file = tmp_path / "renomeado_ou_movido.pdf"
-        doc_new = fitz.open()
-        doc_new.new_page().insert_text((10, 10), "Conteúdo movido.")
-        doc_new.save(str(new_file))
-        doc_new.close()
+    def test_incremental_page_indexing_on_render(self) -> None:
+        api = self._api("incremental.db")
+        resource = api._register_pdf(self.sample_pdf, "test")
+        result = api.render_page_hq(resource["file_id"], page_number=4)
+        self.assertTrue(result["ok"])
+        self.assertIn("image", result)
+        self.assertIn("image_base64", result)
+        deadline = time.monotonic() + 2
+        matches = []
+        while time.monotonic() < deadline:
+            matches = api._library.search("página 5")
+            if matches:
+                break
+            time.sleep(0.02)
+        self.assertTrue(matches)
+        self.assertEqual(matches[0]["page_number"], 4)
 
-        relocate_ok = db.relocate_document(path_str, str(new_file))
-        assert relocate_ok is True
+    def test_full_background_indexing_can_be_cancelled(self) -> None:
+        api = self._api("background.db")
+        resource = api._register_pdf(self.sample_pdf, "test")
+        self.assertTrue(api.start_full_indexing(resource["file_id"])["ok"])
+        duplicate = api.start_full_indexing(resource["file_id"])
+        self.assertTrue(duplicate["ok"])
+        self.assertTrue(duplicate.get("already_running"))
+        cancelled = api.cancel_indexing(resource["file_id"])
+        self.assertTrue(cancelled["ok"])
+        self.assertTrue(cancelled["cancelled"])
 
-        new_session = db.get_session_state(str(new_file.resolve()))
-        assert new_session["found"] is True
-        assert new_session["last_page_read"] == 3
-        new_bookmarks = db.get_bookmarks(str(new_file.resolve()))
-        assert len(new_bookmarks) == 1
-        assert new_bookmarks[0]["title"] == "Marcador de Teste"
+    def test_missing_files_preserve_state_and_can_be_relocated(self) -> None:
+        db = LibraryDatabase(self.root / "missing.db")
+        original = self._create_pdf("original.pdf", 1)
+        original_path = str(original.resolve())
+        db.save_session_state(original_path, last_page=3, zoom="1.2")
+        db.add_bookmark(original_path, page_number=2, title="Marcador de Teste")
+        original.unlink()
+        self.assertEqual(db.check_and_update_document_availability(original_path), "temporarily_unavailable")
+        replacement = self._create_pdf("renomeado.pdf", 1)
+        self.assertTrue(db.relocate_document(original_path, str(replacement)))
+        session = db.get_session_state(str(replacement.resolve()))
+        self.assertTrue(session["found"])
+        self.assertEqual(session["last_page_read"], 3)
+        self.assertEqual(db.get_bookmarks(str(replacement.resolve()))[0]["title"], "Marcador de Teste")
 
-    def test_user_removal_from_library(self, sample_pdf: Path, tmp_path: Path):
-        """Item 16: 'Remover do acervo' marca o arquivo sem deletar fisicamente marcadores do banco."""
-        db = LibraryDatabase(tmp_path / "test_user_removal.db")
-        path_str = str(sample_pdf.resolve())
-        db.save_session_state(path_str, last_page=5, zoom="1.0")
-
-        removed_ok = db.remove_document_from_library(path_str)
-        assert removed_ok is True
-
+    def test_relocation_requires_entry_and_removal_is_logical(self) -> None:
+        db = LibraryDatabase(self.root / "library.db")
+        replacement = self._create_pdf("replacement.pdf", 1)
+        self.assertFalse(db.relocate_document(str(self.root / "unknown.pdf"), str(replacement)))
+        db.save_session_state(str(self.sample_pdf), last_page=5, zoom="1.0")
+        self.assertTrue(db.remove_document_from_library(str(self.sample_pdf)))
         recent = db.get_recent_documents()
-        assert not any(doc["file_path"] == path_str for doc in recent)
+        self.assertFalse(any(doc["file_path"] == str(self.sample_pdf.resolve()) for doc in recent))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -63,6 +63,8 @@ function parseDeclarativeArgument(raw, element, event) {
   const value = raw.trim();
   if (value === "event") return event;
   if (value === "this.value") return element.value;
+  if (value === "true") return true;
+  if (value === "false") return false;
   if (value === "parseInt(this.value) - 1") return parseInt(element.value, 10) - 1;
   const inputMatch = value.match(/^document\.getElementById\('([A-Za-z][\w-]*)'\)\.value$/);
   if (inputMatch) return document.getElementById(inputMatch[1])?.value || "";
@@ -1913,7 +1915,7 @@ class SuperPdfController {
 
     try {
       const cacheKey = `${requestedFileId}:${requestedPage}`;
-      let pageData = this.lruCache.get(cacheKey) || this.pageCache.get(cacheKey);
+      let pageData = this.lruCache.get(cacheKey);
 
       if (!pageData || forceReload) {
         pageData = await window.pywebview.api.render_page_hq(requestedFileId, requestedPage, 150);
@@ -1937,7 +1939,6 @@ class SuperPdfController {
           return;
         }
         this.lruCache.set(cacheKey, pageData, pageData.width || 800, pageData.height || 1100);
-        this.pageCache.set(cacheKey, pageData);
       }
       this.pageWidth = pageData.width;
       this.pageHeight = pageData.height;
@@ -2728,10 +2729,32 @@ class SuperPdfController {
     return `rgba(${(num >> 16) & 255}, ${(num >> 8) & 255}, ${num & 255}, ${alpha})`;
   }
 
-  async rotatePage(degrees) {
+  async chooseCopyDestination(suffix) {
+    const destination = await window.pywebview.api.choose_pdf_save_destination(this.currentFileId, suffix);
+    if (!destination) return null;
+    if (!destination.ok) {
+      showToast(destination.error || "Não foi possível autorizar o destino da cópia.", "error");
+      return null;
+    }
+    return destination.output_file_id;
+  }
+
+  registerCopiedFile(result) {
+    if (result && result.new_file) addProcessedFiles([result.new_file]);
+  }
+
+  async rotatePage(degrees, asCopy = false) {
     if (!this.currentFilePath) return;
     playBeep("click");
-    const res = await window.pywebview.api.rotate_pdf_page(this.currentFileId, this.currentPage, degrees);
+    const outputFileId = asCopy ? await this.chooseCopyDestination("rotacionado") : null;
+    if (asCopy && !outputFileId) return;
+    const res = await window.pywebview.api.rotate_pdf_page(
+      this.currentFileId,
+      this.currentPage,
+      degrees,
+      this.currentPassword || null,
+      outputFileId,
+    );
     if (res.ok) {
       showToast(res.message, "success");
       playBeep("success");
@@ -2747,7 +2770,7 @@ class SuperPdfController {
     }
   }
 
-  async saveAnnotations() {
+  async saveAnnotations(asCopy = false) {
     if (!this.currentFilePath) return false;
     playBeep("click");
 
@@ -2767,14 +2790,18 @@ class SuperPdfController {
       return true;
     }
 
+    const outputFileId = asCopy ? await this.chooseCopyDestination("anotado") : null;
+    if (asCopy && !outputFileId) return false;
     const res = await window.pywebview.api.save_pdf_annotations({
       file_id: this.currentFileId,
       annotations: allAnnots,
       password: this.currentPassword || null,
+      output_file_id: outputFileId,
     });
 
     if (res.ok) {
       playBeep("success");
+      this.registerCopiedFile(res);
       showToast(res.message, "success");
       appendLog("OK", `${this.currentFileName}: ${res.saved_count} anotação(ões) gravada(s) nativamente no PDF.`);
       this.annotations.clear();
@@ -2783,7 +2810,7 @@ class SuperPdfController {
         this.activeDocumentState.annotations = this.annotations;
         this.activeDocumentState.undoStack = this.undoStack;
       }
-      await this.renderCurrentPage(true);
+      if (!res.is_copy) await this.renderCurrentPage(true);
       return true;
     } else {
       playBeep("error");
@@ -2910,7 +2937,7 @@ class SuperPdfController {
     document.getElementById("protectModal").classList.add("hidden");
   }
 
-  async submitProtectPdf() {
+  async submitProtectPdf(asCopy = false) {
     const userPw = document.getElementById("inputUserPw").value.trim();
     const ownerPw = document.getElementById("inputOwnerPw").value.trim();
 
@@ -2919,15 +2946,20 @@ class SuperPdfController {
       return;
     }
 
+    const outputFileId = asCopy ? await this.chooseCopyDestination("protegido") : null;
+    if (asCopy && !outputFileId) return;
     playBeep("click");
-    const res = await window.pywebview.api.protect_pdf(this.currentFileId, userPw, ownerPw);
+    const res = await window.pywebview.api.protect_pdf(this.currentFileId, userPw, ownerPw, outputFileId);
     this.closeProtectModal();
 
     if (res.ok) {
       playBeep("success");
-      this.isEncrypted = true;
-      this.currentPassword = userPw;
-      if (this.activeDocumentState) this.activeDocumentState.password = userPw;
+      this.registerCopiedFile(res);
+      if (!res.is_copy) {
+        this.isEncrypted = true;
+        this.currentPassword = userPw;
+        if (this.activeDocumentState) this.activeDocumentState.password = userPw;
+      }
       showToast(res.message, "success");
       appendLog("OK", `${this.currentFileName}: Protegido com criptografia AES-256.`);
     } else {
@@ -2936,25 +2968,31 @@ class SuperPdfController {
     }
   }
 
-  async submitUnprotectPdf() {
+  async submitUnprotectPdf(asCopy = false) {
     const inputEl = document.getElementById("inputCurrentPwForUnprotect");
     const currentPw = inputEl ? inputEl.value.trim() : "";
 
+    const outputFileId = asCopy ? await this.chooseCopyDestination("sem-senha") : null;
+    if (asCopy && !outputFileId) return;
     playBeep("click");
     const res = await window.pywebview.api.unprotect_pdf(
       this.currentFileId,
-      currentPw || this.currentPassword
+      currentPw || this.currentPassword,
+      outputFileId,
     );
     this.closeProtectModal();
 
     if (res.ok) {
       playBeep("success");
-      this.isEncrypted = false;
-      this.currentPassword = "";
-      if (this.activeDocumentState) this.activeDocumentState.password = "";
+      this.registerCopiedFile(res);
+      if (!res.is_copy) {
+        this.isEncrypted = false;
+        this.currentPassword = "";
+        if (this.activeDocumentState) this.activeDocumentState.password = "";
+      }
       showToast(res.message, "success");
       appendLog("OK", `${this.currentFileName}: Proteção por senha removida com sucesso.`);
-      await this.loadDocument(this.currentFileId, null, this.currentFilePath);
+      if (!res.is_copy) await this.loadDocument(this.currentFileId, null, this.currentFilePath);
     } else {
       playBeep("error");
       showToast(`Erro ao remover senha: ${res.error}`, "error");
@@ -3733,6 +3771,8 @@ class GlobalSearchController {
           snippet: `Última leitura na Página ${(doc.last_page_read || 0) + 1}.`,
           rank: 0,
           is_recent: true,
+          availability_status: doc.availability_status,
+          library_entry_id: doc.library_entry_id,
         }));
         this.renderResults(true);
       } else {
@@ -3770,42 +3810,11 @@ class GlobalSearchController {
       return;
     }
 
-// --------------------------------------------------------------------------
-// Gerenciador do Acervo e Arquivos Indisponíveis (Item 16)
-// --------------------------------------------------------------------------
-const appLibrary = {
-  async relocateDocument(oldFilePath) {
-    playBeep("click");
-    const selected = await window.pywebview.api.choose_files();
-    if (!selected || selected.length === 0) return;
-    const newPath = selected[0].path;
-    const res = await window.pywebview.api.relocate_library_document(oldFilePath, newPath);
-    if (res.ok) {
-      showToast("Localização do arquivo atualizada no acervo!", "success");
-      if (window.appSearch) appSearch.loadRecent();
-    } else {
-      showToast(`Falha ao relocalizar: ${res.error}`, "error");
-    }
-  },
-
-  async removeDocument(filePath) {
-    playBeep("click");
-    const res = await window.pywebview.api.remove_library_document(filePath);
-    if (res.ok) {
-      showToast("Documento removido do acervo.", "info");
-      if (window.appSearch) appSearch.loadRecent();
-    } else {
-      showToast(`Falha ao remover: ${res.error}`, "error");
-    }
-  }
-};
-window.appLibrary = appLibrary;
-
     this.visibleResults = filtered;
     this.resultsContainer.innerHTML = filtered
       .map((item, index) => {
         const isPdf = item.content_type === "pdf_page";
-        const isUnavailable = item.availability_status === "temporarily_unavailable";
+        const isUnavailable = isPdf && item.availability_status === "temporarily_unavailable";
         const badgeColor = isUnavailable
           ? "bg-amber-100 text-amber-800"
           : isPdf
@@ -3820,10 +3829,10 @@ window.appLibrary = appLibrary;
         const actionButtons = isUnavailable
           ? `
             <div class="flex items-center gap-1.5 flex-shrink-0">
-              <button data-action="appLibrary.relocateDocument('${escapeHtml(item.display_path || item.file_path)}')" class="px-2 py-1 rounded-xl text-[10px] font-semibold bg-amber-600 hover:bg-amber-700 text-white transition flex items-center gap-1 shadow-xs">
+              <button data-action="appLibrary.relocateDocument('${escapeHtml(item.library_entry_id)}')" class="px-2 py-1 rounded-xl text-[10px] font-semibold bg-amber-600 hover:bg-amber-700 text-white transition flex items-center gap-1 shadow-xs">
                 Localizar novamente
               </button>
-              <button data-action="appLibrary.removeDocument('${escapeHtml(item.display_path || item.file_path)}')" class="px-2 py-1 rounded-xl text-[10px] font-semibold bg-slate-200 hover:bg-rose-100 text-slate-700 hover:text-rose-700 transition">
+              <button data-action="appLibrary.removeDocument('${escapeHtml(item.library_entry_id)}')" class="px-2 py-1 rounded-xl text-[10px] font-semibold bg-slate-200 hover:bg-rose-100 text-slate-700 hover:text-rose-700 transition">
                 Remover
               </button>
             </div>
@@ -3876,6 +3885,36 @@ window.appLibrary = appLibrary;
     }
   }
 }
+
+// --------------------------------------------------------------------------
+// Gerenciador do Acervo e Arquivos Indisponíveis (Item 16)
+// --------------------------------------------------------------------------
+const appLibrary = {
+  async relocateDocument(libraryEntryId) {
+    playBeep("click");
+    const selected = await window.pywebview.api.choose_files();
+    if (!selected || selected.length === 0) return;
+    const res = await window.pywebview.api.relocate_library_document(libraryEntryId, selected[0].file_id);
+    if (res.ok) {
+      showToast("Localização do arquivo atualizada no acervo!", "success");
+      if (window.appSearch) appSearch.loadRecentLibrary();
+    } else {
+      showToast(`Falha ao relocalizar: ${res.error}`, "error");
+    }
+  },
+
+  async removeDocument(libraryEntryId) {
+    playBeep("click");
+    const res = await window.pywebview.api.remove_library_document(libraryEntryId);
+    if (res.ok) {
+      showToast("Documento removido do acervo.", "info");
+      if (window.appSearch) appSearch.loadRecentLibrary();
+    } else {
+      showToast(`Falha ao remover: ${res.error}`, "error");
+    }
+  }
+};
+window.appLibrary = appLibrary;
 
 // --------------------------------------------------------------------------
 // Controlador de Licença e Ativação por Hardware (Hardware Node-Locking)

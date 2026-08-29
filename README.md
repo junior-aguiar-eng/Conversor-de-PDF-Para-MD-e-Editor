@@ -53,8 +53,8 @@ Depois de gerar a release, execute `.\criar_atalho_envio_rapido.ps1` para adicio
 - **Licenciamento e Impressão Digital Evolved**: Ativações do software utilizam fingerprints e chaves Ed25519 versionadas. Licenças legadas v1 (`NXJ-` / `ACT2-01-`) permanecem 100% suportadas e operacionais, enquanto novas ativações utilizam o fingerprint estável v2 (`NXJ2-` / `ACT3-01-`). Instalações ativas são migradas transparentemente sem invalidar chaves prévias. O emissor administrativo `admin_keygen.py` gera e analisa ambas as versões.
 - **Aceite de Termos Versionado**: O aceite dos Termos de Uso é armazenado com a versão vigente (`CURRENT_TERMS_VERSION = "1.0"`). Alterações materiais na versão dos termos exigem reaceite formal do usuário.
 - **Modalidades de Salvamento de Edição**: Funções de edição de PDF (rotação de páginas, gravação de anotações e post-its nativos, e aplicação/remoção de proteção AES-256) oferecem duas opções de destino:
-  - **Salvar no original**: Sobrescreve o arquivo original de forma segura (preservando assinaturas e estrutura através de salvamento incremental quando aplicável).
-  - **Salvar como cópia**: Grava as edições em um novo arquivo PDF escolhido pelo usuário e o registra automaticamente no acervo de recursos do aplicativo.
+  - **Salvar no original**: Sobrescreve o arquivo original com substituição atômica e preserva a estrutura incremental quando tecnicamente aplicável. Assinaturas digitais devem ser revalidadas após qualquer alteração.
+  - **Salvar como cópia**: Grava as edições em um novo PDF escolhido por diálogo nativo, autorizado por identificador opaco, e o registra automaticamente no acervo de recursos do aplicativo.
 
 ## Observações
 

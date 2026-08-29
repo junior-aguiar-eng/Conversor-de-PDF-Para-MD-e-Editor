@@ -148,7 +148,10 @@ class LibraryDatabase:
         def _do_index_meta(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """
-                INSERT INTO documents (file_path, file_name, file_size, page_count, last_accessed, created_at, availability_status, status_updated_at)
+                INSERT INTO documents (
+                    file_path, file_name, file_size, page_count, last_accessed, created_at,
+                    availability_status, status_updated_at
+                )
                 VALUES (?, ?, ?, ?, ?, ?, 'available', ?)
                 ON CONFLICT(file_path) DO UPDATE SET
                     file_name = excluded.file_name,
@@ -187,6 +190,24 @@ class LibraryDatabase:
 
         self._execute_write(_do_index_page)
 
+    def finalize_incremental_pdf_index(self, file_path: str | Path, page_count: int) -> None:
+        """Finaliza metadados e remove páginas obsoletas sem reler o PDF já indexado."""
+        path = Path(file_path).resolve()
+        self.index_document_metadata_only(path, page_count)
+
+        def _do_finalize(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                DELETE FROM doc_fts
+                WHERE file_path = ?
+                  AND content_type = 'pdf_page'
+                  AND CAST(page_number AS INTEGER) >= ?
+                """,
+                (str(path), page_count),
+            )
+
+        self._execute_write(_do_finalize)
+
     def index_pdf_document(self, file_path: str | Path, doc: fitz.Document) -> None:
         """Indexa todas as páginas do PDF no banco de dados e no índice FTS5."""
         path_str = str(Path(file_path).resolve())
@@ -204,7 +225,10 @@ class LibraryDatabase:
             # 1. Atualiza metadados do documento (UPSERT preservando sessão existente)
             conn.execute(
                 """
-                INSERT INTO documents (file_path, file_name, file_size, page_count, last_accessed, created_at, availability_status, status_updated_at)
+                INSERT INTO documents (
+                    file_path, file_name, file_size, page_count, last_accessed, created_at,
+                    availability_status, status_updated_at
+                )
                 VALUES (?, ?, ?, ?, ?, ?, 'available', ?)
                 ON CONFLICT(file_path) DO UPDATE SET
                     file_name = excluded.file_name,
@@ -247,7 +271,10 @@ class LibraryDatabase:
         def _do_index_md(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """
-                INSERT INTO documents (file_path, file_name, markdown_path, is_converted, last_accessed, created_at, availability_status, status_updated_at)
+                INSERT INTO documents (
+                    file_path, file_name, markdown_path, is_converted, last_accessed, created_at,
+                    availability_status, status_updated_at
+                )
                 VALUES (?, ?, ?, 1, ?, ?, 'available', ?)
                 ON CONFLICT(file_path) DO UPDATE SET
                     markdown_path = excluded.markdown_path,
@@ -310,7 +337,7 @@ class LibraryDatabase:
             return False
 
         def _do_relocate(conn: sqlite3.Connection) -> bool:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 UPDATE documents
                 SET file_path = ?, file_name = ?, availability_status = 'available', status_updated_at = ?, last_accessed = ?
@@ -318,6 +345,8 @@ class LibraryDatabase:
                 """,
                 (new_str, new_name, now, now, old_str),
             )
+            if cursor.rowcount == 0:
+                return False
             conn.execute("UPDATE bookmarks SET file_path = ? WHERE file_path = ?", (new_str, old_str))
             conn.execute("UPDATE doc_fts SET file_path = ?, file_name = ? WHERE file_path = ?", (new_str, new_name, old_str))
             return True
@@ -418,7 +447,10 @@ class LibraryDatabase:
         def _do_save_session(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """
-                INSERT INTO documents (file_path, file_name, last_page_read, preferred_zoom, last_accessed, created_at, availability_status, status_updated_at)
+                INSERT INTO documents (
+                    file_path, file_name, last_page_read, preferred_zoom, last_accessed, created_at,
+                    availability_status, status_updated_at
+                )
                 VALUES (?, ?, ?, ?, ?, ?, 'available', ?)
                 ON CONFLICT(file_path) DO UPDATE SET
                     last_page_read = excluded.last_page_read,
@@ -447,7 +479,13 @@ class LibraryDatabase:
                     "markdown_path": row["markdown_path"],
                     "availability_status": row["availability_status"] or "available",
                 }
-            return {"found": False, "last_page_read": 0, "preferred_zoom": "1.0", "markdown_path": "", "availability_status": "available"}
+            return {
+                "found": False,
+                "last_page_read": 0,
+                "preferred_zoom": "1.0",
+                "markdown_path": "",
+                "availability_status": "available",
+            }
 
     def add_bookmark(self, file_path: str, page_number: int, title: str = "") -> dict[str, Any]:
         """Adiciona um marcador de página."""

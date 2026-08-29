@@ -411,7 +411,6 @@
                 <option value="0.5">50%</option>
                 <option value="0.75">75%</option>
                 <option value="1.0" selected>100%</option>
-                <option value="1.0" selected>100%</option>
                 <option value="1.25">125%</option>
                 <option value="1.5">150%</option>
                 <option value="2.0">200%</option>
@@ -426,9 +425,15 @@
               <button data-action="superPdf.rotatePage(90)" id="tool-rotate" class="p-1.5 rounded-xl bg-white hover:bg-sky-50 text-slate-700 border border-sky-200 transition shadow-sm flex items-center gap-1 font-semibold" title="Girar 90°">
                 <svg class="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
               </button>
+              <button data-action="superPdf.rotatePage(90, true)" class="p-1.5 rounded-xl bg-white hover:bg-sky-50 text-slate-700 border border-sky-200 transition shadow-sm" title="Girar 90° e salvar como cópia">
+                <span class="text-xs font-semibold">Cópia</span>
+              </button>
               <button data-action="superPdf.setTool('snippet')" id="tool-snippet" class="pdf-tool-btn px-2.5 py-1.5 rounded-xl font-semibold transition flex items-center gap-1.5 text-slate-600 hover:text-sky-900 bg-white border border-sky-200 shadow-sm" title="Capturar Trecho (OCR & Imagem)">
                 <svg class="w-3.5 h-3.5 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z"></path></svg>
                 <span>Recortar</span>
+              </button>
+            </div>
+          </div>
           <!-- Center Annotation Tools with Edge Flyouts -->
           <div class="flex items-center gap-1.5 relative">
             
@@ -631,6 +636,9 @@
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path></svg>
               <span>Salvar</span>
             </button>
+            <button data-action="superPdf.saveAnnotations(true)" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 transition" title="Salvar anotações como cópia">
+              Salvar cópia
+            </button>
           </div>
 
         </div>
@@ -825,8 +833,9 @@
           </button>
           <button data-action="superPdf.submitProtectPdf()" class="px-4 py-2 rounded-xl text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white transition flex items-center gap-1.5 shadow-sm">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
-            Aplicar Senha e Salvar
+            Salvar no original
           </button>
+          <button data-action="superPdf.submitProtectPdf(true)" class="px-4 py-2 rounded-xl text-xs font-semibold bg-white hover:bg-amber-50 text-amber-700 border border-amber-200 transition">Salvar cópia</button>
         </div>
       </div>
 
@@ -851,8 +860,9 @@
           </button>
           <button data-action="superPdf.submitUnprotectPdf()" class="px-4 py-2 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white transition flex items-center gap-1.5 shadow-sm shadow-rose-200">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>
-            Remover Proteção / Retirar Senha
+            Remover no original
           </button>
+          <button data-action="superPdf.submitUnprotectPdf(true)" class="px-4 py-2 rounded-xl text-xs font-semibold bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 transition">Salvar cópia sem senha</button>
         </div>
       </div>
 

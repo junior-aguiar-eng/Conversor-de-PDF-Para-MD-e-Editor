@@ -13,7 +13,7 @@ class WebFrontendRegressionTests(unittest.TestCase):
 
     def test_successful_annotation_save_clears_pending_queue_before_render(self) -> None:
         app_js = self._read_project_file("web", "app.js")
-        method_start = app_js.index("  async saveAnnotations() {")
+        method_start = app_js.index("  async saveAnnotations(asCopy = false) {")
         method_end = app_js.index("\n  async triggerSnippetExtraction", method_start)
         method = app_js[method_start:method_end]
 
