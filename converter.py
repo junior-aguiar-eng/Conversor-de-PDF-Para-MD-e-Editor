@@ -91,8 +91,10 @@ class PdfMarkdownConverter:
         reservation: OutputReservation | None = None,
         split_mode: SplitMode = "semantic",
         page_numbers: tuple[int, ...] | None = None,
+        activation_verified: bool = False,
     ) -> ConversionResult:
-        require_software_activation()
+        if not activation_verified:
+            require_software_activation()
         output_dir = output_dir.resolve()
         reservation = reservation or reserve_batch_output_paths(output_dir, [source], retry=bool(page_numbers))[0]
         reservation.assets_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -296,6 +298,7 @@ def convert_worker(
             reservation,
             split_mode,
             page_numbers,
+            True,
         )
     except Exception as error:
         return ConversionFailure(

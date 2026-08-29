@@ -932,6 +932,8 @@ class ProgressBarController {
   }
 }
 
+const progressController = new ProgressBarController();
+
 
 async function togglePause() {
   if (!state.isConverting) return;
@@ -1021,8 +1023,18 @@ window.onBackendEvent = function (eventName, data) {
     progressController.onFileDone(completedCount, state.files.length);
     const pageWarning = data.failed_pages?.length ? `; páginas não recuperadas: ${data.failed_pages.join(", ")}` : "";
     appendLog("OK", `${data.name} -> ${data.markdown_path} (${data.asset_count} imgs, ${data.duration_formatted}${pageWarning})`);
+  } else if (eventName === "file_error") {
+    playBeep("error");
+    const file = state.files.find((f) => f.file_id === data.source_id);
+    if (file) {
+      file.status = "error";
+      file.error_message = data.error_message || "Falha não detalhada pelo conversor.";
+    }
+    renderFileList();
+    updateMetrics();
+    const completedCount = state.files.filter((f) => f.status === "success" || f.status === "error").length;
     progressController.onFileDone(completedCount, state.files.length);
-    appendLog("ERRO", `${data.name}: ${data.error_message}`);
+    appendLog("ERRO", `${data.name}: ${data.error_message || "Falha não detalhada pelo conversor."}`);
   } else if (eventName === "batch_done") {
     playBeep("success");
     state.isConverting = false;

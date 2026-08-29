@@ -93,33 +93,30 @@ def ocr_pixmap(pixmap: fitz.Pixmap, min_score: float = 0.35) -> tuple[str, list[
     if not blocks:
         return "", []
 
-    # Ordena blocos de texto: primariamente por Y (com tolerância de linha), secundariamente por X
-    blocks.sort(key=lambda b: (round(b["y_min"] / 12) * 12, b["x_min"]))
-
     avg_height = sum(heights) / len(heights) if heights else 14.0
+    blocks.sort(key=lambda b: ((b["y_min"] + b["y_max"]) / 2, b["x_min"]))
+
+    grouped_lines: list[list[dict[str, Any]]] = []
+    for block in blocks:
+        center_y = (block["y_min"] + block["y_max"]) / 2
+        if grouped_lines:
+            previous_line = grouped_lines[-1]
+            previous_center = sum((item["y_min"] + item["y_max"]) / 2 for item in previous_line) / len(
+                previous_line
+            )
+            previous_height = sum(item["height"] for item in previous_line) / len(previous_line)
+            tolerance = max(2.0, min(previous_height, block["height"]) * 0.45)
+            if abs(center_y - previous_center) <= tolerance:
+                previous_line.append(block)
+                continue
+        grouped_lines.append([block])
 
     lines: list[str] = []
-    current_line_parts: list[str] = []
-    last_y_max = -1.0
-    last_h = avg_height
-
-    for b in blocks:
-        is_title = b["height"] >= avg_height * 1.38
-
-        # Verifica se pertence à mesma linha horizontal
-        if last_y_max > 0 and (b["y_min"] > last_y_max + (last_h * 0.45)):
-            if current_line_parts:
-                line_text = " ".join(current_line_parts)
-                lines.append(line_text)
-                current_line_parts = []
-
-        prefix = "## " if is_title else ""
-        current_line_parts.append(f"{prefix}{b['text']}")
-        last_y_max = max(last_y_max, b["y_max"])
-        last_h = b["height"]
-
-    if current_line_parts:
-        lines.append(" ".join(current_line_parts))
+    for line_blocks in grouped_lines:
+        line_blocks.sort(key=lambda item: item["x_min"])
+        line_height = sum(item["height"] for item in line_blocks) / len(line_blocks)
+        line_text = " ".join(item["text"] for item in line_blocks)
+        lines.append(f"## {line_text}" if line_height >= avg_height * 1.38 else line_text)
 
     # Junta linhas agrupando parágrafos
     formatted_text = "\n\n".join(lines)

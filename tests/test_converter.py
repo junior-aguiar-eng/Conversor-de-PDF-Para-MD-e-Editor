@@ -131,6 +131,34 @@ class ConverterTests(unittest.TestCase):
 
         fake_open.assert_not_called()
 
+    def test_prevalidated_batch_does_not_repeat_license_check_in_converter(self) -> None:
+        class OversizedDocument:
+            page_count = MAX_PAGE_COUNT + 1
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        converter = converter_module.PdfMarkdownConverter.__new__(converter_module.PdfMarkdownConverter)
+        converter._pymupdf = SimpleNamespace(open=lambda _source: OversizedDocument())
+        converter._to_markdown = lambda *_args, **_kwargs: ""
+
+        with (
+            patch.object(converter_module, "require_software_activation") as activation_check,
+            self.assertRaisesRegex(ValueError, "limite do aplicativo"),
+        ):
+            converter.convert(
+                Path("documento.pdf"),
+                Path("saida"),
+                False,
+                1000,
+                activation_verified=True,
+            )
+
+        activation_check.assert_not_called()
+
     def test_converter_tracks_every_page_independently(self) -> None:
         class FakePage:
             def __init__(self, number: int) -> None:

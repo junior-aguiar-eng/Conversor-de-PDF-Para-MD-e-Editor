@@ -18,6 +18,7 @@ import subprocess
 import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
+from functools import lru_cache
 from typing import Any
 
 from cryptography.exceptions import InvalidSignature
@@ -81,10 +82,24 @@ def _public_key() -> Ed25519PublicKey:
     return Ed25519PublicKey.from_public_bytes(public_bytes)
 
 
+@lru_cache(maxsize=1)
 def _get_motherboard_uuid() -> str:
-    """Obtém o UUID único da placa-mãe / sistema via PowerShell, WMIC ou fallback."""
+    """Obtém uma identidade estável do Windows sem repetir subprocessos durante a sessão."""
     if platform.system() == "Windows":
-        # 1. PowerShell CIM Instance (Recomendado para Windows 10/11)
+        # Fonte primária rápida e estável. O produto ainda não possui licenças emitidas,
+        # portanto esta passa a ser a identidade canônica antes da primeira release.
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
+                guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+                clean_guid = str(guid or "").strip().upper()
+                if len(clean_guid) > 10:
+                    return clean_guid
+        except Exception as err:
+            logger.debug(f"Winreg MachineGuid indisponível: {err}")
+
+        # Contingência para ambientes onde o Registro não pode ser consultado.
         try:
             cmd = [
                 "powershell",
@@ -93,33 +108,12 @@ def _get_motherboard_uuid() -> str:
                 "-Command",
                 "(Get-CimInstance Win32_ComputerSystemProduct).UUID",
             ]
-            out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=2.5)
+            out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=4.0)
             clean_uuid = out.strip().upper()
             if clean_uuid and len(clean_uuid) > 10 and clean_uuid != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
                 return clean_uuid
         except Exception as err:
             logger.debug(f"PowerShell UUID fallback: {err}")
-
-        # 2. WMIC Legacy
-        try:
-            cmd = ["wmic", "csproduct", "get", "uuid"]
-            out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=2.0)
-            lines = [line.strip().upper() for line in out.splitlines() if line.strip() and "UUID" not in line.upper()]
-            if lines and lines[0] and len(lines[0]) > 10:
-                return lines[0]
-        except Exception as err:
-            logger.debug(f"WMIC UUID fallback: {err}")
-
-        # 3. Windows Registry Cryptography MachineGuid
-        try:
-            import winreg
-
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
-                guid, _ = winreg.QueryValueEx(key, "MachineGuid")
-                if guid:
-                    return str(guid).strip().upper()
-        except Exception as err:
-            logger.debug(f"Winreg MachineGuid fallback: {err}")
 
     # Fallback genérico para ambientes não-Windows ou com restrições
     return f"FALLBACK-UUID-{os.environ.get('COMPUTERNAME', platform.node())}"

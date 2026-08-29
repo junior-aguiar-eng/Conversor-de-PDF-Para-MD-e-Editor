@@ -55,6 +55,27 @@ class OcrEngineTests(unittest.TestCase):
             self.assertIn("Parágrafo escaneado", text)
             self.assertEqual(len(blocks), 2)
 
+    def test_ocr_applies_heading_marker_once_to_consolidated_line(self) -> None:
+        pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 200, 200), 0)
+        with patch("ocr_engine.get_ocr_engine") as mock_get_engine:
+            mock_get_engine.return_value.return_value = (
+                [
+                    [[[10, 10], [80, 10], [80, 34], [10, 34]], "TÍTULO", 0.99],
+                    [[[90, 10], [180, 10], [180, 34], [90, 34]], "COMPLETO", 0.99],
+                    [[[10, 50], [80, 50], [80, 60], [10, 60]], "linha", 0.99],
+                    [[[90, 50], [180, 50], [180, 60], [90, 60]], "normal", 0.99],
+                    [[[10, 75], [80, 75], [80, 85], [10, 85]], "outra", 0.99],
+                    [[[90, 75], [180, 75], [180, 85], [90, 85]], "linha", 0.99],
+                ],
+                [0.1, 0.1, 0.1],
+            )
+
+            text, _ = ocr_pixmap(pix)
+
+        self.assertTrue(text.startswith("## TÍTULO COMPLETO"))
+        self.assertEqual(text.count("## "), 1)
+        self.assertNotIn("TÍTULO ## COMPLETO", text)
+
     def test_converter_with_scanned_pdf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             pdf_path = Path(tmp_dir) / "scanned_doc.pdf"

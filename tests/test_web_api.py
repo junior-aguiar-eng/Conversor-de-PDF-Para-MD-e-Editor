@@ -96,6 +96,22 @@ class WebApiTests(unittest.TestCase):
         self.assertFalse(res["started"])
         self.assertIn("pelo menos 1.000", res["error"])
 
+    def test_start_conversion_rejects_malformed_payload_without_exception(self) -> None:
+        api = BridgeApi()
+        invalid_payloads = (
+            None,
+            {"files": "arquivo.pdf"},
+            {"files": ["arquivo.pdf"]},
+            {"files": [{"file_id": "desconhecido"}], "max_chunk_characters": "abc"},
+            {"files": [{"file_id": "desconhecido"}], "heading_profile": "desconhecido"},
+        )
+
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                result = api.start_conversion(payload)
+                self.assertFalse(result["started"])
+                self.assertTrue(result["error"])
+
     def test_save_annotations_expands_textbox_and_persists_long_text(self) -> None:
         import fitz
 

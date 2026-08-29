@@ -417,6 +417,9 @@ class BridgeApi:
         self._indexing_pause_events: dict[str, threading.Event] = {}
         self._indexing_threads: dict[str, threading.Thread] = {}
         self._indexing_lock = threading.Lock()
+        self._page_indexing_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="PageIndex")
+        self._pending_page_indexes: set[tuple[str, int]] = set()
+        self._page_indexing_lock = threading.Lock()
 
     def _register_pdf(self, path: str | Path, origin: str) -> dict[str, Any]:
         resolved = Path(path).expanduser().resolve()
@@ -728,6 +731,8 @@ class BridgeApi:
 
     def start_conversion(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Inicia a conversão em lote em uma thread em segundo plano."""
+        if not isinstance(payload, dict):
+            return {"started": False, "error": "Dados da conversão inválidos."}
         try:
             require_software_activation()
         except LicenseRequiredError as error:
@@ -742,16 +747,23 @@ class BridgeApi:
             return {"started": False, "error": "Uma conversão já está em andamento."}
 
         files_data = payload.get("files", [])
-        if not files_data:
+        if not isinstance(files_data, list) or not files_data:
             return {"started": False, "error": "Nenhum PDF selecionado."}
+        if any(not isinstance(item, dict) for item in files_data):
+            return {"started": False, "error": "A fila de PDFs é inválida."}
 
         output_directory_id = payload.get("output_directory_id", "")
         split_output = bool(payload.get("split_output", False))
         split_mode: SplitMode = payload.get("split_mode", "semantic")
         if split_mode not in {"semantic", "strict"}:
             return {"started": False, "error": "Modo de divisão inválido."}
-        max_chunk_characters = int(payload.get("max_chunk_characters", DEFAULT_MAX_CHUNK_CHARACTERS))
+        try:
+            max_chunk_characters = int(payload.get("max_chunk_characters", DEFAULT_MAX_CHUNK_CHARACTERS))
+        except (TypeError, ValueError):
+            return {"started": False, "error": "O limite de caracteres deve ser um número inteiro."}
         heading_profile: HeadingProfile = payload.get("heading_profile", "jurisprudencia")
+        if heading_profile not in {"jurisprudencia", "curso"}:
+            return {"started": False, "error": "Perfil de títulos inválido."}
         requested_workers = payload.get("max_workers")
         if requested_workers is not None:
             try:
@@ -1088,11 +1100,7 @@ class BridgeApi:
 
             # Extrai texto e indexa a página visitada de forma incremental em background
             page_text = page.get_text("text")
-            threading.Thread(
-                target=self._library.index_single_pdf_page,
-                args=(str(path), page_number, page_text),
-                daemon=True,
-            ).start()
+            self._enqueue_page_index(str(path), page_number, page_text)
 
             return {
                 "ok": True,
@@ -1890,6 +1898,38 @@ class BridgeApi:
         finally:
             _safe_close(doc)
 
+    def _enqueue_page_index(self, file_path: str, page_number: int, page_text: str) -> None:
+        """Serializa e deduplica escritas incrementais disparadas pela rolagem do leitor."""
+        key = (file_path, page_number)
+        with self._page_indexing_lock:
+            if key in self._pending_page_indexes:
+                return
+            self._pending_page_indexes.add(key)
+
+        try:
+            future = self._page_indexing_executor.submit(
+                self._library.index_single_pdf_page,
+                file_path,
+                page_number,
+                page_text,
+            )
+        except RuntimeError as error:
+            with self._page_indexing_lock:
+                self._pending_page_indexes.discard(key)
+            logger.debug(f"Fila de indexação indisponível para {file_path}, página {page_number + 1}: {error}")
+            return
+
+        def release(completed: Future) -> None:
+            try:
+                completed.result()
+            except Exception as error:
+                logger.debug(f"Falha na indexação incremental de {file_path}, página {page_number + 1}: {error}")
+            finally:
+                with self._page_indexing_lock:
+                    self._pending_page_indexes.discard(key)
+
+        future.add_done_callback(release)
+
     def _convert_in_background(
         self,
         files: list[Path],
@@ -2000,6 +2040,7 @@ class BridgeApi:
                     reservations[index - 1],
                     split_mode,
                     page_numbers_by_file[index - 1],
+                    True,
                 )
                 successes.append(result)
                 self._emit_file_success(result)

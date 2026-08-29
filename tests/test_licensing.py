@@ -59,6 +59,26 @@ class IsolatedLicensingTestCase(unittest.TestCase):
 
 
 class LicensingUnitTests(IsolatedLicensingTestCase):
+    def test_windows_machine_identity_uses_registry_once_per_session(self) -> None:
+        licensing_module._get_motherboard_uuid.cache_clear()
+        try:
+            with (
+                patch.object(licensing_module.platform, "system", return_value="Windows"),
+                patch("winreg.OpenKey") as open_key,
+                patch("winreg.QueryValueEx", return_value=("machine-guid-test-1234", 1)) as query_value,
+                patch.object(licensing_module.subprocess, "check_output") as check_output,
+            ):
+                first = licensing_module._get_motherboard_uuid()
+                second = licensing_module._get_motherboard_uuid()
+
+            self.assertEqual(first, "MACHINE-GUID-TEST-1234")
+            self.assertEqual(second, first)
+            open_key.assert_called_once()
+            query_value.assert_called_once()
+            check_output.assert_not_called()
+        finally:
+            licensing_module._get_motherboard_uuid.cache_clear()
+
     def test_machine_fingerprint_format(self) -> None:
         mid1 = get_machine_fingerprint_v1()
         mid2 = get_machine_fingerprint_v2()

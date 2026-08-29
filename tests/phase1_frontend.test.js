@@ -119,7 +119,8 @@ const source = fs.readFileSync(appPath, "utf8") + `
 globalThis.__phase1 = {
   escapeHtml, safeSearchSnippetHtml, renderFileList, appendLog, onBridgeReady,
   initializeAfterTerms, state, SuperPdfController, GlobalSearchController, appLicense,
-  appLibrary, appSearch, appTts, parseDeclarativeArgument, playBeep, resolveDeclarativeAction,
+  appLibrary, appSearch, appTts, progressController, parseDeclarativeArgument, playBeep,
+  resolveDeclarativeAction,
 };`;
 vm.runInContext(source, context, { filename: appPath });
 
@@ -262,6 +263,31 @@ async function run() {
   const messageElement = logConsole.children[0].children[2];
   assert.equal(messageElement.textContent, `<img src=x onerror=alert(1)>`);
   assert.equal(logConsole.children[0].innerHTML, "");
+
+  let completedUpdates = 0;
+  api.progressController.onFileDone = () => { completedUpdates += 1; };
+  logConsole.children = [];
+  api.state.currentPreviewId = "existing-preview";
+  api.state.files = [{ file_id: "conversion-id", name: "convertido.pdf", status: "converting" }];
+  windowObject.onBackendEvent("file_success", {
+    source_id: "conversion-id", name: "convertido.pdf", markdown_path: "C:/convertido.md",
+    markdown_id: "markdown-id", asset_count: 0, chunk_count: 1, duration_formatted: "1s",
+    failed_pages: [], warning_pages: [],
+  });
+  assert.equal(api.state.files[0].status, "success");
+  assert.equal(completedUpdates, 1);
+  assert.equal(logConsole.children.length, 1);
+  assert.equal(logConsole.children[0].children[1].textContent, "[OK]");
+
+  logConsole.children = [];
+  api.state.files = [{ file_id: "failure-id", name: "falha.pdf", status: "converting" }];
+  windowObject.onBackendEvent("file_error", {
+    source_id: "failure-id", name: "falha.pdf", error_message: "PDF corrompido",
+  });
+  assert.equal(api.state.files[0].status, "error");
+  assert.equal(api.state.files[0].error_message, "PDF corrompido");
+  assert.equal(completedUpdates, 2);
+  assert.equal(logConsole.children[0].children[1].textContent, "[ERRO]");
 
   const docA = "C:/a.pdf";
   const docB = "C:/b.pdf";

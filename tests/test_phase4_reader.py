@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import fitz
 
@@ -86,6 +87,20 @@ class TestPhase4ReaderAndIndexing(unittest.TestCase):
             time.sleep(0.02)
         self.assertTrue(matches)
         self.assertEqual(matches[0]["page_number"], 4)
+
+    def test_incremental_page_indexing_is_serialized_and_deduplicated(self) -> None:
+        api = self._api("deduplicated.db")
+        future = MagicMock()
+
+        with patch.object(api._page_indexing_executor, "submit", return_value=future) as submit:
+            api._enqueue_page_index(str(self.sample_pdf), 4, "Página 5")
+            api._enqueue_page_index(str(self.sample_pdf), 4, "Página 5")
+
+        submit.assert_called_once()
+        completion_callback = future.add_done_callback.call_args.args[0]
+        future.result.return_value = None
+        completion_callback(future)
+        self.assertNotIn((str(self.sample_pdf), 4), api._pending_page_indexes)
 
     def test_full_background_indexing_can_be_cancelled(self) -> None:
         api = self._api("background.db")
