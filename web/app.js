@@ -30,6 +30,7 @@ let declarativeEventsInitialized = false;
 
 const ALLOWED_DECLARATIVE_ACTIONS = new Set([
   "appLicense.copyMachineId", "appLicense.submitActivation",
+  "appLibrary.relocateDocument", "appLibrary.removeDocument",
   "appManual.close", "appManual.filterContent", "appManual.open", "appManual.printManual",
   "appManual.scrollToChapter", "appManual.toggleViewMode",
   "appSearch.clearInput", "appSearch.closeModal", "appSearch.onSearchInput", "appSearch.openModal",
@@ -44,15 +45,15 @@ const ALLOWED_DECLARATIVE_ACTIONS = new Set([
   "openQueuedPdf", "previewQueuedMarkdown", "removeFile", "requestStop", "resetOutputDirToDefault", "retryFailedPages",
   "selectProfile", "startConversion", "switchView", "toggleAdvancedOptions", "toggleAudioFeedback",
   "togglePause", "triggerFileSelect", "triggerSelectOutputDir",
-  "superPdf.addBookmark", "superPdf.chooseDocumentSwitchAction", "superPdf.clearPageAnnotations",
+  "superPdf.addBookmark", "superPdf.cancelIndexing", "superPdf.chooseDocumentSwitchAction", "superPdf.clearPageAnnotations",
   "superPdf.closeProtectModal", "superPdf.closeSnippetModal", "superPdf.closeUnlockModal",
   "superPdf.copySnippetImage", "superPdf.copySnippetText", "superPdf.deleteBookmark",
   "superPdf.goToPage", "superPdf.handleToolMainClick", "superPdf.nextPage", "superPdf.onHlWidthChange",
   "superPdf.onPenWidthChange", "superPdf.onSelectDocument", "superPdf.onTextSizeChange",
-  "superPdf.openFileDialog", "superPdf.openProtectModal", "superPdf.prevPage", "superPdf.printDocument",
+  "superPdf.openFileDialog", "superPdf.openProtectModal", "superPdf.pauseIndexing", "superPdf.prevPage", "superPdf.printDocument",
   "superPdf.rotatePage", "superPdf.saveAnnotations", "superPdf.setHighlightColor",
   "superPdf.setHighlightMode", "superPdf.setPenColor", "superPdf.setSidebarTab", "superPdf.setTextBoxStyle",
-  "superPdf.setTextColor", "superPdf.setTool", "superPdf.setZoom", "superPdf.submitProtectPdf",
+  "superPdf.setTextColor", "superPdf.setTool", "superPdf.setZoom", "superPdf.startFullIndexing", "superPdf.submitProtectPdf",
   "superPdf.submitUnlockPdf", "superPdf.submitUnprotectPdf", "superPdf.toggleBookmark",
   "superPdf.toggleFlyout", "superPdf.toggleTextBold", "superPdf.undoAnnotation", "superPdf.zoomIn",
   "superPdf.zoomOut",
@@ -84,7 +85,7 @@ function resolveDeclarativeAction(actionName) {
     };
     return actions[actionName] || null;
   }
-  const roots = { appLicense, appManual, appSearch, appSelection, appTerms, appTranslator, appTts, appWelcome, superPdf };
+  const roots = { appLicense, appLibrary, appManual, appSearch, appSelection, appTerms, appTranslator, appTts, appWelcome, superPdf };
   const owner = roots[parts[0]];
   const method = owner?.[parts[1]];
   return typeof method === "function" ? method.bind(owner) : null;
@@ -172,7 +173,7 @@ function onBridgeReady() {
     bridgeInitializationPromise = (async () => {
       try {
         const termsStatus = await window.pywebview.api.get_terms_acceptance_status();
-        if (termsStatus && termsStatus.accepted) {
+        if (termsStatus && termsStatus.accepted && !termsStatus.needs_reacceptance) {
           await initializeAfterTerms();
         } else {
           const modal = document.getElementById("termsModal");
@@ -878,13 +879,62 @@ class ProgressBarController {
   }
 }
 
-const progressController = new ProgressBarController();
+
+async function togglePause() {
+  if (!state.isConverting) return;
+  playBeep("click");
+  const res = await window.pywebview.api.toggle_pause();
+  state.isPaused = res.is_paused;
+  document.getElementById("btnPauseConvert").innerText = state.isPaused ? "Retomar" : "Pausar";
+}
+
+async function requestStop() {
+  if (!state.isConverting) return;
+  playBeep("click");
+  await window.pywebview.api.request_stop();
+  document.getElementById("btnStopConvert").disabled = true;
+  document.getElementById("btnPauseConvert").disabled = true;
+}
+
+function updateControlsState() {
+  document.getElementById("btnStartConvert").disabled = state.isConverting;
+  document.getElementById("btnPauseConvert").disabled = !state.isConverting;
+  document.getElementById("btnStopConvert").disabled = !state.isConverting;
+  document.getElementById("btnPauseConvert").innerText = "Pausar";
+}
+
+function startTimer() {
+  if (state.timerInterval) clearInterval(state.timerInterval);
+  state.timerInterval = setInterval(() => {
+    if (!state.isConverting) {
+      clearInterval(state.timerInterval);
+      return;
+    }
+    const elapsedSecs = Math.round((performance.now() - state.startTime) / 1000);
+    const mins = Math.floor(elapsedSecs / 60);
+    const secs = elapsedSecs % 60;
+    document.getElementById("statDuration").innerText = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+  }, 1000);
+}
+
+
+
+
+
 
 // --------------------------------------------------------------------------
 // Eventos Emitidos pelo Backend Python
 // --------------------------------------------------------------------------
 window.onBackendEvent = function (eventName, data) {
-  if (eventName === "status") {
+  if (eventName === "indexing_progress") {
+    if (window.superPdf) superPdf.onIndexingProgress(data);
+  } else if (eventName === "indexing_completed") {
+    if (window.superPdf) superPdf.onIndexingCompleted(data);
+  } else if (eventName === "indexing_cancelled") {
+    if (window.superPdf) superPdf.onIndexingCancelled(data);
+  } else if (eventName === "indexing_error") {
+    if (window.superPdf) superPdf.onIndexingError(data);
+  } else if (eventName === "status") {
     document.getElementById("statusMessage").innerText = data.message;
   } else if (eventName === "file_start") {
     const file = state.files.find((f) => f.file_id === data.file_id);
@@ -918,17 +968,6 @@ window.onBackendEvent = function (eventName, data) {
     progressController.onFileDone(completedCount, state.files.length);
     const pageWarning = data.failed_pages?.length ? `; páginas não recuperadas: ${data.failed_pages.join(", ")}` : "";
     appendLog("OK", `${data.name} -> ${data.markdown_path} (${data.asset_count} imgs, ${data.duration_formatted}${pageWarning})`);
-  } else if (eventName === "file_error") {
-    playBeep("error");
-    const file = state.files.find((f) => f.file_id === data.source_id);
-    if (file) {
-      file.status = "error";
-      file.error_message = data.error_message;
-    }
-    renderFileList();
-    updateMetrics();
-    
-    const completedCount = state.files.filter((f) => f.status === "success" || f.status === "error").length;
     progressController.onFileDone(completedCount, state.files.length);
     appendLog("ERRO", `${data.name}: ${data.error_message}`);
   } else if (eventName === "batch_done") {
@@ -1216,6 +1255,60 @@ document.addEventListener("keydown", (event) => {
 });
 
 // ==========================================================================
+// Cache LRU por Memória Estimada (Item 14)
+// ==========================================================================
+class LRUMemoryCache {
+  constructor(maxMemoryBytes = 120 * 1024 * 1024) { // 120 MB padrão
+    this.maxMemoryBytes = maxMemoryBytes;
+    this.currentMemoryBytes = 0;
+    this.cache = new Map();
+  }
+
+  get(key) {
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+    entry.lastAccessed = Date.now();
+    return entry.data;
+  }
+
+  set(key, data, width = 800, height = 1100) {
+    const memoryBytes = Math.round(width * height * 4);
+    if (this.cache.has(key)) {
+      const oldEntry = this.cache.get(key);
+      this.currentMemoryBytes -= oldEntry.memoryBytes;
+    }
+    this.cache.set(key, { data, memoryBytes, lastAccessed: Date.now() });
+    this.currentMemoryBytes += memoryBytes;
+    this.evict();
+  }
+
+  evict() {
+    while (this.currentMemoryBytes > this.maxMemoryBytes && this.cache.size > 1) {
+      let oldestKey = null;
+      let oldestTime = Infinity;
+      for (const [key, entry] of this.cache.entries()) {
+        if (entry.lastAccessed < oldestTime) {
+          oldestTime = entry.lastAccessed;
+          oldestKey = key;
+        }
+      }
+      if (oldestKey !== null) {
+        const entry = this.cache.get(oldestKey);
+        this.currentMemoryBytes -= entry.memoryBytes;
+        this.cache.delete(oldestKey);
+      } else {
+        break;
+      }
+    }
+  }
+
+  clear() {
+    this.cache.clear();
+    this.currentMemoryBytes = 0;
+  }
+}
+
+// ==========================================================================
 // Super PDF Controller (Leitor e Editor de PDF Integrado)
 // ==========================================================================
 class SuperPdfController {
@@ -1253,7 +1346,11 @@ class SuperPdfController {
     this.startPoint = null;
     this.activeSnippetData = null;
     this.pageCache = new Map();
+    this.lruCache = new LRUMemoryCache(120 * 1024 * 1024); // Limite de 120 MB em memória (Item 14)
     this.isRendering = false;
+    this.isIndexing = false;
+    this.indexingPercent = 0;
+    this.indexingPaused = false;
     this.pendingPasswordFile = null;
     this.pendingPasswordFileId = null;
     this.isEncrypted = false;
@@ -1667,9 +1764,16 @@ class SuperPdfController {
     this.totalPages = info.page_count;
     this.isEncrypted = Boolean(info.is_encrypted);
     this.bookmarks = info.bookmarks || [];
-    documentState.pages = info.pages || [];
     documentState.bookmarks = this.bookmarks;
     documentState.metadata = info.metadata || {};
+
+    // Solcita primeira faixa de 50 páginas por demanda (Item 12)
+    const rangeData = await window.pywebview.api.get_pdf_page_range(fileId, 0, 50, password);
+    if (rangeData && rangeData.ok && rangeData.pages) {
+      documentState.pages = rangeData.pages;
+    } else {
+      documentState.pages = [];
+    }
 
     // Restaura primeiro o rascunho da sessão; na primeira abertura, usa o histórico persistido.
     if (documentState.opened) {
@@ -1727,12 +1831,28 @@ class SuperPdfController {
     return requestId === this.loadRequestId;
   }
 
+  async ensurePageRange(pageIndex) {
+    if (!this.currentFileId) return;
+    const documentState = this.getOrCreateDocumentState(this.currentFileId, this.currentFilePath);
+    if (!documentState.pages) documentState.pages = [];
+    if (documentState.pages[pageIndex]) return;
+
+    const startPage = Math.floor(pageIndex / 50) * 50;
+    const rangeData = await window.pywebview.api.get_pdf_page_range(this.currentFileId, startPage, 50, this.currentPassword);
+    if (rangeData && rangeData.ok && rangeData.pages) {
+      rangeData.pages.forEach((p) => {
+        documentState.pages[p.page_number] = p;
+      });
+      this.renderThumbnails(documentState.pages);
+    }
+  }
+
   renderThumbnails(pages) {
     const container = document.getElementById("pdfThumbnailsContainer");
     const badge = document.getElementById("thumbCountBadge");
     if (badge) {
       if (pages && pages.length > 0) {
-        badge.innerText = pages.length;
+        badge.innerText = this.totalPages || pages.length;
         badge.classList.remove("hidden");
       } else {
         badge.innerText = "0";
@@ -1747,12 +1867,13 @@ class SuperPdfController {
     }
 
     container.innerHTML = pages
+      .filter(Boolean)
       .map(
-        (p, idx) => `
-      <div data-action="superPdf.goToPage(${idx})" id="thumb-card-${idx}" class="pdf-thumb-card p-2 rounded-xl border border-sky-100 bg-white shadow-xs flex items-center justify-between text-xs font-semibold cursor-pointer hover:border-sky-300 transition ${
-          idx === this.currentPage ? "active" : ""
+        (p) => `
+      <div data-action="superPdf.goToPage(${p.page_number})" id="thumb-card-${p.page_number}" class="pdf-thumb-card p-2 rounded-xl border border-sky-100 bg-white shadow-xs flex items-center justify-between text-xs font-semibold cursor-pointer hover:border-sky-300 transition ${
+          p.page_number === this.currentPage ? "active" : ""
         }">
-        <span class="text-slate-700">Pág. ${idx + 1}</span>
+        <span class="text-slate-700">Pág. ${p.page_number + 1}</span>
         <span class="text-[10px] font-mono text-slate-400">${Math.round(p.width)}x${Math.round(p.height)}</span>
       </div>
     `
@@ -1786,11 +1907,13 @@ class SuperPdfController {
 
     const pageInput = document.getElementById("pdfPageInput");
     if (pageInput) pageInput.value = this.currentPage + 1;
+
+    await this.ensurePageRange(requestedPage);
     this.updateActiveThumbnail();
 
     try {
       const cacheKey = `${requestedFileId}:${requestedPage}`;
-      let pageData = this.pageCache.get(cacheKey);
+      let pageData = this.lruCache.get(cacheKey) || this.pageCache.get(cacheKey);
 
       if (!pageData || forceReload) {
         pageData = await window.pywebview.api.render_page_hq(requestedFileId, requestedPage, 150);
@@ -1813,9 +1936,9 @@ class SuperPdfController {
           this.isRendering = false;
           return;
         }
+        this.lruCache.set(cacheKey, pageData, pageData.width || 800, pageData.height || 1100);
         this.pageCache.set(cacheKey, pageData);
       }
-
       this.pageWidth = pageData.width;
       this.pageHeight = pageData.height;
       this.pageRotation = pageData.rotation;
@@ -3647,12 +3770,70 @@ class GlobalSearchController {
       return;
     }
 
+// --------------------------------------------------------------------------
+// Gerenciador do Acervo e Arquivos Indisponíveis (Item 16)
+// --------------------------------------------------------------------------
+const appLibrary = {
+  async relocateDocument(oldFilePath) {
+    playBeep("click");
+    const selected = await window.pywebview.api.choose_files();
+    if (!selected || selected.length === 0) return;
+    const newPath = selected[0].path;
+    const res = await window.pywebview.api.relocate_library_document(oldFilePath, newPath);
+    if (res.ok) {
+      showToast("Localização do arquivo atualizada no acervo!", "success");
+      if (window.appSearch) appSearch.loadRecent();
+    } else {
+      showToast(`Falha ao relocalizar: ${res.error}`, "error");
+    }
+  },
+
+  async removeDocument(filePath) {
+    playBeep("click");
+    const res = await window.pywebview.api.remove_library_document(filePath);
+    if (res.ok) {
+      showToast("Documento removido do acervo.", "info");
+      if (window.appSearch) appSearch.loadRecent();
+    } else {
+      showToast(`Falha ao remover: ${res.error}`, "error");
+    }
+  }
+};
+window.appLibrary = appLibrary;
+
     this.visibleResults = filtered;
     this.resultsContainer.innerHTML = filtered
       .map((item, index) => {
         const isPdf = item.content_type === "pdf_page";
-        const badgeColor = isPdf ? "bg-rose-100 text-rose-800" : "bg-indigo-100 text-indigo-800";
-        const typeLabel = isPdf ? `PDF • Pág. ${item.page_number + 1}` : "Markdown";
+        const isUnavailable = item.availability_status === "temporarily_unavailable";
+        const badgeColor = isUnavailable
+          ? "bg-amber-100 text-amber-800"
+          : isPdf
+          ? "bg-rose-100 text-rose-800"
+          : "bg-indigo-100 text-indigo-800";
+        const typeLabel = isUnavailable
+          ? "Indisponível - Disco/Rede"
+          : isPdf
+          ? `PDF • Pág. ${item.page_number + 1}`
+          : "Markdown";
+
+        const actionButtons = isUnavailable
+          ? `
+            <div class="flex items-center gap-1.5 flex-shrink-0">
+              <button data-action="appLibrary.relocateDocument('${escapeHtml(item.display_path || item.file_path)}')" class="px-2 py-1 rounded-xl text-[10px] font-semibold bg-amber-600 hover:bg-amber-700 text-white transition flex items-center gap-1 shadow-xs">
+                Localizar novamente
+              </button>
+              <button data-action="appLibrary.removeDocument('${escapeHtml(item.display_path || item.file_path)}')" class="px-2 py-1 rounded-xl text-[10px] font-semibold bg-slate-200 hover:bg-rose-100 text-slate-700 hover:text-rose-700 transition">
+                Remover
+              </button>
+            </div>
+          `
+          : `
+            <button data-action="appSearch.openResult(${index})" class="px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-sky-600 hover:bg-sky-700 text-white transition flex items-center gap-1 shadow-xs flex-shrink-0">
+              <span>Abrir</span>
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+            </button>
+          `;
 
         return `
           <div class="p-3.5 rounded-2xl border border-sky-100 bg-white/90 hover:bg-sky-50/50 hover:border-sky-300 transition shadow-xs flex flex-col gap-1.5 group">
@@ -3665,10 +3846,7 @@ class GlobalSearchController {
                   ${escapeHtml(item.file_name)}
                 </span>
               </div>
-              <button data-action="appSearch.openResult(${index})" class="px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-sky-600 hover:bg-sky-700 text-white transition flex items-center gap-1 shadow-xs flex-shrink-0">
-                <span>Abrir</span>
-                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
-              </button>
+              ${actionButtons}
             </div>
             <div class="text-xs text-slate-600 font-sans leading-relaxed bg-slate-50/80 p-2 rounded-xl border border-slate-100">
               ${safeSearchSnippetHtml(item.snippet || "(Correspondência no título do documento)")}
@@ -3886,7 +4064,7 @@ class TermsManager {
     if (!this.checkbox.checked || !this.scrolledToBottom) return;
     try {
       playBeep("success");
-      const res = await window.pywebview.api.accept_terms("1.0");
+      const res = await window.pywebview.api.accept_terms();
       if (res && res.ok) {
         const modal = document.getElementById("termsModal");
         if (modal) modal.classList.add("hidden");

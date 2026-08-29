@@ -26,13 +26,13 @@ from deep_translator import GoogleTranslator
 from constants import (
     APP_NAME,
     APP_VERSION,
+    CURRENT_TERMS_VERSION,
     DEFAULT_MAX_CHUNK_CHARACTERS,
     DEFAULT_OUTPUT_DIR,
     MAX_PAGE_COUNT,
 )
 from converter import (
     PdfMarkdownConverter,
-    convert_worker,
     init_worker,
     validate_runtime_dependencies,
 )
@@ -42,8 +42,6 @@ from licensing import (
     LicenseRequiredError,
     is_software_activated,
     require_software_activation,
-)
-from licensing import (
     activate_software as lic_activate_software,
 )
 from markdown_utils import HeadingProfile, SplitMode, reserve_batch_output_paths
@@ -131,12 +129,13 @@ def _safe_close(doc: fitz.Document | None) -> None:
 
 
 def _save_doc_safely(doc: fitz.Document, file_path: Path, **save_kwargs: Any) -> None:
-    """Salva o documento PDF de forma segura, tratando criptografia e salvamento incremental."""
+    """Salva o documento PDF de forma segura, tratando criptografia, novas cópias e salvamento incremental."""
     target_path = file_path.resolve()
     temp_file: Path | None = None
     try:
-        # 1. Se for para DESPROTEGER ou PROTEGER, o doc.save() atômico é obrigatório
-        if "encryption" in save_kwargs:
+        doc_path = Path(doc.name).resolve() if (doc.name and Path(doc.name).is_file()) else None
+        # 1. Se for para alterar criptografia OU for gravação em novo arquivo ("Salvar como cópia"), usa doc.save()
+        if "encryption" in save_kwargs or (doc_path and doc_path != target_path):
             temp_file = target_path.with_name(f"{target_path.stem}.tmp_{int(time.time() * 1000)}.pdf")
             doc.save(str(temp_file), **save_kwargs)
             _safe_close(doc)
@@ -144,12 +143,11 @@ def _save_doc_safely(doc: fitz.Document, file_path: Path, **save_kwargs: Any) ->
             temp_file = None
             return
 
-        # 2. Para ANOTAÇÕES normais, Incremental Save é mais rápido e preserva assinaturas
+        # 2. Para edições no mesmo arquivo original, Incremental Save é mais rápido e preserva assinaturas
         try:
             doc.saveIncr()
             _safe_close(doc)
         except Exception:
-            # Fallback apenas se o arquivo não for criptografado
             if doc is not None and not doc.is_closed and not doc.is_encrypted:
                 temp_file = target_path.with_name(f"{target_path.stem}.tmp_{int(time.time() * 1000)}.pdf")
                 doc.save(str(temp_file))
@@ -179,6 +177,10 @@ class BridgeApi:
         self._library = LibraryDatabase()
         self._resources = AuthorizedResourceRegistry()
         self._default_output_resource = self._register_directory(DEFAULT_OUTPUT_DIR, "default_output")
+        self._indexing_cancel_events: dict[str, threading.Event] = {}
+        self._indexing_pause_events: dict[str, threading.Event] = {}
+        self._indexing_threads: dict[str, threading.Thread] = {}
+        self._indexing_lock = threading.Lock()
 
     def _register_pdf(self, path: str | Path, origin: str) -> dict[str, Any]:
         resolved = Path(path).expanduser().resolve()
@@ -293,18 +295,37 @@ class BridgeApi:
         }
 
     def get_terms_acceptance_status(self) -> dict[str, Any]:
-        """Verifica se o usuário já aceitou os termos de uso formalmente."""
+        """Verifica se o usuário já aceitou os termos de uso formalmente e se a versão vigente confere (Item 18)."""
         try:
-            return self._library.get_terms_status()
+            status = self._library.get_terms_status()
+            stored_version = status.get("terms_version") or "1.0"
+            needs_reacceptance = False
+            if status.get("accepted"):
+                if stored_version != CURRENT_TERMS_VERSION:
+                    needs_reacceptance = True
+
+            return {
+                "accepted": bool(status.get("accepted")) and not needs_reacceptance,
+                "accepted_at": status.get("accepted_at"),
+                "terms_version": stored_version,
+                "current_terms_version": CURRENT_TERMS_VERSION,
+                "needs_reacceptance": needs_reacceptance,
+            }
         except Exception as error:
             logger.error(f"Erro ao verificar status dos termos: {error}")
-            return {"accepted": False}
+            return {
+                "accepted": False,
+                "terms_version": None,
+                "current_terms_version": CURRENT_TERMS_VERSION,
+                "needs_reacceptance": True,
+            }
 
-    def accept_terms(self, terms_version: str = "1.0") -> dict[str, Any]:
-        """Registra o aceite formal e irrevogável dos termos de uso."""
+    def accept_terms(self, terms_version: str = CURRENT_TERMS_VERSION) -> dict[str, Any]:
+        """Registra o aceite formal e irrevogável dos termos de uso (Item 18)."""
         try:
-            self._library.save_terms_acceptance(terms_version)
-            return {"ok": True}
+            version_to_save = terms_version or CURRENT_TERMS_VERSION
+            self._library.save_terms_acceptance(version_to_save)
+            return {"ok": True, "terms_version": version_to_save}
         except Exception as error:
             logger.error(f"Erro ao registrar aceite dos termos: {error}")
             return {"ok": False, "error": str(error)}
@@ -640,7 +661,7 @@ class BridgeApi:
         return {"ok": True, "message": "Senha autenticada com sucesso."}
 
     def get_pdf_info(self, file_id: str, password: str | None = None) -> dict[str, Any]:
-        """Retorna metadados e lista de páginas do PDF para o Leitor."""
+        """Retorna metadados essenciais do PDF para abertura instantânea do Leitor (Fase 4)."""
         try:
             file_path = self._resolve_pdf(file_id)
         except ResourceAccessError as error:
@@ -651,21 +672,28 @@ class BridgeApi:
 
         try:
             path = Path(file_path).resolve()
-            pages = [
-                {
-                    "page_number": idx,
-                    "width": p.rect.width,
-                    "height": p.rect.height,
-                    "rotation": p.rotation,
-                }
-                for idx, p in enumerate(doc)
-            ]
             page_count = len(doc)
             is_encrypted = doc.is_encrypted
             metadata = doc.metadata or {}
 
+            # Indexa metadados O(1) no banco sem bloquear a abertura
+            self._library.index_document_metadata_only(path, page_count, path.stat().st_size if path.exists() else 0)
+
             session = self._library.get_session_state(str(path))
             bookmarks = self._library.get_bookmarks(str(path))
+
+            first_chunk_limit = min(page_count, 50)
+            initial_pages = []
+            for idx in range(first_chunk_limit):
+                p = doc[idx]
+                initial_pages.append(
+                    {
+                        "page_number": idx,
+                        "width": p.rect.width,
+                        "height": p.rect.height,
+                        "rotation": p.rotation,
+                    }
+                )
 
             info = {
                 "ok": True,
@@ -674,27 +702,59 @@ class BridgeApi:
                 "file_id": file_id,
                 "page_count": page_count,
                 "is_encrypted": is_encrypted,
-                "pages": pages,
                 "metadata": metadata,
                 "session_state": session,
                 "bookmarks": bookmarks,
+                "pages": initial_pages,
             }
-
-            # Executa indexação do PDF no banco em background de forma assíncrona
-            threading.Thread(
-                target=self._safe_index_pdf,
-                args=(str(path), password),
-                daemon=True,
-            ).start()
-
             return info
         except Exception as error:
             return {"ok": False, "error": f"Erro ao inspecionar PDF: {error}"}
         finally:
             _safe_close(doc)
 
+    def get_pdf_page_range(
+        self, file_id: str, start_page: int = 0, count: int = 50, password: str | None = None
+    ) -> dict[str, Any]:
+        """Retorna dimensões e rotação de uma faixa de páginas por solicitação (Item 12)."""
+        try:
+            file_path = self._resolve_pdf(file_id)
+        except ResourceAccessError as error:
+            return {"ok": False, "error": str(error)}
+        doc, error, needs_password = self._open_doc_with_auth(file_path, password)
+        if error or needs_password or doc is None:
+            return {"ok": False, "error": error or "PDF protegido.", "needs_password": needs_password}
+
+        try:
+            page_count = len(doc)
+            start_idx = max(0, start_page)
+            end_idx = min(page_count, start_idx + count)
+            pages = []
+            for idx in range(start_idx, end_idx):
+                p = doc[idx]
+                pages.append(
+                    {
+                        "page_number": idx,
+                        "width": p.rect.width,
+                        "height": p.rect.height,
+                        "rotation": p.rotation,
+                    }
+                )
+            return {
+                "ok": True,
+                "file_id": file_id,
+                "start_page": start_idx,
+                "count": len(pages),
+                "total_pages": page_count,
+                "pages": pages,
+            }
+        except Exception as error:
+            return {"ok": False, "error": f"Erro ao obter faixa de páginas: {error}"}
+        finally:
+            _safe_close(doc)
+
     def render_page_hq(self, file_id: str, page_number: int = 0, dpi: int = 150, password: str | None = None) -> dict[str, Any]:
-        """Renderiza uma página do PDF sob demanda em alta resolução em base64."""
+        """Renderiza uma página sob demanda e indexa incrementalmente no FTS5 (Fase 4)."""
         try:
             file_path = self._resolve_pdf(file_id)
         except ResourceAccessError as error:
@@ -713,10 +773,18 @@ class BridgeApi:
             img_b64 = base64.b64encode(pix.tobytes("png")).decode("utf-8")
             data_uri = f"data:image/png;base64,{img_b64}"
 
+            # Extrai texto e indexa a página visitada de forma incremental em background
+            page_text = page.get_text("text")
+            threading.Thread(
+                target=self._library.index_single_pdf_page,
+                args=(str(path), page_number, page_text),
+                daemon=True,
+            ).start()
+
             return {
                 "ok": True,
                 "image": data_uri,
-                "image_base64": data_uri,  # Dupla chave para compatibilidade com o frontend
+                "image_base64": data_uri,  # Dupla chave para compatibilidade (Item 14)
                 "width": page.rect.width,
                 "height": page.rect.height,
                 "pixel_width": pix.width,
@@ -733,18 +801,137 @@ class BridgeApi:
         finally:
             _safe_close(doc)
 
-    def rotate_pdf_page(self, file_id: str, page_number: int, degrees: int, password: str | None = None) -> dict[str, Any]:
-        """Gira uma página específica em incrementos de 90 graus e salva o PDF."""
+    def start_full_indexing(self, file_id: str, password: str | None = None) -> dict[str, Any]:
+        """Dispara a indexação completa em segundo plano com suporte a progresso, pausa e cancelamento (Item 13)."""
+        try:
+            file_path = self._resolve_pdf(file_id)
+        except ResourceAccessError as error:
+            return {"ok": False, "error": str(error)}
+
+        path_str = str(file_path.resolve())
+        with self._indexing_lock:
+            if path_str in self._indexing_threads and self._indexing_threads[path_str].is_alive():
+                return {"ok": True, "already_running": True, "message": "Indexação já em andamento."}
+
+            cancel_evt = threading.Event()
+            pause_evt = threading.Event()
+            pause_evt.set()
+
+            self._indexing_cancel_events[path_str] = cancel_evt
+            self._indexing_pause_events[path_str] = pause_evt
+
+            thread = threading.Thread(
+                target=self._run_full_indexing_worker,
+                args=(path_str, file_id, password, cancel_evt, pause_evt),
+                daemon=True,
+            )
+            self._indexing_threads[path_str] = thread
+            thread.start()
+
+        return {"ok": True, "started": True}
+
+    def _run_full_indexing_worker(
+        self,
+        file_path: str,
+        file_id: str,
+        password: str | None,
+        cancel_evt: threading.Event,
+        pause_evt: threading.Event,
+    ) -> None:
+        doc: fitz.Document | None = None
+        try:
+            doc, error, needs_pw = self._open_doc_with_auth(file_path, password)
+            if not doc or error or needs_pw:
+                self._emit("indexing_error", {"file_id": file_id, "error": error or "Erro ao abrir PDF."})
+                return
+
+            total_pages = len(doc)
+            for idx in range(total_pages):
+                if cancel_evt.is_set():
+                    self._emit("indexing_cancelled", {"file_id": file_id, "page": idx, "total": total_pages})
+                    return
+
+                while not pause_evt.wait(timeout=0.2):
+                    if cancel_evt.is_set():
+                        self._emit("indexing_cancelled", {"file_id": file_id, "page": idx, "total": total_pages})
+                        return
+
+                text = doc[idx].get_text("text")
+                self._library.index_single_pdf_page(file_path, idx, text)
+                percent = round(((idx + 1) / total_pages) * 100)
+                self._emit(
+                    "indexing_progress",
+                    {"file_id": file_id, "current_page": idx + 1, "total_pages": total_pages, "percent": percent},
+                )
+
+            self._library.index_pdf_document(file_path, doc)
+            self._emit("indexing_completed", {"file_id": file_id, "total_pages": total_pages})
+        except Exception as err:
+            self._emit("indexing_error", {"file_id": file_id, "error": str(err)})
+        finally:
+            _safe_close(doc)
+            with self._indexing_lock:
+                self._indexing_cancel_events.pop(file_path, None)
+                self._indexing_pause_events.pop(file_path, None)
+                self._indexing_threads.pop(file_path, None)
+
+    def pause_indexing(self, file_id: str) -> dict[str, Any]:
+        """Alterna o estado de pausa da indexação completa do documento."""
+        try:
+            file_path = str(self._resolve_pdf(file_id).resolve())
+        except ResourceAccessError as error:
+            return {"ok": False, "error": str(error)}
+
+        with self._indexing_lock:
+            pause_evt = self._indexing_pause_events.get(file_path)
+            if not pause_evt:
+                return {"ok": False, "error": "Nenhuma indexação ativa para este documento."}
+
+            if pause_evt.is_set():
+                pause_evt.clear()
+                return {"ok": True, "is_paused": True}
+
+            pause_evt.set()
+            return {"ok": True, "is_paused": False}
+
+    def cancel_indexing(self, file_id: str) -> dict[str, Any]:
+        """Cancela a indexação completa em segundo plano."""
+        try:
+            file_path = str(self._resolve_pdf(file_id).resolve())
+        except ResourceAccessError as error:
+            return {"ok": False, "error": str(error)}
+        with self._indexing_lock:
+            cancel_evt = self._indexing_cancel_events.get(file_path)
+            pause_evt = self._indexing_pause_events.get(file_path)
+            if cancel_evt:
+                cancel_evt.set()
+            if pause_evt:
+                pause_evt.set()
+
+        return {"ok": True, "cancelled": True}
+
+    def rotate_pdf_page(
+        self,
+        file_id: str,
+        page_number: int,
+        degrees: int,
+        password: str | None = None,
+        output_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Gira uma página específica em incrementos de 90 graus e salva no original ou como cópia (Item 19)."""
         try:
             file_path = self._resolve_pdf(file_id, "write")
         except ResourceAccessError as error:
             return {"ok": False, "error": str(error), "needs_password": False}
+
+        self.cancel_indexing(file_id)
         doc, error, needs_password = self._open_doc_with_auth(file_path, password)
         if error or needs_password or doc is None:
             return {"ok": False, "error": error or "PDF protegido.", "needs_password": needs_password}
 
         try:
             path = Path(file_path).resolve()
+            target_path = Path(output_path).resolve() if output_path else path
             if not (0 <= page_number < len(doc)):
                 return {"ok": False, "error": "Página inexistente."}
 
@@ -752,19 +939,31 @@ class BridgeApi:
             new_rotation = (page.rotation + degrees) % 360
             page.set_rotation(new_rotation)
 
-            _save_doc_safely(doc, path)
-            return {
+            _save_doc_safely(doc, target_path)
+            res = {
                 "ok": True,
                 "new_rotation": new_rotation,
                 "message": f"Página {page_number + 1} rotacionada para {new_rotation}°.",
+                "target_path": str(target_path),
+                "is_copy": target_path != path,
             }
+            if target_path != path:
+                new_pdf = self._register_pdf(target_path, "copy")
+                res["new_file_id"] = new_pdf["file_id"]
+            return res
         except Exception as error:
             return {"ok": False, "error": f"Erro ao rotacionar página: {error}"}
         finally:
             _safe_close(doc)
 
-    def protect_pdf(self, file_id: str, user_pw: str, owner_pw: str = "") -> dict[str, Any]:
-        """Aplica criptografia AES-256 no arquivo PDF com senhas de proteção."""
+    def protect_pdf(
+        self,
+        file_id: str,
+        user_pw: str,
+        owner_pw: str = "",
+        output_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Aplica criptografia AES-256 no arquivo PDF com senhas no original ou como cópia (Item 19)."""
         try:
             path = self._resolve_pdf(file_id, "write")
         except ResourceAccessError as error:
@@ -772,70 +971,88 @@ class BridgeApi:
         if not user_pw:
             return {"ok": False, "error": "A senha do usuário não pode ser vazia."}
 
+        self.cancel_indexing(file_id)
         doc, error, needs_password = self._open_doc_with_auth(path)
         if error or doc is None:
             return {"ok": False, "error": error or "Não foi possível abrir o PDF."}
 
         try:
+            target_path = Path(output_path).resolve() if output_path else path
             owner = owner_pw if owner_pw else user_pw
             perm = fitz.PDF_PERM_PRINT | fitz.PDF_PERM_COPY | fitz.PDF_PERM_ANNOTATE | fitz.PDF_PERM_ACCESSIBILITY
             _save_doc_safely(
                 doc,
-                path,
+                target_path,
                 encryption=fitz.PDF_ENCRYPT_AES_256,
                 user_pw=user_pw,
                 owner_pw=owner,
                 permissions=perm,
             )
-            self._pdf_passwords[str(path)] = user_pw
-            return {
+            self._pdf_passwords[str(target_path)] = user_pw
+            res = {
                 "ok": True,
                 "message": "PDF protegido com sucesso usando criptografia AES-256.",
+                "target_path": str(target_path),
+                "is_copy": target_path != path,
             }
+            if target_path != path:
+                new_pdf = self._register_pdf(target_path, "copy")
+                res["new_file_id"] = new_pdf["file_id"]
+            return res
         except Exception as error:
             return {"ok": False, "error": f"Erro ao proteger PDF: {error}"}
         finally:
             _safe_close(doc)
 
-    def unprotect_pdf(self, file_id: str, current_pw: str = "") -> dict[str, Any]:
-        """Remove a proteção por senha de um arquivo PDF, gravando-o descriptografado."""
+    def unprotect_pdf(self, file_id: str, current_pw: str = "", output_path: str | None = None) -> dict[str, Any]:
+        """Remove a proteção por senha de um PDF no original ou como cópia (Item 19)."""
         try:
             path = self._resolve_pdf(file_id, "write")
         except ResourceAccessError as error:
             return {"ok": False, "error": str(error)}
 
+        self.cancel_indexing(file_id)
         doc, error, needs_password = self._open_doc_with_auth(path, current_pw)
         if error or doc is None:
             return {"ok": False, "error": error or "Não foi possível abrir o PDF com a senha informada."}
 
         try:
+            target_path = Path(output_path).resolve() if output_path else path
             _save_doc_safely(
                 doc,
-                path,
+                target_path,
                 encryption=fitz.PDF_ENCRYPT_NONE,
             )
-            self._pdf_passwords.pop(str(path), None)
+            self._pdf_passwords.pop(str(target_path), None)
 
-            return {
+            res = {
                 "ok": True,
                 "message": "Proteção por senha removida com sucesso.",
+                "target_path": str(target_path),
+                "is_copy": target_path != path,
             }
+            if target_path != path:
+                new_pdf = self._register_pdf(target_path, "copy")
+                res["new_file_id"] = new_pdf["file_id"]
+            return res
         except Exception as error:
             return {"ok": False, "error": f"Erro ao remover senha do PDF: {error}"}
         finally:
             _safe_close(doc)
 
     def save_pdf_annotations(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Grava anotações nativas e caixas de texto estruturadas no arquivo PDF."""
+        """Grava anotações nativas no arquivo PDF original ou como cópia (Item 19)."""
         file_id = payload.get("file_id", "")
         password = payload.get("password")
         annotations = payload.get("annotations", [])
+        output_path = payload.get("output_path")
 
         try:
             file_path = self._resolve_pdf(str(file_id), "write")
         except ResourceAccessError as error:
             return {"ok": False, "error": str(error), "needs_password": False}
 
+        self.cancel_indexing(str(file_id))
         doc, error, needs_password = self._open_doc_with_auth(file_path, password)
         if error or needs_password or doc is None:
             return {"ok": False, "error": error or "PDF protegido por senha.", "needs_password": needs_password}
@@ -991,12 +1208,19 @@ class BridgeApi:
                             raise RuntimeError("O mecanismo de PDF não confirmou a inserção do texto.")
                         applied_count += 1
 
-            _save_doc_safely(doc, path)
-            return {
+            target_path = Path(output_path).resolve() if output_path else path
+            _save_doc_safely(doc, target_path)
+            res = {
                 "ok": True,
                 "saved_count": applied_count,
                 "message": f"{applied_count} anotação(ões) salva(s) com sucesso no PDF.",
+                "target_path": str(target_path),
+                "is_copy": target_path != path,
             }
+            if target_path != path:
+                new_pdf = self._register_pdf(target_path, "copy")
+                res["new_file_id"] = new_pdf["file_id"]
+            return res
         except Exception as error:
             return {"ok": False, "error": f"Erro ao salvar anotações: {error}"}
         finally:
@@ -1171,40 +1395,82 @@ class BridgeApi:
             raw_results = self._library.search(query, limit=50)
             results: list[dict[str, Any]] = []
             for item in raw_results:
-                try:
-                    enriched = dict(item)
-                    if item.get("content_type") == "markdown":
+                enriched = dict(item)
+                if item.get("content_type") == "markdown":
+                    try:
                         markdown = self._register_markdown(item.get("markdown_path", ""), "persisted_library")
                         enriched["resource_id"] = markdown["markdown_id"]
                         enriched["display_path"] = markdown["markdown_path"]
-                    else:
+                        enriched["availability_status"] = "available"
+                    except (OSError, ResourceAccessError):
+                        enriched["resource_id"] = None
+                        enriched["display_path"] = item.get("markdown_path", "")
+                        enriched["availability_status"] = "temporarily_unavailable"
+                else:
+                    try:
                         pdf = self._register_pdf(item["file_path"], "persisted_library")
                         enriched["resource_id"] = pdf["file_id"]
                         enriched["display_path"] = pdf["path"]
-                    results.append(enriched)
-                except (OSError, ResourceAccessError):
-                    continue
+                        enriched["availability_status"] = "available"
+                    except (OSError, ResourceAccessError):
+                        enriched["resource_id"] = None
+                        enriched["display_path"] = item["file_path"]
+                        enriched["availability_status"] = "temporarily_unavailable"
+                results.append(enriched)
             return {"ok": True, "query": query, "results": results, "total": len(results)}
         except Exception as error:
             logger.error(f"Erro na busca do acervo: {error}", exc_info=True)
             return {"ok": False, "error": f"Falha na busca: {error}", "results": []}
 
     def get_recent_library(self) -> dict[str, Any]:
-        """Retorna os documentos recentes do acervo."""
+        """Retorna os documentos recentes do acervo com status de disponibilidade (Item 16)."""
         try:
             documents: list[dict[str, Any]] = []
             for doc in self._library.get_recent_documents(limit=30):
+                enriched = dict(doc)
                 try:
-                    enriched = dict(doc)
                     pdf = self._register_pdf(doc["file_path"], "recent_reopen")
                     enriched["resource_id"] = pdf["file_id"]
                     enriched["display_path"] = pdf["path"]
-                    documents.append(enriched)
+                    enriched["availability_status"] = "available"
                 except (OSError, ResourceAccessError):
-                    continue
+                    enriched["resource_id"] = None
+                    enriched["display_path"] = doc["file_path"]
+                    enriched["availability_status"] = "temporarily_unavailable"
+                documents.append(enriched)
             return {"ok": True, "documents": documents}
         except Exception as error:
             return {"ok": False, "error": str(error), "documents": []}
+
+    def relocate_library_document(self, old_path_or_id: str, new_file_path: str) -> dict[str, Any]:
+        """Reconecta um documento ausente do acervo a um novo caminho físico (Item 16)."""
+        try:
+            try:
+                old_path = str(self._resolve_pdf(old_path_or_id).resolve())
+            except Exception:
+                old_path = str(Path(old_path_or_id).expanduser().resolve())
+
+            success = self._library.relocate_document(old_path, new_file_path)
+            if not success:
+                return {"ok": False, "error": "Novo arquivo não encontrado ou inválido."}
+
+            new_pdf = self._register_pdf(new_file_path, "relocated")
+            return {"ok": True, "file_id": new_pdf["file_id"], "new_path": new_pdf["path"]}
+        except Exception as error:
+            return {"ok": False, "error": str(error)}
+
+    def remove_library_document(self, file_id_or_path: str) -> dict[str, Any]:
+        """Marca um documento como removido do acervo pelo usuário sem excluir marcadores (Item 16)."""
+        try:
+            try:
+                file_path = str(self._resolve_pdf(file_id_or_path).resolve())
+            except Exception:
+                file_path = str(Path(file_id_or_path).expanduser().resolve())
+
+            success = self._library.remove_document_from_library(file_path)
+            return {"ok": success}
+        except Exception as error:
+            return {"ok": False, "error": str(error)}
 
     def save_reading_state(self, file_id: str, last_page: int, zoom: str = "1.0") -> dict[str, Any]:
         """Salva a última página lida e o zoom preferido no documento."""

@@ -192,6 +192,7 @@ async function run() {
       page_count: 2, pages: [], metadata: {},
       is_encrypted: false, bookmarks: [], session_state: { found: false },
     }),
+    get_pdf_page_range: async () => ({ ok: true, pages: [] }),
   } };
   const drafts = new api.SuperPdfController();
   drafts.renderCurrentPage = async () => {};
@@ -268,14 +269,17 @@ async function run() {
   const pendingPages = new Map();
   windowObject.pywebview.api.render_page_hq = (_filePath, pageNumber) => new Promise((resolve) => pendingPages.set(pageNumber, resolve));
   const renderRace = new api.SuperPdfController();
+  renderRace.ensurePageRange = async () => {};
   renderRace.currentFileId = idB;
   renderRace.currentFilePath = docB;
-  renderRace.activateDocumentState(idB, docB);
+  const docStateB = renderRace.activateDocumentState(idB, docB);
+  docStateB.pages = [{ page_number: 0, width: 111, height: 222 }, { page_number: 1, width: 222, height: 333 }];
   renderRace.totalPages = 2;
   renderRace.currentPage = 0;
   const firstRender = renderRace.renderCurrentPage();
   renderRace.currentPage = 1;
   const secondRender = renderRace.renderCurrentPage();
+  await new Promise((r) => setTimeout(r, 10));
   pendingPages.get(1)({ ok: true, width: 222, height: 333, rotation: 90, pixel_width: 20, pixel_height: 30, image: "page-1" });
   await secondRender;
   pendingPages.get(0)({ ok: true, width: 111, height: 222, rotation: 0, pixel_width: 10, pixel_height: 20, image: "page-0" });

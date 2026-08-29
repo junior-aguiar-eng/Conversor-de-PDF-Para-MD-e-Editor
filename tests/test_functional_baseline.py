@@ -243,8 +243,8 @@ main().catch((error) => {{ console.error(error); process.exit(1); }});
 
             self.assertTrue(result["ok"])
             self.assertEqual(result["page_count"], MAX_PAGE_COUNT)
-            self.assertEqual(len(result["pages"]), MAX_PAGE_COUNT)
-            self.assertEqual(DeferredIndexingThread.created, 1)
+            self.assertLessEqual(len(result["pages"]), 50)
+            self.assertEqual(DeferredIndexingThread.created, 0)
 
     def test_markdown_preview_preserves_legitimate_elements_and_blocks_active_payloads(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

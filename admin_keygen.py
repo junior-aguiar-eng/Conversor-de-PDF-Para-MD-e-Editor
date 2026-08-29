@@ -52,22 +52,32 @@ def load_private_key(private_key_path: Path) -> Ed25519PrivateKey:
     return loaded
 
 
-def generate_activation_key(machine_id: str, private_key: Ed25519PrivateKey) -> str:
-    """Assina um Machine ID e retorna um token ACT2 versionado."""
-    signature = private_key.sign(license_payload(machine_id))
+def generate_activation_key(machine_id: str, private_key: Ed25519PrivateKey, key_version: int = 2) -> str:
+    """Assina um Machine ID (NXJ- ou NXJ2-) e retorna um token ACT2 ou ACT3 versionado."""
+    mid = machine_id.strip().upper()
+    version = 3 if (key_version == 3 or mid.startswith("NXJ2-")) else 2
+    prefix = "ACT3-01-" if version == 3 else "ACT2-01-"
+    signature = private_key.sign(license_payload(mid, version=version))
     encoded = base64.b32encode(signature).decode("ascii").rstrip("=")
     grouped = "-".join(encoded[index : index + 8] for index in range(0, len(encoded), 8))
-    return f"ACT2-01-{grouped}"
+    return f"{prefix}{grouped}"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Emissor administrativo de licenças NexoJuris.")
-    parser.add_argument("machine_id", nargs="?", help="Machine ID do cliente (NXJ-XXXX-XXXX-XXXX-XXXX).")
+    parser.add_argument("machine_id", nargs="?", help="Machine ID do cliente (NXJ-XXXX-... ou NXJ2-XXXX-...).")
     parser.add_argument(
         "--private-key",
         type=Path,
         default=DEFAULT_PRIVATE_KEY_PATH,
         help=f"Chave privada Ed25519 (padrão: {DEFAULT_PRIVATE_KEY_PATH}).",
+    )
+    parser.add_argument(
+        "--key-version",
+        type=int,
+        choices=[2, 3],
+        default=3,
+        help="Versão da chave de ativação (2=ACT2/NXJ, 3=ACT3/NXJ2; padrão: 3).",
     )
     parser.add_argument(
         "--generate-keypair",
@@ -94,13 +104,13 @@ def main(argv: list[str] | None = None) -> None:
     if not machine_id:
         print("[Erro] Nenhum Machine ID foi informado.")
         raise SystemExit(1)
-    if not machine_id.startswith("NXJ-"):
-        print("[Erro] O Machine ID deve começar com 'NXJ-'.")
+    if not (machine_id.startswith("NXJ-") or machine_id.startswith("NXJ2-")):
+        print("[Erro] O Machine ID deve começar com 'NXJ-' ou 'NXJ2-'.")
         raise SystemExit(1)
 
     try:
         private_key = load_private_key(args.private_key)
-        activation_key = generate_activation_key(machine_id, private_key)
+        activation_key = generate_activation_key(machine_id, private_key, key_version=args.key_version)
     except (FileNotFoundError, OSError, TypeError, ValueError) as error:
         print(f"[Erro] {error}")
         raise SystemExit(1) from error

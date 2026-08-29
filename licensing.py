@@ -30,9 +30,12 @@ logger = logging.getLogger(__name__)
 _LICENSE_DB_PATH = application_root() / "data" / "nexojuris_acervo.db"
 _LICENSE_BACKUP_PATH = application_root() / "data" / "license.sig"
 _LICENSE_KEY_PREFIX = "ACT2-01-"
+_LICENSE_KEY_PREFIX_V3 = "ACT3-01-"
 _LICENSE_PAYLOAD_PREFIX = b"nexojuris-license:v2:"
+_LICENSE_PAYLOAD_PREFIX_V3 = b"nexojuris-license:v3:"
 _LICENSE_PUBLIC_KEY_B64 = "80WGyZ+9TwHmcKDPpjOncNZVVYgFHgNBl59aBK5Hpug="
 _LICENSE_KEY_PATTERN = re.compile(r"ACT2-01-(?:[A-Z2-7]{8}-){12}[A-Z2-7]{7}")
+_LICENSE_KEY_PATTERN_V3 = re.compile(r"ACT3-01-(?:[A-Z2-7]{8}-){12}[A-Z2-7]{7}")
 
 
 class LicenseRequiredError(PermissionError):
@@ -43,24 +46,34 @@ class LicenseRequiredError(PermissionError):
         super().__init__(f"Ativação necessária para converter arquivos. Código da máquina: {machine_id}.")
 
 
-def license_payload(machine_id: str) -> bytes:
+def license_payload(machine_id: str, version: int = 2) -> bytes:
     """Produz o payload canônico e versionado assinado pelo emissor administrativo."""
     normalized_id = machine_id.strip().upper()
+    if version == 3 or normalized_id.startswith("NXJ2-"):
+        return _LICENSE_PAYLOAD_PREFIX_V3 + normalized_id.encode("ascii")
     return _LICENSE_PAYLOAD_PREFIX + normalized_id.encode("ascii")
 
 
-def _decode_activation_signature(key: str) -> bytes | None:
+def _decode_activation_signature(key: str) -> tuple[bytes | None, int]:
     candidate = (key or "").strip().upper()
-    if _LICENSE_KEY_PATTERN.fullmatch(candidate) is None:
-        return None
+    prefix = ""
+    version = 2
+    if _LICENSE_KEY_PATTERN.fullmatch(candidate):
+        prefix = _LICENSE_KEY_PREFIX
+        version = 2
+    elif _LICENSE_KEY_PATTERN_V3.fullmatch(candidate):
+        prefix = _LICENSE_KEY_PREFIX_V3
+        version = 3
+    else:
+        return None, 2
 
-    encoded = candidate.removeprefix(_LICENSE_KEY_PREFIX).replace("-", "")
+    encoded = candidate.removeprefix(prefix).replace("-", "")
     padding = "=" * ((8 - len(encoded) % 8) % 8)
     try:
         signature = base64.b32decode(encoded + padding, casefold=False)
     except ValueError:
-        return None
-    return signature if len(signature) == 64 else None
+        return None, version
+    return (signature if len(signature) == 64 else None), version
 
 
 def _public_key() -> Ed25519PublicKey:
@@ -122,8 +135,8 @@ def _get_primary_mac_address() -> str:
         return "00:00:00:00:00:00"
 
 
-def get_machine_fingerprint() -> str:
-    """Calcula e retorna a impressão digital (Machine ID) formatada como NXJ-XXXX-XXXX-XXXX-XXXX."""
+def get_machine_fingerprint_v1() -> str:
+    """Calcula a impressão digital legada (v1) NXJ-XXXX-XXXX-XXXX-XXXX."""
     mb_uuid = _get_motherboard_uuid()
     mac_addr = _get_primary_mac_address()
     processor = platform.processor() or os.environ.get("PROCESSOR_IDENTIFIER", "CPU")
@@ -131,30 +144,40 @@ def get_machine_fingerprint() -> str:
 
     raw_seed = f"UUID:{mb_uuid}|MAC:{mac_addr}|CPU:{processor}|HOST:{comp_name}"
     digest = hashlib.sha256(raw_seed.encode("utf-8")).hexdigest().upper()
+    return f"NXJ-{digest[0:4]}-{digest[4:8]}-{digest[8:12]}-{digest[12:16]}"
 
-    # Formata os primeiros 16 caracteres em 4 blocos de 4 caracteres
-    chunk1 = digest[0:4]
-    chunk2 = digest[4:8]
-    chunk3 = digest[8:12]
-    chunk4 = digest[12:16]
 
-    return f"NXJ-{chunk1}-{chunk2}-{chunk3}-{chunk4}"
+def get_machine_fingerprint_v2() -> str:
+    """Calcula a nova impressão digital estável (v2) NXJ2-XXXX-XXXX-XXXX-XXXX (Item 17)."""
+    mb_uuid = _get_motherboard_uuid()
+    processor = platform.processor() or os.environ.get("PROCESSOR_IDENTIFIER", "CPU")
+
+    raw_seed = f"UUID:{mb_uuid}|CPU:{processor}|SYS:V2"
+    digest = hashlib.sha256(raw_seed.encode("utf-8")).hexdigest().upper()
+    return f"NXJ2-{digest[0:4]}-{digest[4:8]}-{digest[8:12]}-{digest[12:16]}"
+
+
+def get_machine_fingerprint(version: int = 2) -> str:
+    """Calcula e retorna a impressão digital (Machine ID) padrão da máquina."""
+    if version == 1:
+        return get_machine_fingerprint_v1()
+    return get_machine_fingerprint_v2()
 
 
 def verify_license_key(machine_id: str, key: str) -> bool:
-    """Valida uma assinatura Ed25519 vinculada ao Machine ID informado."""
+    """Valida uma assinatura Ed25519 vinculada ao Machine ID informado (suporta v1 e v2)."""
     if not machine_id or not key:
         return False
 
-    signature = _decode_activation_signature(key)
+    signature, version = _decode_activation_signature(key)
     if signature is None:
         return False
 
     try:
-        _public_key().verify(signature, license_payload(machine_id))
+        _public_key().verify(signature, license_payload(machine_id, version=version))
+        return True
     except (InvalidSignature, ValueError):
         return False
-    return True
 
 
 @contextmanager
@@ -250,21 +273,28 @@ def _save_license(machine_id: str, activation_key: str) -> bool:
 
 
 def is_software_activated() -> tuple[bool, str]:
-    """Verifica se a instalação atual do NexoJuris está licenciada para este hardware."""
-    current_machine_id = get_machine_fingerprint()
+    """Verifica se a instalação atual do NexoJuris está licenciada para este hardware.
+    Suporta licenças v1 e v2 sem invalidar ativações legítimas existentes (Item 17).
+    """
+    v2_id = get_machine_fingerprint(2)
+    v1_id = get_machine_fingerprint(1)
     stored_mid, stored_key = _get_stored_license()
 
     if not stored_mid or not stored_key:
-        return False, current_machine_id
+        return False, v2_id
 
-    # O machine_id gravado deve ser idêntico ao da máquina atual
-    if stored_mid != current_machine_id:
-        return False, current_machine_id
+    # 1. Valida com a licença gravada
+    if verify_license_key(stored_mid, stored_key):
+        if stored_mid in (v2_id, v1_id):
+            return True, v2_id
 
-    if verify_license_key(current_machine_id, stored_key):
-        return True, current_machine_id
+    # 2. Testar fallback contra v2_id e v1_id
+    if verify_license_key(v2_id, stored_key):
+        return True, v2_id
+    if verify_license_key(v1_id, stored_key):
+        return True, v2_id
 
-    return False, current_machine_id
+    return False, v2_id
 
 
 def require_software_activation() -> str:
@@ -276,36 +306,43 @@ def require_software_activation() -> str:
 
 
 def activate_software(activation_key: str) -> dict[str, Any]:
-    """Valida a chave de ativação para a máquina atual e armazena permanentemente."""
-    machine_id = get_machine_fingerprint()
+    """Valida a chave de ativação para a máquina atual (v2 ou v1) e armazena permanentemente."""
+    v2_id = get_machine_fingerprint_v2()
+    v1_id = get_machine_fingerprint_v1()
     clean_key = (activation_key or "").strip().upper()
 
     if not clean_key:
         return {
             "ok": False,
             "error": "A chave de ativação não pode estar vazia.",
-            "machine_id": machine_id,
+            "machine_id": v2_id,
         }
 
-    if not verify_license_key(machine_id, clean_key):
+    target_id = None
+    if verify_license_key(v2_id, clean_key):
+        target_id = v2_id
+    elif verify_license_key(v1_id, clean_key):
+        target_id = v1_id
+
+    if target_id is None:
         return {
             "ok": False,
             "error": "Chave de ativação inválida para este computador. Verifique o código e tente novamente.",
-            "machine_id": machine_id,
+            "machine_id": v2_id,
         }
 
-    success = _save_license(machine_id, clean_key)
+    success = _save_license(target_id, clean_key)
     if not success:
         return {
             "ok": False,
             "error": "Não foi possível gravar a ativação no disco. Verifique as permissões de gravação.",
-            "machine_id": machine_id,
+            "machine_id": v2_id,
         }
 
     return {
         "ok": True,
         "message": "NexoJuris ativado com sucesso! Acesso completo liberado.",
-        "machine_id": machine_id,
+        "machine_id": v2_id,
     }
 
 

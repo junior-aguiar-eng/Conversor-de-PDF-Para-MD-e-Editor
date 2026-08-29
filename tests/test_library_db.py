@@ -171,6 +171,7 @@ class WebApiLibraryTests(unittest.TestCase):
 
         get_res = self.api.get_reading_state(file_id)
         self.assertTrue(get_res["ok"])
+        self.assertTrue(get_res["ok"])
         self.assertEqual(get_res["state"]["last_page_read"], 2)
 
         bm_res = self.api.add_bookmark(file_id, 2, "Ponto Crítico")
@@ -187,7 +188,7 @@ class WebApiLibraryTests(unittest.TestCase):
         status0 = self.api.get_terms_acceptance_status()
         self.assertFalse(status0["accepted"])
 
-        accept_res = self.api.accept_terms("2.0")
+        accept_res = self.api.accept_terms()
         self.assertTrue(accept_res["ok"])
 
         status1 = self.api.get_terms_acceptance_status()

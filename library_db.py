@@ -85,9 +85,18 @@ class LibraryDatabase:
                     markdown_path TEXT DEFAULT '',
                     is_converted INTEGER DEFAULT 0,
                     last_accessed REAL DEFAULT 0,
-                    created_at REAL DEFAULT 0
+                    created_at REAL DEFAULT 0,
+                    availability_status TEXT DEFAULT 'available',
+                    status_updated_at REAL DEFAULT 0
                 )
             """)
+
+            # Migração graciosa para bancos legados sem colunas de disponibilidade
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+            if "availability_status" not in cols:
+                conn.execute("ALTER TABLE documents ADD COLUMN availability_status TEXT DEFAULT 'available'")
+            if "status_updated_at" not in cols:
+                conn.execute("ALTER TABLE documents ADD COLUMN status_updated_at REAL DEFAULT 0")
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS bookmarks (
@@ -125,6 +134,59 @@ class LibraryDatabase:
 
         self._execute_write(_do_init)
 
+    def index_document_metadata_only(self, file_path: str | Path, page_count: int, file_size: int = 0) -> None:
+        """Indexa metadados básicos do documento em tempo O(1) sem percorrer todas as páginas."""
+        path_str = str(Path(file_path).resolve())
+        file_name = Path(file_path).name
+        now = time.time()
+        if file_size <= 0:
+            try:
+                file_size = Path(file_path).stat().st_size
+            except OSError:
+                file_size = 0
+
+        def _do_index_meta(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                INSERT INTO documents (file_path, file_name, file_size, page_count, last_accessed, created_at, availability_status, status_updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'available', ?)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    file_name = excluded.file_name,
+                    file_size = CASE WHEN excluded.file_size > 0 THEN excluded.file_size ELSE documents.file_size END,
+                    page_count = excluded.page_count,
+                    last_accessed = excluded.last_accessed,
+                    availability_status = 'available',
+                    status_updated_at = excluded.status_updated_at
+                """,
+                (path_str, file_name, file_size, page_count, now, now, now),
+            )
+
+        self._execute_write(_do_index_meta)
+
+    def index_single_pdf_page(self, file_path: str | Path, page_number: int, text: str) -> None:
+        """Indexa incrementalmente o texto de uma página específica visualizada no leitor."""
+        path_str = str(Path(file_path).resolve())
+        file_name = Path(file_path).name
+        cleaned = text.strip()
+        if not cleaned:
+            cleaned = f"[Página {page_number + 1} - Imagem digitalizada]"
+        page_title = f"Página {page_number + 1}"
+
+        def _do_index_page(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "DELETE FROM doc_fts WHERE file_path = ? AND page_number = ? AND content_type = 'pdf_page'",
+                (path_str, str(page_number)),
+            )
+            conn.execute(
+                """
+                INSERT INTO doc_fts (file_path, file_name, page_number, content_type, content, title)
+                VALUES (?, ?, ?, 'pdf_page', ?, ?)
+                """,
+                (path_str, file_name, str(page_number), cleaned, page_title),
+            )
+
+        self._execute_write(_do_index_page)
+
     def index_pdf_document(self, file_path: str | Path, doc: fitz.Document) -> None:
         """Indexa todas as páginas do PDF no banco de dados e no índice FTS5."""
         path_str = str(Path(file_path).resolve())
@@ -139,18 +201,20 @@ class LibraryDatabase:
         page_count = len(doc)
 
         def _do_index(conn: sqlite3.Connection) -> None:
-            # 1. Atualiza metadados do documento
+            # 1. Atualiza metadados do documento (UPSERT preservando sessão existente)
             conn.execute(
                 """
-                INSERT INTO documents (file_path, file_name, file_size, page_count, last_accessed, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO documents (file_path, file_name, file_size, page_count, last_accessed, created_at, availability_status, status_updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'available', ?)
                 ON CONFLICT(file_path) DO UPDATE SET
                     file_name = excluded.file_name,
                     file_size = excluded.file_size,
                     page_count = excluded.page_count,
-                    last_accessed = excluded.last_accessed
+                    last_accessed = excluded.last_accessed,
+                    availability_status = 'available',
+                    status_updated_at = excluded.status_updated_at
                 """,
-                (path_str, file_name, file_size, page_count, now, now),
+                (path_str, file_name, file_size, page_count, now, now, now),
             )
 
             # 2. Limpa índice anterior de páginas deste PDF
@@ -183,14 +247,16 @@ class LibraryDatabase:
         def _do_index_md(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """
-                INSERT INTO documents (file_path, file_name, markdown_path, is_converted, last_accessed, created_at)
-                VALUES (?, ?, ?, 1, ?, ?)
+                INSERT INTO documents (file_path, file_name, markdown_path, is_converted, last_accessed, created_at, availability_status, status_updated_at)
+                VALUES (?, ?, ?, 1, ?, ?, 'available', ?)
                 ON CONFLICT(file_path) DO UPDATE SET
                     markdown_path = excluded.markdown_path,
                     is_converted = 1,
-                    last_accessed = excluded.last_accessed
+                    last_accessed = excluded.last_accessed,
+                    availability_status = 'available',
+                    status_updated_at = excluded.status_updated_at
                 """,
-                (path_str, file_name, md_path_str, now, now),
+                (path_str, file_name, md_path_str, now, now, now),
             )
 
             conn.execute("DELETE FROM doc_fts WHERE file_path = ? AND content_type = 'markdown'", (path_str,))
@@ -204,6 +270,73 @@ class LibraryDatabase:
             )
 
         self._execute_write(_do_index_md)
+
+    def check_and_update_document_availability(self, file_path: str) -> str:
+        """Verifica a existência física do arquivo e atualiza o status de disponibilidade sem apagar dados."""
+        path_str = str(Path(file_path).resolve())
+        exists = Path(path_str).is_file()
+        now = time.time()
+
+        def _do_check(conn: sqlite3.Connection) -> str:
+            cursor = conn.execute("SELECT availability_status FROM documents WHERE file_path = ?", (path_str,))
+            row = cursor.fetchone()
+            current_status = row["availability_status"] if row and "availability_status" in row.keys() else "available"
+
+            if exists:
+                new_status = "available"
+            else:
+                if current_status in {"user_removed", "moved"}:
+                    new_status = current_status
+                else:
+                    new_status = "temporarily_unavailable"
+
+            if row is not None and new_status != current_status:
+                conn.execute(
+                    "UPDATE documents SET availability_status = ?, status_updated_at = ? WHERE file_path = ?",
+                    (new_status, now, path_str),
+                )
+            return new_status
+
+        return self._execute_write(_do_check)
+
+    def relocate_document(self, old_file_path: str, new_file_path: str) -> bool:
+        """Atualiza o caminho do arquivo no acervo mantendo marcadores e histórico intactos."""
+        old_str = str(Path(old_file_path).resolve())
+        new_str = str(Path(new_file_path).resolve())
+        new_name = Path(new_file_path).name
+        now = time.time()
+
+        if not Path(new_str).is_file():
+            return False
+
+        def _do_relocate(conn: sqlite3.Connection) -> bool:
+            conn.execute(
+                """
+                UPDATE documents
+                SET file_path = ?, file_name = ?, availability_status = 'available', status_updated_at = ?, last_accessed = ?
+                WHERE file_path = ?
+                """,
+                (new_str, new_name, now, now, old_str),
+            )
+            conn.execute("UPDATE bookmarks SET file_path = ? WHERE file_path = ?", (new_str, old_str))
+            conn.execute("UPDATE doc_fts SET file_path = ?, file_name = ? WHERE file_path = ?", (new_str, new_name, old_str))
+            return True
+
+        return bool(self._execute_write(_do_relocate))
+
+    def remove_document_from_library(self, file_path: str) -> bool:
+        """Marca o documento como 'user_removed' no acervo sem excluir histórico ou marcadores."""
+        path_str = str(Path(file_path).resolve())
+        now = time.time()
+
+        def _do_remove(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute(
+                "UPDATE documents SET availability_status = 'user_removed', status_updated_at = ? WHERE file_path = ?",
+                (now, path_str),
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._execute_write(_do_remove))
 
     def search(self, query: str, limit: int = 40) -> list[dict[str, Any]]:
         """Executa busca textual rápida no índice FTS5 com snippets e ranqueamento BM25."""
@@ -231,11 +364,12 @@ class LibraryDatabase:
                 doc_fts.content_type,
                 doc_fts.title,
                 d.markdown_path,
+                d.availability_status,
                 snippet(doc_fts, 4, '{snip_open_marker}', '{snip_close_marker}', '...', 22) AS match_snippet,
                 bm25(doc_fts) AS rank
             FROM doc_fts
             LEFT JOIN documents AS d ON d.file_path = doc_fts.file_path
-            WHERE doc_fts MATCH ?
+            WHERE doc_fts MATCH ? AND (d.availability_status IS NULL OR d.availability_status != 'user_removed')
             ORDER BY rank
             LIMIT ?
         """
@@ -254,9 +388,15 @@ class LibraryDatabase:
             for row in rows:
                 safe_snippet = escape(str(row["match_snippet"] or ""), quote=True)
                 safe_snippet = safe_snippet.replace(snip_open_marker, snip_open_html).replace(snip_close_marker, "</mark>")
+                raw_path = row["file_path"]
+                exists = Path(raw_path).is_file()
+                status = row["availability_status"] or ("available" if exists else "temporarily_unavailable")
+                if not exists and status == "available":
+                    status = "temporarily_unavailable"
+
                 results.append(
                     {
-                        "file_path": row["file_path"],
+                        "file_path": raw_path,
                         "file_name": row["file_name"],
                         "page_number": int(row["page_number"]),
                         "content_type": row["content_type"],
@@ -264,23 +404,28 @@ class LibraryDatabase:
                         "title": row["title"],
                         "snippet": safe_snippet,
                         "rank": float(row["rank"]),
+                        "availability_status": status,
                     }
                 )
             return results
 
     def save_session_state(self, file_path: str, last_page: int, zoom: str = "1.0") -> None:
-        """Salva a última página lida e o zoom preferido do documento."""
+        """Salva a última página lida e o zoom preferido do documento via UPSERT."""
         path_str = str(Path(file_path).resolve())
+        file_name = Path(file_path).name
         now = time.time()
 
         def _do_save_session(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """
-                UPDATE documents
-                SET last_page_read = ?, preferred_zoom = ?, last_accessed = ?
-                WHERE file_path = ?
+                INSERT INTO documents (file_path, file_name, last_page_read, preferred_zoom, last_accessed, created_at, availability_status, status_updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'available', ?)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    last_page_read = excluded.last_page_read,
+                    preferred_zoom = excluded.preferred_zoom,
+                    last_accessed = excluded.last_accessed
                 """,
-                (last_page, str(zoom), now, path_str),
+                (path_str, file_name, last_page, str(zoom), now, now, now),
             )
 
         self._execute_write(_do_save_session)
@@ -290,7 +435,7 @@ class LibraryDatabase:
         path_str = str(Path(file_path).resolve())
         with _DB_LOCK, self._connection() as conn:
             cursor = conn.execute(
-                "SELECT last_page_read, preferred_zoom, markdown_path FROM documents WHERE file_path = ?",
+                "SELECT last_page_read, preferred_zoom, markdown_path, availability_status FROM documents WHERE file_path = ?",
                 (path_str,),
             )
             row = cursor.fetchone()
@@ -300,8 +445,9 @@ class LibraryDatabase:
                     "last_page_read": row["last_page_read"],
                     "preferred_zoom": row["preferred_zoom"],
                     "markdown_path": row["markdown_path"],
+                    "availability_status": row["availability_status"] or "available",
                 }
-            return {"found": False, "last_page_read": 0, "preferred_zoom": "1.0", "markdown_path": ""}
+            return {"found": False, "last_page_read": 0, "preferred_zoom": "1.0", "markdown_path": "", "availability_status": "available"}
 
     def add_bookmark(self, file_path: str, page_number: int, title: str = "") -> dict[str, Any]:
         """Adiciona um marcador de página."""
@@ -369,41 +515,55 @@ class LibraryDatabase:
         return bool(self._execute_write(_do_del_bm))
 
     def get_recent_documents(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Retorna os documentos acessados recentemente no acervo."""
+        """Retorna os documentos acessados recentemente no acervo com status de disponibilidade."""
         with _DB_LOCK, self._connection() as conn:
             cursor = conn.execute(
                 """
                 SELECT file_path, file_name, file_size, page_count, last_page_read,
-                       preferred_zoom, markdown_path, is_converted, last_accessed
+                       preferred_zoom, markdown_path, is_converted, last_accessed, availability_status
                 FROM documents
+                WHERE availability_status IS NULL OR availability_status != 'user_removed'
                 ORDER BY last_accessed DESC
                 LIMIT ?
                 """,
                 (limit,),
             )
             rows = cursor.fetchall()
-            return [
-                {
-                    "file_path": row["file_path"],
-                    "file_name": row["file_name"],
-                    "file_size": row["file_size"],
-                    "page_count": row["page_count"],
-                    "last_page_read": row["last_page_read"],
-                    "preferred_zoom": row["preferred_zoom"],
-                    "markdown_path": row["markdown_path"],
-                    "is_converted": bool(row["is_converted"]),
-                    "last_accessed": row["last_accessed"],
-                }
-                for row in rows
-            ]
+            docs = []
+            for row in rows:
+                raw_path = row["file_path"]
+                exists = Path(raw_path).is_file()
+                status = row["availability_status"] or ("available" if exists else "temporarily_unavailable")
+                if not exists and status == "available":
+                    status = "temporarily_unavailable"
+
+                docs.append(
+                    {
+                        "file_path": raw_path,
+                        "file_name": row["file_name"],
+                        "file_size": row["file_size"],
+                        "page_count": row["page_count"],
+                        "last_page_read": row["last_page_read"],
+                        "preferred_zoom": row["preferred_zoom"],
+                        "markdown_path": row["markdown_path"],
+                        "is_converted": bool(row["is_converted"]),
+                        "last_accessed": row["last_accessed"],
+                        "availability_status": status,
+                    }
+                )
+            return docs
 
     def get_terms_status(self) -> dict[str, Any]:
-        """Verifica se o usuário já aceitou os termos de uso formalmente."""
+        """Verifica se o usuário já aceitou os termos de uso formalmente com sua versão (Item 18)."""
         with _DB_LOCK, self._connection() as conn:
-            row = conn.execute("SELECT accepted, accepted_at FROM app_agreements WHERE id = 1").fetchone()
+            row = conn.execute("SELECT accepted, accepted_at, terms_version FROM app_agreements WHERE id = 1").fetchone()
             if row and row["accepted"] == 1:
-                return {"accepted": True, "accepted_at": row["accepted_at"]}
-        return {"accepted": False}
+                return {
+                    "accepted": True,
+                    "accepted_at": row["accepted_at"],
+                    "terms_version": row["terms_version"] or "1.0",
+                }
+        return {"accepted": False, "terms_version": None}
 
     def save_terms_acceptance(self, terms_version: str = "1.0") -> None:
         """Registra o aceite formal e irrevogável dos termos de uso."""

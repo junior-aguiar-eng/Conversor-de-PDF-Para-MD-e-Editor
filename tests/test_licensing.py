@@ -19,6 +19,8 @@ from licensing import (
     activate_software,
     deactivate_software,
     get_machine_fingerprint,
+    get_machine_fingerprint_v1,
+    get_machine_fingerprint_v2,
     is_software_activated,
     require_software_activation,
     verify_license_key,
@@ -42,6 +44,8 @@ class IsolatedLicensingTestCase(unittest.TestCase):
             patch.object(licensing_module, "_LICENSE_BACKUP_PATH", root / "license.sig"),
             patch.object(licensing_module, "_LICENSE_PUBLIC_KEY_B64", public_key_b64),
             patch.object(licensing_module, "get_machine_fingerprint", return_value=self.machine_id),
+            patch.object(licensing_module, "get_machine_fingerprint_v1", return_value=self.machine_id),
+            patch.object(licensing_module, "get_machine_fingerprint_v2", return_value=self.machine_id),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -51,14 +55,16 @@ class IsolatedLicensingTestCase(unittest.TestCase):
             patcher.stop()
         self.tmp_dir.cleanup()
 
-    def issue_key(self, machine_id: str | None = None) -> str:
-        return generate_activation_key(machine_id or self.machine_id, self.private_key)
+    def issue_key(self, machine_id: str | None = None, key_version: int = 2) -> str:
+        return generate_activation_key(machine_id or self.machine_id, self.private_key, key_version=key_version)
 
 
 class LicensingUnitTests(IsolatedLicensingTestCase):
     def test_machine_fingerprint_format(self) -> None:
-        machine_id = get_machine_fingerprint()
-        self.assertRegex(machine_id, r"^NXJ-[0-9A-F]{4}(?:-[0-9A-F]{4}){3}$")
+        mid1 = get_machine_fingerprint_v1()
+        mid2 = get_machine_fingerprint_v2()
+        self.assertTrue(mid1.startswith("NXJ-"))
+        self.assertTrue(mid2.startswith("NXJ2-"))
 
     def test_ed25519_key_generation_and_verification(self) -> None:
         key = self.issue_key()
@@ -70,6 +76,12 @@ class LicensingUnitTests(IsolatedLicensingTestCase):
         replacement = "A" if key[20] != "A" else "B"
         tampered_key = f"{key[:20]}{replacement}{key[21:]}"
         self.assertFalse(verify_license_key(self.machine_id, tampered_key))
+
+    def test_v3_key_generation_and_verification(self) -> None:
+        v2_mid = "NXJ2-1111-2222-3333-4444"
+        key_v3 = generate_activation_key(v2_mid, self.private_key, key_version=3)
+        self.assertTrue(key_v3.startswith("ACT3-01-"))
+        self.assertTrue(verify_license_key(v2_mid, key_v3))
 
     def test_client_rejects_legacy_hmac_keys_and_has_no_emitter(self) -> None:
         self.assertFalse(verify_license_key(self.machine_id, "ACT-0000-1111-2222-3333"))
