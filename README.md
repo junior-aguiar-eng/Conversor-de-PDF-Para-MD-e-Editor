@@ -37,10 +37,7 @@ Para reconstruir o ambiente e remover dependências antigas, com o aplicativo fe
 
 ## Release Windows
 
-Para criar a versão executável autônoma em pasta, execute `.\build_release.ps1`. O script tenta nesta ordem:
-
-1. Reutilizar o `PyInstaller` já instalado na `.venv`, se existir.
-2. Pedir ao `uv` para executar o `PyInstaller` junto das dependências travadas do projeto.
+Para criar a versão executável autônoma em pasta, execute `.\build_release.ps1`. Esse é o fluxo oficial: ele chama o wrapper compatível `build_app.py`, reutiliza a implementação única em `build_support.py` e executa o PyInstaller fixado pelo lock com `uv --frozen`. O comando funciona mesmo quando chamado a partir de outro diretório.
 
 O resultado fica em `release/dist/NexoJuris Conversor/`. O executável principal fica em `release/dist/NexoJuris Conversor/NexoJuris Conversor.exe`.
 
@@ -55,6 +52,8 @@ Depois de gerar a release, execute `.\criar_atalho_envio_rapido.ps1` para adicio
 - **Modalidades de Salvamento de Edição**: Funções de edição de PDF (rotação de páginas, gravação de anotações e post-its nativos, e aplicação/remoção de proteção AES-256) oferecem duas opções de destino:
   - **Salvar no original**: Sobrescreve o arquivo original com substituição atômica e preserva a estrutura incremental quando tecnicamente aplicável. Assinaturas digitais devem ser revalidadas após qualquer alteração.
   - **Salvar como cópia**: Grava as edições em um novo PDF escolhido por diálogo nativo, autorizado por identificador opaco, e o registra automaticamente no acervo de recursos do aplicativo.
+- **Limites Defensivos e Serviços Online**: Renderização, recortes e edições possuem orçamentos backend superiores aos controles da UI. Tradução e TTS longos são processados em blocos, sem truncamento silencioso. O contexto de áudio dos bipes é reutilizado e suspenso quando ocioso, permanecendo separado do player TTS.
+- **Build e Compatibilidade Administrativa**: O build possui implementação única com comandos históricos preservados. Chaves administrativas PEM podem ser criptografadas opcionalmente, sem invalidar PEMs ou licenças existentes.
 
 ## Observações
 

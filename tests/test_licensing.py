@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import app as app_module
 import licensing as licensing_module
-from admin_keygen import generate_activation_key, load_private_key
+from admin_keygen import generate_activation_key, generate_keypair, load_private_key
 from licensing import (
     LicenseRequiredError,
     activate_software,
@@ -131,6 +131,21 @@ class LicensingUnitTests(IsolatedLicensingTestCase):
         )
         loaded_key = load_private_key(private_path)
         self.assertTrue(verify_license_key(self.machine_id, generate_activation_key(self.machine_id, loaded_key)))
+
+    def test_admin_encrypted_pem_is_optional_and_legacy_pem_remains_readable(self) -> None:
+        encrypted_path = Path(self.tmp_dir.name) / "admin-encrypted.pem"
+        encrypted_public_key = generate_keypair(encrypted_path, password="senha forte de teste")
+        self.assertIn(b"ENCRYPTED PRIVATE KEY", encrypted_path.read_bytes())
+        with self.assertRaises((TypeError, ValueError)):
+            load_private_key(encrypted_path)
+        encrypted_key = load_private_key(encrypted_path, password="senha forte de teste")
+        with patch.object(licensing_module, "_LICENSE_PUBLIC_KEY_B64", encrypted_public_key):
+            self.assertTrue(verify_license_key(self.machine_id, generate_activation_key(self.machine_id, encrypted_key)))
+
+        legacy_path = Path(self.tmp_dir.name) / "admin-legacy.pem"
+        generate_keypair(legacy_path)
+        self.assertNotIn(b"ENCRYPTED PRIVATE KEY", legacy_path.read_bytes())
+        self.assertIsInstance(load_private_key(legacy_path), Ed25519PrivateKey)
 
 
 class WebApiLicensingBridgeTests(IsolatedLicensingTestCase):

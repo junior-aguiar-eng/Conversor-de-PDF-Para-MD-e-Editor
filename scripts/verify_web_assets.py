@@ -36,6 +36,22 @@ def verify() -> None:
         raise RuntimeError("Handler inline encontrado na interface.")
     if "fonts.googleapis.com" in style:
         raise RuntimeError("Fonte remota encontrada na folha de estilos.")
+    expected_fonts = {
+        "Plus Jakarta Sans": "200 800",
+        "Inter": "100 900",
+        "JetBrains Mono": "100 800",
+        "Cinzel": "400 900",
+    }
+    for family, weight in expected_fonts.items():
+        declarations = re.findall(
+            rf"@font-face\s*\{{[^}}]*font-family:\s*['\"]{re.escape(family)}['\"][^}}]*\}}",
+            style,
+            flags=re.DOTALL,
+        )
+        if len(declarations) != 1:
+            raise RuntimeError(f"A fonte {family} deve ser declarada exatamente uma vez.")
+        if not re.search(rf"font-weight:\s*{re.escape(weight)}\s*;", declarations[0]):
+            raise RuntimeError(f"A faixa de pesos da fonte {family} foi alterada.")
 
 
 if __name__ == "__main__":

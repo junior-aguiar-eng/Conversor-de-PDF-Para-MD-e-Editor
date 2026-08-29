@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -30,7 +31,23 @@ from constants import (
     CURRENT_TERMS_VERSION,
     DEFAULT_MAX_CHUNK_CHARACTERS,
     DEFAULT_OUTPUT_DIR,
+    MAX_ANNOTATION_FONT_SIZE,
+    MAX_ANNOTATION_TEXT_CHARACTERS,
+    MAX_ANNOTATIONS_PER_OPERATION,
     MAX_PAGE_COUNT,
+    MAX_PDF_COORDINATE,
+    MAX_POINTS_PER_STROKE,
+    MAX_RENDER_DPI,
+    MAX_RENDER_PIXEL_AREA,
+    MAX_SNIPPET_AREA_POINTS,
+    MAX_STROKE_POINTS_PER_OPERATION,
+    MAX_STROKE_WIDTH,
+    MAX_STROKES_PER_ANNOTATION,
+    MAX_TRANSLATION_CHARACTERS,
+    MAX_TTS_CHARACTERS,
+    MIN_RENDER_DPI,
+    TRANSLATION_CHUNK_CHARACTERS,
+    TTS_CHUNK_CHARACTERS,
 )
 from converter import (
     PdfMarkdownConverter,
@@ -56,6 +73,31 @@ logger = logging.getLogger(__name__)
 MAX_PARALLEL_WORKERS = 4
 MIN_CHUNK_CHARACTERS = 1_000
 
+ANNOTATION_TYPES = {
+    "ink",
+    "drawing",
+    "caneta",
+    "highlight_pen",
+    "caneta_marca_texto",
+    "pincel_marca_texto",
+    "highlight",
+    "highlight_block",
+    "marca_texto",
+    "marca-texto",
+    "text",
+    "freetext",
+    "texto",
+}
+STROKE_ANNOTATION_TYPES = {
+    "ink",
+    "drawing",
+    "caneta",
+    "highlight_pen",
+    "caneta_marca_texto",
+    "pincel_marca_texto",
+}
+TEXT_ANNOTATION_TYPES = {"text", "freetext", "texto"}
+
 
 def format_file_size(size_bytes: int) -> str:
     if size_bytes < 1024:
@@ -63,6 +105,196 @@ def format_file_size(size_bytes: int) -> str:
     if size_bytes < 1024 * 1024:
         return f"{size_bytes / 1024:.1f} KB"
     return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
+def _finite_number(value: Any, label: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{label} deve ser numérico.") from error
+    if not math.isfinite(number):
+        raise ValueError(f"{label} deve ser um número finito.")
+    return number
+
+
+def _validated_dpi(value: Any) -> int:
+    dpi = _finite_number(value, "DPI")
+    if not dpi.is_integer() or not (MIN_RENDER_DPI <= dpi <= MAX_RENDER_DPI):
+        raise ValueError(f"DPI deve estar entre {MIN_RENDER_DPI} e {MAX_RENDER_DPI}.")
+    return int(dpi)
+
+
+def _validate_pixel_budget(rect: fitz.Rect, dpi: int) -> None:
+    estimated_pixels = (rect.width * dpi / 72.0) * (rect.height * dpi / 72.0)
+    if estimated_pixels > MAX_RENDER_PIXEL_AREA:
+        raise ValueError(
+            f"A renderização excede o limite de {MAX_RENDER_PIXEL_AREA:,} pixels.".replace(",", ".")
+        )
+
+
+def _validated_clip_rect(raw_rect: Any, page_rect: fitz.Rect) -> fitz.Rect:
+    if not isinstance(raw_rect, (list, tuple)) or len(raw_rect) != 4:
+        raise ValueError("A área de recorte deve conter exatamente quatro coordenadas.")
+    coordinates = [_finite_number(value, "Coordenada do recorte") for value in raw_rect]
+    if any(abs(value) > MAX_PDF_COORDINATE for value in coordinates):
+        raise ValueError(f"Coordenadas do recorte excedem o limite de {MAX_PDF_COORDINATE} pontos.")
+    x0, y0, x1, y1 = coordinates
+    normalized = fitz.Rect(min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+    clipped = normalized & page_rect
+    if clipped.is_empty or clipped.width <= 0 or clipped.height <= 0:
+        raise ValueError("A área de recorte não intersecta a página.")
+    if clipped.width * clipped.height > MAX_SNIPPET_AREA_POINTS:
+        raise ValueError(
+            f"A área de recorte excede o limite de {MAX_SNIPPET_AREA_POINTS:,} pontos quadrados.".replace(",", ".")
+        )
+    return clipped
+
+
+def _split_text_chunks(text: str, max_characters: int) -> list[str]:
+    """Divide texto sem descartar caracteres, preferindo limites de parágrafo e espaço."""
+    if len(text) <= max_characters:
+        return [text]
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = min(start + max_characters, len(text))
+        if end < len(text):
+            paragraph_break = text.rfind("\n", start + 1, end + 1)
+            space_break = text.rfind(" ", start + 1, end + 1)
+            split_at = max(paragraph_break, space_break)
+            if split_at > start:
+                end = split_at + 1
+        chunks.append(text[start:end])
+        start = end
+    return chunks
+
+
+def _split_translation_chunks(text: str, max_characters: int) -> list[tuple[str, str]]:
+    """Separa conteúdo traduzível e preserva explicitamente o espaço entre blocos."""
+    chunks: list[tuple[str, str]] = []
+    start = 0
+    while start < len(text):
+        end = min(start + max_characters, len(text))
+        separator = ""
+        if end < len(text):
+            paragraph_break = text.rfind("\n", start + 1, end + 1)
+            space_break = text.rfind(" ", start + 1, end + 1)
+            split_at = max(paragraph_break, space_break)
+            if split_at > start:
+                end = split_at
+                separator_end = end
+                while separator_end < len(text) and text[separator_end].isspace():
+                    separator_end += 1
+                separator = text[end:separator_end]
+                chunks.append((text[start:end], separator))
+                start = separator_end
+                continue
+        chunks.append((text[start:end], separator))
+        start = end
+    return chunks
+
+
+def _validate_page_point(x: Any, y: Any, page_rect: fitz.Rect, label: str) -> tuple[float, float]:
+    point_x = _finite_number(x, f"Coordenada X de {label}")
+    point_y = _finite_number(y, f"Coordenada Y de {label}")
+    if abs(point_x) > MAX_PDF_COORDINATE or abs(point_y) > MAX_PDF_COORDINATE:
+        raise ValueError(f"Coordenadas de {label} excedem o limite de {MAX_PDF_COORDINATE} pontos.")
+    tolerance = 1.0
+    if not (
+        page_rect.x0 - tolerance <= point_x <= page_rect.x1 + tolerance
+        and page_rect.y0 - tolerance <= point_y <= page_rect.y1 + tolerance
+    ):
+        raise ValueError(f"Coordenadas de {label} estão fora da página.")
+    return point_x, point_y
+
+
+def _validate_annotation_payload(annotations: Any, doc: fitz.Document) -> list[dict[str, Any]]:
+    if not isinstance(annotations, list):
+        raise ValueError("A lista de anotações é inválida.")
+    if len(annotations) > MAX_ANNOTATIONS_PER_OPERATION:
+        raise ValueError(
+            f"A operação excede o limite de {MAX_ANNOTATIONS_PER_OPERATION} anotações. "
+            "Salve em mais de uma operação."
+        )
+
+    total_stroke_points = 0
+    validated: list[dict[str, Any]] = []
+    for index, item in enumerate(annotations, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Anotação {index} deve ser um objeto.")
+        try:
+            page_number = int(item.get("page_number", 0))
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Página da anotação {index} é inválida.") from error
+        if not (0 <= page_number < len(doc)):
+            raise ValueError(f"Página da anotação {index} está fora do intervalo do documento.")
+
+        normalized_item = dict(item)
+        annotation_type = str(item.get("type", "")).lower()
+        if annotation_type not in ANNOTATION_TYPES:
+            raise ValueError(f"Tipo da anotação {index} não é suportado.")
+        page_rect = doc[page_number].rect
+
+        if annotation_type in STROKE_ANNOTATION_TYPES:
+            strokes = item.get("strokes")
+            if not isinstance(strokes, list) or not strokes:
+                raise ValueError(f"Anotação {index} não contém strokes válidos.")
+            if len(strokes) > MAX_STROKES_PER_ANNOTATION:
+                raise ValueError(
+                    f"Anotação {index} excede o limite de {MAX_STROKES_PER_ANNOTATION} strokes."
+                )
+            for stroke_index, stroke in enumerate(strokes, start=1):
+                if not isinstance(stroke, list) or not stroke:
+                    raise ValueError(f"Stroke {stroke_index} da anotação {index} é inválido.")
+                if len(stroke) > MAX_POINTS_PER_STROKE:
+                    raise ValueError(
+                        f"Stroke {stroke_index} excede o limite de {MAX_POINTS_PER_STROKE} pontos."
+                    )
+                for point in stroke:
+                    if not isinstance(point, (list, tuple)) or len(point) != 2:
+                        raise ValueError(f"Ponto de stroke da anotação {index} é inválido.")
+                    _validate_page_point(point[0], point[1], page_rect, f"stroke da anotação {index}")
+                total_stroke_points += len(stroke)
+                if total_stroke_points > MAX_STROKE_POINTS_PER_OPERATION:
+                    raise ValueError(
+                        f"A operação excede o limite de {MAX_STROKE_POINTS_PER_OPERATION} pontos de stroke."
+                    )
+            width = _finite_number(item.get("width", 2.0), f"Espessura da anotação {index}")
+            if not (0 < width <= MAX_STROKE_WIDTH):
+                raise ValueError(f"Espessura da anotação deve estar entre 0 e {MAX_STROKE_WIDTH:g}.")
+
+        elif annotation_type in {"highlight", "highlight_block", "marca_texto", "marca-texto"}:
+            clipped_rect = _validated_clip_rect(item.get("rect"), page_rect)
+            normalized_item["rect"] = [clipped_rect.x0, clipped_rect.y0, clipped_rect.x1, clipped_rect.y1]
+
+        elif annotation_type in TEXT_ANNOTATION_TYPES:
+            text = str(item.get("text", ""))
+            if len(text) > MAX_ANNOTATION_TEXT_CHARACTERS:
+                raise ValueError(
+                    f"O texto da anotação {index} excede {MAX_ANNOTATION_TEXT_CHARACTERS} caracteres."
+                )
+            fontsize = _finite_number(
+                item.get("fontsize", item.get("size", 14.0)),
+                f"Tamanho da fonte da anotação {index}",
+            )
+            if not (0 < fontsize <= MAX_ANNOTATION_FONT_SIZE):
+                raise ValueError(f"A fonte da anotação deve estar entre 0 e {MAX_ANNOTATION_FONT_SIZE:g} pontos.")
+            rect = item.get("rect")
+            if rect is not None:
+                clipped_rect = _validated_clip_rect(rect, page_rect)
+                normalized_item["rect"] = [clipped_rect.x0, clipped_rect.y0, clipped_rect.x1, clipped_rect.y1]
+            normalized_rect = normalized_item.get("rect")
+            x = item.get("x", normalized_rect[0] if normalized_rect else 50.0)
+            y = item.get("y", normalized_rect[1] if normalized_rect else 50.0)
+            _validate_page_point(x, y, page_rect, f"texto da anotação {index}")
+            for dimension_name in ("width", "height"):
+                if dimension_name in item:
+                    dimension = _finite_number(item[dimension_name], f"{dimension_name} da anotação {index}")
+                    if not (0 < dimension <= MAX_PDF_COORDINATE):
+                        raise ValueError(f"{dimension_name} da anotação {index} é inválida.")
+
+        validated.append(normalized_item)
+    return validated
 
 
 def _parse_color(c: Any, default: tuple[float, float, float] = (1.0, 0.0, 0.0)) -> tuple[float, float, float]:
@@ -520,6 +752,17 @@ class BridgeApi:
             return {"started": False, "error": "Modo de divisão inválido."}
         max_chunk_characters = int(payload.get("max_chunk_characters", DEFAULT_MAX_CHUNK_CHARACTERS))
         heading_profile: HeadingProfile = payload.get("heading_profile", "jurisprudencia")
+        requested_workers = payload.get("max_workers")
+        if requested_workers is not None:
+            try:
+                requested_workers = int(requested_workers)
+            except (TypeError, ValueError):
+                return {"started": False, "error": "Número de workers inválido."}
+            if not (1 <= requested_workers <= MAX_PARALLEL_WORKERS):
+                return {
+                    "started": False,
+                    "error": f"O número de workers deve estar entre 1 e {MAX_PARALLEL_WORKERS}.",
+                }
 
         if max_chunk_characters < MIN_CHUNK_CHARACTERS:
             formatted_limit = f"{MIN_CHUNK_CHARACTERS:,}".replace(",", ".")
@@ -567,6 +810,7 @@ class BridgeApi:
                 heading_profile,
                 split_mode,
                 page_numbers_by_file,
+                requested_workers,
             ),
             daemon=True,
         )
@@ -588,6 +832,7 @@ class BridgeApi:
                 "split_mode": payload.get("split_mode", "semantic"),
                 "max_chunk_characters": payload.get("max_chunk_characters", DEFAULT_MAX_CHUNK_CHARACTERS),
                 "heading_profile": payload.get("heading_profile", "jurisprudencia"),
+                "max_workers": payload.get("max_workers"),
             }
         )
 
@@ -818,6 +1063,11 @@ class BridgeApi:
     def render_page_hq(self, file_id: str, page_number: int = 0, dpi: int = 150, password: str | None = None) -> dict[str, Any]:
         """Renderiza uma página sob demanda e indexa incrementalmente no FTS5 (Fase 4)."""
         try:
+            page_number = int(page_number)
+            dpi = _validated_dpi(dpi)
+        except (TypeError, ValueError) as error:
+            return {"ok": False, "error": str(error), "needs_password": False}
+        try:
             file_path = self._resolve_pdf(file_id)
         except ResourceAccessError as error:
             return {"ok": False, "error": str(error), "needs_password": False}
@@ -831,6 +1081,7 @@ class BridgeApi:
                 return {"ok": False, "error": f"Página {page_number} fora do intervalo."}
 
             page = doc[page_number]
+            _validate_pixel_budget(page.rect, dpi)
             pix = page.get_pixmap(dpi=dpi)
             img_b64 = base64.b64encode(pix.tobytes("png")).decode("utf-8")
             data_uri = f"data:image/png;base64,{img_b64}"
@@ -1140,13 +1391,11 @@ class BridgeApi:
 
         path = Path(file_path).resolve()
         try:
+            annotations = _validate_annotation_payload(annotations, doc)
             applied_count = 0
 
             for item in annotations:
                 page_num = int(item.get("page_number", 0))
-                if not (0 <= page_num < len(doc)):
-                    continue
-
                 page = doc[page_num]
                 annot_type = str(item.get("type", "")).lower()
 
@@ -1312,9 +1561,12 @@ class BridgeApi:
         """Extrai texto e imagem recortada em alta resolução de uma região retangular do PDF."""
         file_id = payload.get("file_id", "")
         password = payload.get("password")
-        page_number = int(payload.get("page_number", 0))
         rect_coords = payload.get("rect", [0, 0, 100, 100])
-        dpi = int(payload.get("dpi", 150))
+        try:
+            page_number = int(payload.get("page_number", 0))
+            dpi = _validated_dpi(payload.get("dpi", 150))
+        except (TypeError, ValueError) as error:
+            return {"ok": False, "error": str(error), "needs_password": False}
 
         try:
             file_path = self._resolve_pdf(str(file_id), "read")
@@ -1330,8 +1582,8 @@ class BridgeApi:
                 return {"ok": False, "error": f"Página {page_number} fora do intervalo (total: {len(doc)})."}
 
             page = doc[page_number]
-            x0, y0, x1, y1 = rect_coords[0], rect_coords[1], rect_coords[2], rect_coords[3]
-            clip_rect = fitz.Rect(min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+            clip_rect = _validated_clip_rect(rect_coords, page.rect)
+            _validate_pixel_budget(clip_rect, dpi)
 
             extracted_text = page.get_text("text", clip=clip_rect).strip()
             pix = page.get_pixmap(clip=clip_rect, dpi=dpi)
@@ -1393,21 +1645,30 @@ class BridgeApi:
         cleaned_text = (text or "").strip()
         if not cleaned_text:
             return {"ok": False, "error": "Nenhum texto informado para síntese de voz."}
+        if len(cleaned_text) > MAX_TTS_CHARACTERS:
+            return {
+                "ok": False,
+                "error": f"O texto para voz excede o limite de {MAX_TTS_CHARACTERS} caracteres.",
+            }
+        text_chunks = _split_text_chunks(cleaned_text, TTS_CHUNK_CHARACTERS)
 
-        if len(cleaned_text) > 10_000:
-            cleaned_text = cleaned_text[:10_000]
-
-        async def _run_tts() -> bytes:
-            communicate = edge_tts.Communicate(cleaned_text, voice, rate=rate, pitch=pitch)
-            chunks: list[bytes] = []
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    chunks.append(chunk["data"])
-            return b"".join(chunks)
+        async def _run_tts() -> list[bytes]:
+            audio_segments: list[bytes] = []
+            for text_chunk in text_chunks:
+                communicate = edge_tts.Communicate(text_chunk, voice, rate=rate, pitch=pitch)
+                segment_chunks: list[bytes] = []
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        segment_chunks.append(chunk["data"])
+                segment = b"".join(segment_chunks)
+                if not segment:
+                    raise RuntimeError("O serviço não gerou um dos blocos de áudio.")
+                audio_segments.append(segment)
+            return audio_segments
 
         try:
             # Runner seguro para evitar conflitos de event loop em background threads
-            audio_data = None
+            audio_segments: list[bytes]
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
@@ -1415,19 +1676,24 @@ class BridgeApi:
 
             if loop and loop.is_running():
                 with ThreadPoolExecutor(max_workers=1) as pool:
-                    audio_data = pool.submit(asyncio.run, _run_tts()).result()
+                    audio_segments = pool.submit(asyncio.run, _run_tts()).result()
             else:
-                audio_data = asyncio.run(_run_tts())
+                audio_segments = asyncio.run(_run_tts())
 
-            if not audio_data:
+            if not audio_segments:
                 return {"ok": False, "error": "Nenhum dado de áudio foi gerado."}
 
-            b64_audio = base64.b64encode(audio_data).decode("utf-8")
+            data_uris = [
+                f"data:audio/mp3;base64,{base64.b64encode(segment).decode('utf-8')}"
+                for segment in audio_segments
+            ]
             return {
                 "ok": True,
-                "audio_base64": f"data:audio/mp3;base64,{b64_audio}",
+                "audio_base64": data_uris[0],
+                "audio_segments": data_uris,
                 "voice": voice,
                 "text_length": len(cleaned_text),
+                "chunk_count": len(text_chunks),
             }
         except Exception as error:
             logger.error(f"Erro no Edge-TTS: {error}", exc_info=True)
@@ -1438,10 +1704,25 @@ class BridgeApi:
         cleaned_text = (text or "").strip()
         if not cleaned_text:
             return {"ok": False, "error": "Nenhum texto informado para tradução."}
+        if len(cleaned_text) > MAX_TRANSLATION_CHARACTERS:
+            return {
+                "ok": False,
+                "error": f"O texto para tradução excede o limite de {MAX_TRANSLATION_CHARACTERS} caracteres.",
+            }
+        text_chunks = _split_translation_chunks(cleaned_text, TRANSLATION_CHUNK_CHARACTERS)
+
+        def _translate_chunks(source: str) -> str:
+            translator = GoogleTranslator(source=source, target=target_lang)
+            translated_chunks: list[str] = []
+            for chunk_index, (text_chunk, separator) in enumerate(text_chunks, start=1):
+                translated = translator.translate(text_chunk)
+                if translated is None:
+                    raise RuntimeError(f"O serviço não retornou o bloco {chunk_index} da tradução.")
+                translated_chunks.append(f"{translated}{separator}")
+            return "".join(translated_chunks)
 
         try:
-            translator = GoogleTranslator(source=source_lang, target=target_lang)
-            translated = translator.translate(cleaned_text)
+            translated = _translate_chunks(source_lang)
             return {
                 "ok": True,
                 "original_text": cleaned_text,
@@ -1452,8 +1733,7 @@ class BridgeApi:
         except Exception as error:
             if source_lang != "auto":
                 try:
-                    fallback_trans = GoogleTranslator(source="auto", target=target_lang)
-                    translated = fallback_trans.translate(cleaned_text)
+                    translated = _translate_chunks("auto")
                     if translated:
                         return {
                             "ok": True,
@@ -1628,7 +1908,7 @@ class BridgeApi:
                 files,
                 retry=any(pages is not None for pages in page_numbers_by_file),
             )
-            worker_count = self._resolve_worker_count(len(files)) if max_workers is None else max(1, max_workers)
+            worker_count = self._resolve_worker_count(len(files), max_workers)
             if worker_count <= 1:
                 self._convert_sequentially(
                     files,
@@ -1661,10 +1941,13 @@ class BridgeApi:
             self.is_converting = False
             self.is_paused = False
 
-    def _resolve_worker_count(self, total_files: int) -> int:
+    def _resolve_worker_count(self, total_files: int, requested_workers: int | None = None) -> int:
         if total_files <= 1:
             return 1
-        return max(1, min(total_files, MAX_PARALLEL_WORKERS, os.cpu_count() or 1))
+        automatic_limit = min(total_files, MAX_PARALLEL_WORKERS, os.cpu_count() or 1)
+        if requested_workers is None:
+            return max(1, automatic_limit)
+        return max(1, min(automatic_limit, int(requested_workers)))
 
     def _convert_sequentially(
         self,

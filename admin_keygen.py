@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import getpass
+import os
 import sys
 from pathlib import Path
 
@@ -19,17 +21,25 @@ from licensing import license_payload
 DEFAULT_PRIVATE_KEY_PATH = Path(__file__).resolve().parent / ".secrets" / "nexojuris_ed25519_private.pem"
 
 
-def generate_keypair(private_key_path: Path) -> str:
-    """Cria a chave privada fora dos artefatos e retorna a chave pública em Base64."""
+def _password_bytes(password: str | bytes | None) -> bytes | None:
+    if isinstance(password, str):
+        password = password.encode("utf-8")
+    return password or None
+
+
+def generate_keypair(private_key_path: Path, password: str | bytes | None = None) -> str:
+    """Cria a chave privada, opcionalmente criptografada, e retorna a chave pública."""
     path = private_key_path.expanduser().resolve()
     if path.exists():
         raise FileExistsError(f"A chave privada já existe em: {path}")
 
     private_key = Ed25519PrivateKey.generate()
+    password_bytes = _password_bytes(password)
+    encryption = serialization.BestAvailableEncryption(password_bytes) if password_bytes else serialization.NoEncryption()
     private_pem = private_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
+        encryption_algorithm=encryption,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(private_pem)
@@ -41,12 +51,12 @@ def generate_keypair(private_key_path: Path) -> str:
     return base64.b64encode(public_bytes).decode("ascii")
 
 
-def load_private_key(private_key_path: Path) -> Ed25519PrivateKey:
+def load_private_key(private_key_path: Path, password: str | bytes | None = None) -> Ed25519PrivateKey:
     path = private_key_path.expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"Chave privada não encontrada: {path}")
 
-    loaded = serialization.load_pem_private_key(path.read_bytes(), password=None)
+    loaded = serialization.load_pem_private_key(path.read_bytes(), password=_password_bytes(password))
     if not isinstance(loaded, Ed25519PrivateKey):
         raise TypeError("O arquivo informado não contém uma chave privada Ed25519.")
     return loaded
@@ -84,15 +94,48 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Cria uma chave privada administrativa nova e imprime a chave pública correspondente.",
     )
+    parser.add_argument(
+        "--encrypt-private-key",
+        action="store_true",
+        help="Ao criar a chave, protege o PEM com senha sem alterar a leitura de PEMs legados.",
+    )
+    parser.add_argument(
+        "--private-key-password-env",
+        metavar="VARIAVEL",
+        help="Lê a senha do PEM da variável de ambiente indicada, sem expô-la na linha de comando.",
+    )
+    parser.add_argument(
+        "--prompt-private-key-password",
+        action="store_true",
+        help="Solicita interativamente a senha ao abrir um PEM criptografado.",
+    )
     return parser.parse_args(argv)
+
+
+def _resolve_password(args: argparse.Namespace, *, confirm: bool = False) -> str | None:
+    password: str | None = None
+    if args.private_key_password_env:
+        password = os.environ.get(args.private_key_password_env)
+        if not password:
+            raise ValueError(f"A variável {args.private_key_password_env} não contém uma senha.")
+    elif args.prompt_private_key_password or args.encrypt_private_key:
+        password = getpass.getpass("Senha da chave privada: ")
+    if confirm and password is not None and not args.private_key_password_env:
+        confirmation = getpass.getpass("Confirme a senha: ")
+        if password != confirmation:
+            raise ValueError("As senhas informadas não coincidem.")
+    if confirm and args.encrypt_private_key and not password:
+        raise ValueError("A senha da chave privada não pode ser vazia.")
+    return password
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     if args.generate_keypair:
         try:
-            public_key_b64 = generate_keypair(args.private_key)
-        except (FileExistsError, OSError) as error:
+            password = _resolve_password(args, confirm=args.encrypt_private_key) if args.encrypt_private_key else None
+            public_key_b64 = generate_keypair(args.private_key, password=password)
+        except (FileExistsError, OSError, ValueError) as error:
             print(f"[Erro] {error}")
             raise SystemExit(1) from error
         print(f"Chave privada criada em: {args.private_key.expanduser().resolve()}")
@@ -109,7 +152,8 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(1)
 
     try:
-        private_key = load_private_key(args.private_key)
+        password = _resolve_password(args)
+        private_key = load_private_key(args.private_key, password=password)
         activation_key = generate_activation_key(machine_id, private_key, key_version=args.key_version)
     except (FileNotFoundError, OSError, TypeError, ValueError) as error:
         print(f"[Erro] {error}")

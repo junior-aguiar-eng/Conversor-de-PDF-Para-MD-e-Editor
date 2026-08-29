@@ -119,7 +119,7 @@ const source = fs.readFileSync(appPath, "utf8") + `
 globalThis.__phase1 = {
   escapeHtml, safeSearchSnippetHtml, renderFileList, appendLog, onBridgeReady,
   initializeAfterTerms, state, SuperPdfController, GlobalSearchController, appLicense,
-  appLibrary, appSearch, parseDeclarativeArgument, resolveDeclarativeAction,
+  appLibrary, appSearch, appTts, parseDeclarativeArgument, playBeep, resolveDeclarativeAction,
 };`;
 vm.runInContext(source, context, { filename: appPath });
 
@@ -135,6 +135,76 @@ async function run() {
   api.appSearch.loadRecentLibrary = windowObject.appSearch.loadRecentLibrary;
   await api.appLibrary.removeDocument("entry-id");
   assert.equal(libraryRefreshes, 1);
+
+  let contextCreations = 0;
+  let idleCallback = null;
+  const feedbackContexts = [];
+  class FeedbackAudioContext {
+    constructor() {
+      contextCreations += 1;
+      this.state = "running";
+      this.currentTime = 0;
+      this.destination = {};
+      this.resumeCalls = 0;
+      this.suspendCalls = 0;
+      feedbackContexts.push(this);
+    }
+    createOscillator() {
+      return {
+        frequency: { setValueAtTime() {}, exponentialRampToValueAtTime() {} },
+        connect() {}, disconnect() {}, start() {},
+        stop() { if (this.onended) this.onended(); },
+      };
+    }
+    createGain() {
+      return {
+        gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} },
+        connect() {}, disconnect() {},
+      };
+    }
+    resume() { this.resumeCalls += 1; this.state = "running"; return Promise.resolve(); }
+    suspend() { this.suspendCalls += 1; this.state = "suspended"; return Promise.resolve(); }
+  }
+  windowObject.AudioContext = FeedbackAudioContext;
+  context.setTimeout = (callback) => { idleCallback = callback; return 99; };
+  context.clearTimeout = () => {};
+  api.playBeep("click");
+  api.playBeep("success");
+  assert.equal(contextCreations, 1);
+  assert.equal(typeof idleCallback, "function");
+  idleCallback();
+  assert.equal(feedbackContexts[0].suspendCalls, 1);
+  api.playBeep("error");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(feedbackContexts[0].resumeCalls, 1);
+  let finishSuspension;
+  feedbackContexts[0].suspend = function suspendWithRace() {
+    this.suspendCalls += 1;
+    return new Promise((resolve) => { finishSuspension = () => { this.state = "suspended"; resolve(); }; });
+  };
+  const triggerSuspension = idleCallback;
+  triggerSuspension();
+  api.playBeep("click");
+  assert.equal(feedbackContexts[0].resumeCalls, 1);
+  finishSuspension();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(feedbackContexts[0].resumeCalls, 2);
+  assert.equal(feedbackContexts[0].state, "running");
+  assert.notEqual(api.appTts.audio, feedbackContexts[0]);
+  let segmentPlays = 0;
+  api.appTts.audioSegments = ["segmento-1", "segmento-2"];
+  api.appTts.audioSegmentIndex = 0;
+  api.appTts.audio = {
+    src: "segmento-1", playbackRate: 1,
+    play() { segmentPlays += 1; return Promise.resolve(); },
+  };
+  api.appTts.onPlaybackEnded();
+  assert.equal(api.appTts.audioSegmentIndex, 1);
+  assert.equal(api.appTts.audio.src, "segmento-2");
+  assert.equal(segmentPlays, 1);
+  windowObject.AudioContext = null;
+  context.setTimeout = () => 1;
+  context.clearTimeout = () => {};
 
   assert.equal(
     api.escapeHtml(`<img src=x onerror="alert(1)">'&`),

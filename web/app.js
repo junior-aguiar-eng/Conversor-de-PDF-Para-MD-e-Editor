@@ -235,16 +235,66 @@ function initializeAfterTerms() {
 // --------------------------------------------------------------------------
 // Feedback Sonoro com Web Audio API
 // --------------------------------------------------------------------------
+let feedbackAudioContext = null;
+let feedbackAudioSuspendTimer = null;
+let feedbackAudioSuspendPromise = null;
+const FEEDBACK_AUDIO_IDLE_MS = 1500;
+
+function suspendFeedbackAudio() {
+  if (feedbackAudioSuspendTimer) {
+    clearTimeout(feedbackAudioSuspendTimer);
+    feedbackAudioSuspendTimer = null;
+  }
+  if (feedbackAudioContext?.state === "running") {
+    if (!feedbackAudioSuspendPromise) {
+      const suspension = Promise.resolve(feedbackAudioContext.suspend())
+        .catch(() => {})
+      const tracked = suspension.finally(() => {
+        if (feedbackAudioSuspendPromise === tracked) feedbackAudioSuspendPromise = null;
+      });
+      feedbackAudioSuspendPromise = tracked;
+    }
+  }
+}
+
+function scheduleFeedbackAudioSuspend() {
+  if (feedbackAudioSuspendTimer) clearTimeout(feedbackAudioSuspendTimer);
+  feedbackAudioSuspendTimer = setTimeout(() => {
+    feedbackAudioSuspendTimer = null;
+    suspendFeedbackAudio();
+  }, FEEDBACK_AUDIO_IDLE_MS);
+}
+
 function playBeep(type = "click") {
   if (!state.soundEnabled) return;
   try {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     if (!AudioContext) return;
-    const ctx = new AudioContext();
+    if (!feedbackAudioContext || feedbackAudioContext.state === "closed") {
+      feedbackAudioContext = new AudioContext();
+    }
+    const ctx = feedbackAudioContext;
+    const resumeIfNeeded = () => {
+      if (feedbackAudioContext === ctx && ctx.state === "suspended") {
+        return ctx.resume().catch(() => {});
+      }
+      return null;
+    };
+    if (feedbackAudioSuspendPromise) feedbackAudioSuspendPromise.finally(resumeIfNeeded).catch(() => {});
+    else resumeIfNeeded();
+    if (feedbackAudioSuspendTimer) {
+      clearTimeout(feedbackAudioSuspendTimer);
+      feedbackAudioSuspendTimer = null;
+    }
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
     gain.connect(ctx.destination);
+    osc.onended = () => {
+      osc.disconnect();
+      gain.disconnect();
+      scheduleFeedbackAudioSuspend();
+    };
 
     if (type === "click") {
       osc.frequency.setValueAtTime(520, ctx.currentTime);
@@ -285,6 +335,7 @@ function toggleAudioFeedback() {
   localStorage.setItem("nexojuris_sound_enabled", state.soundEnabled);
   updateAudioButtonUI();
   if (state.soundEnabled) playBeep("success");
+  else suspendFeedbackAudio();
 }
 
 function updateAudioButtonUI() {
@@ -1323,7 +1374,6 @@ class SuperPdfController {
     this.pageWidth = 595.0;
     this.pageHeight = 842.0;
     this.pageRotation = 0;
-    this.zoom = 1.0;
     this.currentTool = "pan"; // "pan" | "pen" | "highlight_pen" | "highlight_block" | "text" | "snippet"
     
     // Configurações de Caneta e Grifador
@@ -3296,6 +3346,8 @@ class NeuralTtsController {
     this.currentText = "";
     this.currentVoice = "pt-BR-FranciscaNeural";
     this.currentSpeed = 1.0;
+    this.audioSegments = [];
+    this.audioSegmentIndex = 0;
     this.isPlaying = false;
     this.isLoading = false;
     this.playerEl = null;
@@ -3367,7 +3419,11 @@ class NeuralTtsController {
         return;
       }
 
-      this.audio.src = res.audio_base64;
+      this.audioSegments = Array.isArray(res.audio_segments) && res.audio_segments.length
+        ? res.audio_segments
+        : [res.audio_base64];
+      this.audioSegmentIndex = 0;
+      this.audio.src = this.audioSegments[0];
       this.audio.playbackRate = this.currentSpeed;
       await this.audio.play();
 
@@ -3468,6 +3524,16 @@ class NeuralTtsController {
   }
 
   onPlaybackEnded() {
+    if (this.audioSegmentIndex + 1 < this.audioSegments.length) {
+      this.audioSegmentIndex += 1;
+      this.audio.src = this.audioSegments[this.audioSegmentIndex];
+      this.audio.playbackRate = this.currentSpeed;
+      this.audio.play();
+      if (this.statusEl) {
+        this.statusEl.innerText = `Lendo bloco ${this.audioSegmentIndex + 1} de ${this.audioSegments.length}`;
+      }
+      return;
+    }
     this.setPlayState(false);
     if (this.seekbar) this.seekbar.value = 0;
     if (this.currentTimeLabel) this.currentTimeLabel.innerText = "0:00";
@@ -3521,6 +3587,8 @@ class NeuralTtsController {
       this.audio.pause();
       this.audio.currentTime = 0;
     }
+    this.audioSegments = [];
+    this.audioSegmentIndex = 0;
     this.setPlayState(false);
     this.setLoading(false);
     if (this.playerEl) {
