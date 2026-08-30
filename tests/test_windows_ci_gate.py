@@ -18,9 +18,19 @@ class WindowsCiGateContractTests(unittest.TestCase):
             "WINDOWS_SIGNING_REQUIRED",
             "WINDOWS_SIGNING_CERTIFICATE_BASE64",
             "signtool.exe",
-            "actions/upload-artifact@v4",
+            "actions/checkout@v5",
+            "actions/setup-node@v5",
+            "node-version: 24",
+            "actions/upload-artifact@v6",
         ):
             self.assertIn(contract, workflow)
+        for legacy_contract in (
+            "actions/checkout@v4",
+            "actions/setup-node@v4",
+            "actions/upload-artifact@v4",
+            "node-version: 20",
+        ):
+            self.assertNotIn(legacy_contract, workflow)
 
     def test_release_gate_covers_windows_specific_risks(self) -> None:
         gate = (ROOT / "scripts" / "windows_release_gate.ps1").read_text(encoding="utf-8-sig")
