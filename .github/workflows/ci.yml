@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Tk runtime libraries
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tk
@@ -23,7 +23,7 @@ jobs:
         run: uv python install 3.14
 
       - name: Install Node.js 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
@@ -47,7 +47,7 @@ jobs:
       REQUIRE_SIGNED_RELEASE: ${{ secrets.WINDOWS_SIGNING_REQUIRED }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -58,7 +58,7 @@ jobs:
         run: uv python install 3.14
 
       - name: Install Node.js 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
@@ -114,7 +114,7 @@ jobs:
 
       - name: Upload Windows gate report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: windows-release-gate
           path: release/windows-release-gate.json
@@ -122,7 +122,7 @@ jobs:
 
       - name: Upload validated Windows release
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: nexojuris-windows-release
           path: release/dist/NexoJuris Conversor
