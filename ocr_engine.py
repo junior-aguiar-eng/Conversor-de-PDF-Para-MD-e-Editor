@@ -11,6 +11,8 @@ from typing import Any
 
 import fitz
 
+from licensing import require_software_activation
+
 logger = logging.getLogger(__name__)
 
 _RAPID_OCR_INSTANCE: Any = None
@@ -49,6 +51,7 @@ def is_scanned_page(page: fitz.Page, min_char_count: int = 40) -> bool:
 
 def ocr_pixmap(pixmap: fitz.Pixmap, min_score: float = 0.35) -> tuple[str, list[dict[str, Any]]]:
     """Executa OCR em um fitz.Pixmap e sintetiza texto estruturado com estimativa de títulos."""
+    require_software_activation("ocr")
     ocr = get_ocr_engine()
     img_bytes = pixmap.tobytes("png")
     result, _ = ocr(img_bytes)

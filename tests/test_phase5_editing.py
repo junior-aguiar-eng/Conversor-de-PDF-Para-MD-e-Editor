@@ -24,6 +24,9 @@ class TestPhase5LicensingTermsAndEditing(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp_dir.name)
+        activation_patcher = patch("web_api.require_software_activation", return_value="NXJ-TEST")
+        activation_patcher.start()
+        self.addCleanup(activation_patcher.stop)
         self.db_path = self.root / "acervo_test.db"
         self.db = LibraryDatabase(self.db_path)
 

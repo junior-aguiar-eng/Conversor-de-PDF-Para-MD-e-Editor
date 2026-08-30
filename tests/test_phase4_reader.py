@@ -18,6 +18,9 @@ class TestPhase4ReaderAndIndexing(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp_dir.name)
+        activation_patcher = patch("web_api.require_software_activation", return_value="NXJ-TEST")
+        activation_patcher.start()
+        self.addCleanup(activation_patcher.stop)
         self.sample_pdf = self._create_pdf("documento_extenso.pdf", 60)
 
     def tearDown(self) -> None:

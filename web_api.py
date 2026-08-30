@@ -80,9 +80,10 @@ from converter import (
 )
 from file_authorization import AuthorizedResourceRegistry, ResourceAccessError
 from library_db import LibraryDatabase
+from license_core import LicenseAccessError, LicenseState
 from licensing import (
     LicenseRequiredError,
-    is_software_activated,
+    get_license_status,
     require_software_activation,
 )
 from licensing import (
@@ -98,6 +99,19 @@ from production_diagnostics import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _license_denial(error: LicenseRequiredError | LicenseAccessError, *, started: bool | None = None) -> dict[str, Any]:
+    status = getattr(error, "status", None)
+    state = status.state if status is not None else LicenseState.UNLICENSED
+    result: dict[str, Any] = {
+        "error": str(error),
+        "error_code": "license_required" if status is None else state.value,
+        "license_state": state.value,
+        "machine_id": error.machine_id,
+    }
+    result["started" if started is not None else "ok"] = False
+    return result
 
 MAX_PARALLEL_WORKERS = 4
 MIN_CHUNK_CHARACTERS = 1_000
@@ -829,13 +843,9 @@ class BridgeApi:
             return {"ok": False, "error": str(error)}
 
     def get_license_info(self) -> dict[str, Any]:
-        """Retorna o status de ativação do software e o identificador de hardware da máquina."""
-        is_activated, machine_id = is_software_activated()
-        return {
-            "is_activated": is_activated,
-            "machine_id": machine_id,
-            "message": "Software licenciado e ativado." if is_activated else "Ativação pendente para esta máquina.",
-        }
+        """Retorna o estado completo, preservando o booleano consumido pela UI atual."""
+        status = get_license_status()
+        return {"is_activated": status.allows("converter"), **status.to_mapping()}
 
     def activate_software(self, key: str) -> dict[str, Any]:
         """Processa a chave de ativação fornecida pelo usuário e desbloqueia o software."""
@@ -1167,14 +1177,9 @@ class BridgeApi:
         if not isinstance(payload, dict):
             return {"started": False, "error": "Dados da conversão inválidos."}
         try:
-            require_software_activation()
-        except LicenseRequiredError as error:
-            return {
-                "started": False,
-                "error": str(error),
-                "error_code": "license_required",
-                "machine_id": error.machine_id,
-            }
+            require_software_activation("converter")
+        except (LicenseRequiredError, LicenseAccessError) as error:
+            return _license_denial(error, started=False)
 
         if self.is_converting:
             return {"started": False, "error": "Uma conversão já está em andamento."}
@@ -1519,6 +1524,10 @@ class BridgeApi:
     def set_pdf_password(self, file_id: str, password: str) -> dict[str, Any]:
         """Tenta autenticar e memorizar a senha de um PDF protegido."""
         try:
+            require_software_activation("reader")
+        except (LicenseRequiredError, LicenseAccessError) as error:
+            return _license_denial(error)
+        try:
             file_path = self._resolve_pdf(file_id)
         except ResourceAccessError as error:
             return {"ok": False, "error": str(error)}
@@ -1530,6 +1539,10 @@ class BridgeApi:
 
     def get_pdf_info(self, file_id: str, password: str | None = None) -> dict[str, Any]:
         """Retorna metadados essenciais do PDF para abertura instantânea do Leitor (Fase 4)."""
+        try:
+            require_software_activation("reader")
+        except (LicenseRequiredError, LicenseAccessError) as error:
+            return _license_denial(error)
         try:
             file_path = self._resolve_pdf(file_id)
         except ResourceAccessError as error:
@@ -1587,6 +1600,10 @@ class BridgeApi:
     ) -> dict[str, Any]:
         """Retorna dimensões e rotação de uma faixa de páginas por solicitação (Item 12)."""
         try:
+            require_software_activation("reader")
+        except (LicenseRequiredError, LicenseAccessError) as error:
+            return _license_denial(error)
+        try:
             file_path = self._resolve_pdf(file_id)
         except ResourceAccessError as error:
             return {"ok": False, "error": str(error)}
@@ -1631,6 +1648,10 @@ class BridgeApi:
         rotation: int | None = None,
     ) -> dict[str, Any]:
         """Renderiza uma página sob demanda e indexa incrementalmente no FTS5 (Fase 4)."""
+        try:
+            require_software_activation("reader")
+        except (LicenseRequiredError, LicenseAccessError) as error:
+            return _license_denial(error)
         try:
             page_number = int(page_number)
             dpi = _validated_dpi(dpi)
@@ -1809,6 +1830,10 @@ class BridgeApi:
     ) -> dict[str, Any]:
         """Gira uma página específica em incrementos de 90 graus e salva no original ou como cópia (Item 19)."""
         try:
+            require_software_activation("reader")
+        except (LicenseRequiredError, LicenseAccessError) as error:
+            return _license_denial(error)
+        try:
             file_path = self._resolve_pdf(file_id, "write")
         except ResourceAccessError as error:
             return {"ok": False, "error": str(error), "needs_password": False}
@@ -1863,6 +1888,10 @@ class BridgeApi:
     ) -> dict[str, Any]:
         """Aplica criptografia AES-256 no arquivo PDF com senhas no original ou como cópia (Item 19)."""
         try:
+            require_software_activation("reader")
+        except (LicenseRequiredError, LicenseAccessError) as error:
+            return _license_denial(error)
+        try:
             path = self._resolve_pdf(file_id, "write")
         except ResourceAccessError as error:
             return {"ok": False, "error": str(error)}
@@ -1913,6 +1942,10 @@ class BridgeApi:
     def unprotect_pdf(self, file_id: str, current_pw: str = "", output_file_id: str | None = None) -> dict[str, Any]:
         """Remove a proteção por senha de um PDF no original ou como cópia (Item 19)."""
         try:
+            require_software_activation("reader")
+        except (LicenseRequiredError, LicenseAccessError) as error:
+            return _license_denial(error)
+        try:
             path = self._resolve_pdf(file_id, "write")
         except ResourceAccessError as error:
             return {"ok": False, "error": str(error)}
@@ -1956,6 +1989,10 @@ class BridgeApi:
 
     def save_pdf_annotations(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Grava anotações nativas no arquivo PDF original ou como cópia (Item 19)."""
+        try:
+            require_software_activation("reader")
+        except (LicenseRequiredError, LicenseAccessError) as error:
+            return _license_denial(error)
         if payload.get("output_path"):
             return {"ok": False, "error": "Destino por caminho não autorizado."}
         file_id = payload.get("file_id", "")
@@ -2176,6 +2213,10 @@ class BridgeApi:
     def restore_pdf_backup(self, file_id: str, password: str | None = None) -> dict[str, Any]:
         """Restaura atomicamente o backup imediatamente anterior e o consome após a promoção."""
         try:
+            require_software_activation("reader")
+        except (LicenseRequiredError, LicenseAccessError) as error:
+            return _license_denial(error)
+        try:
             file_path = self._resolve_pdf(file_id, "write")
         except ResourceAccessError as error:
             return {"ok": False, "error": str(error)}
@@ -2259,12 +2300,15 @@ class BridgeApi:
             ocr_applied = False
             if len(extracted_text) < 4:
                 try:
+                    require_software_activation("ocr")
                     from ocr_engine import ocr_pixmap
 
                     ocr_text, _ = ocr_pixmap(pix)
                     if ocr_text.strip():
                         extracted_text = ocr_text.strip()
                         ocr_applied = True
+                except (LicenseRequiredError, LicenseAccessError) as error:
+                    return _license_denial(error)
                 except Exception as ocr_err:
                     logger.debug(f"OCR snippet fallback: {ocr_err}")
 
