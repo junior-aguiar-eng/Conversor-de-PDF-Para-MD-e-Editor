@@ -34,7 +34,7 @@ const ALLOWED_DECLARATIVE_ACTIONS = new Set([
   "appManual.close", "appManual.exportDiagnostics", "appManual.filterContent", "appManual.open", "appManual.printManual",
   "appManual.scrollToChapter", "appManual.toggleViewMode",
   "appSearch.clearInput", "appSearch.closeModal", "appSearch.onSearchInput", "appSearch.openModal",
-  "appSearch.openResult", "appSearch.setFilter", "appSelection.copySelectedText",
+  "appSearch.openResult", "appSearch.rebuildIndex", "appSearch.setFilter", "appSelection.copySelectedText",
   "appTerms.confirmAcceptance", "appTranslator.closeModal", "appTranslator.copyResult",
   "appTranslator.retranslate", "appTranslator.translateSelectedText", "appTranslator.translateSnippetText",
   "appTts.playSelectedText", "appTts.playSnippetText", "appTts.playText", "appTts.seek",
@@ -205,6 +205,7 @@ function initializeAfterTerms() {
         state.outputDir = info.default_output_dir;
         state.outputDirId = info.default_output_dir_id;
         state.maxChunkCharacters = info.default_chunk_limit;
+        state.convertedResults = Array.isArray(info.recent_markdowns) ? info.recent_markdowns : [];
 
         if (info.app_version) {
           const badge = document.getElementById("appVersionBadge");
@@ -215,6 +216,8 @@ function initializeAfterTerms() {
 
         document.getElementById("inputOutputDir").value = state.outputDir;
         document.getElementById("inputMaxChars").value = state.maxChunkCharacters;
+        updatePreviewDropdown(false);
+        document.getElementById("btnOpenLastMd").disabled = state.convertedResults.length === 0;
 
         superPdf.updateDocumentDropdown();
 
@@ -1048,6 +1051,10 @@ window.onBackendEvent = function (eventName, data) {
     if (window.superPdf) superPdf.onIndexingError(data);
   } else if (eventName === "status") {
     document.getElementById("statusMessage").innerText = data.message;
+  } else if (eventName === "conversion_state") {
+    state.isPaused = ["pausing", "paused"].includes(data.state);
+    const pauseButton = document.getElementById("btnPauseConvert");
+    if (pauseButton) pauseButton.innerText = state.isPaused ? "Retomar" : "Pausar";
   } else if (eventName === "file_start") {
     const file = state.files.find((f) => f.file_id === data.file_id);
     if (file) {
@@ -1085,6 +1092,10 @@ window.onBackendEvent = function (eventName, data) {
       : "";
     const pageWarning = `${failedWarning}${fidelityWarning}`;
     appendLog("OK", `${data.name} -> ${data.markdown_path} (${data.asset_count} imgs, ${data.duration_formatted}${pageWarning})`);
+    if (data.index_status === "failed") {
+      appendLog("ERRO", `Índice não atualizado para ${data.name}: ${data.index_error || "falha não detalhada"}`);
+      showToast("Markdown convertido, mas a indexação falhou. Reconstrua o índice do acervo.", "error");
+    }
   } else if (eventName === "file_error") {
     playBeep("error");
     const file = state.files.find((f) => f.file_id === data.source_id);
@@ -1144,7 +1155,7 @@ window.onBackendEvent = function (eventName, data) {
 // --------------------------------------------------------------------------
 // Visualizador e Parser de Markdown
 // --------------------------------------------------------------------------
-function updatePreviewDropdown() {
+function updatePreviewDropdown(autoPreview = true) {
   const select = document.getElementById("previewDocSelect");
   if (state.convertedResults.length === 0) {
     select.innerHTML = `<option value="">Nenhum documento convertido</option>`;
@@ -1155,7 +1166,7 @@ function updatePreviewDropdown() {
     (item) => `<option value="${escapeHtml(item.markdown_id)}">${escapeHtml(item.name)}</option>`
   ).join("");
 
-  if (!state.currentPreviewId && state.convertedResults.length > 0) {
+  if (autoPreview && !state.currentPreviewId && state.convertedResults.length > 0) {
     const last = state.convertedResults[state.convertedResults.length - 1];
     previewSpecificMarkdown(last.markdown_id, last.markdown_path);
   }
@@ -1218,10 +1229,15 @@ async function copyCurrentPreviewContent() {
   }
 }
 
-function openLastMarkdownResult() {
+async function openLastMarkdownResult() {
+  if (state.convertedResults.length === 0) {
+    const persisted = await window.pywebview.api.get_recent_markdowns();
+    state.convertedResults = persisted.ok ? persisted.items : [];
+    updatePreviewDropdown(false);
+  }
   if (state.convertedResults.length === 0) return;
   const last = state.convertedResults[state.convertedResults.length - 1];
-  openMarkdownDirectly(last.markdown_id);
+  await previewSpecificMarkdown(last.markdown_id, last.markdown_path);
 }
 
 async function openMarkdownDirectly(markdownId) {
@@ -3933,6 +3949,27 @@ class GlobalSearchController {
       }
     } catch (err) {
       console.error("Erro ao carregar recentes:", err);
+    }
+  }
+
+  async rebuildIndex() {
+    if (!window.pywebview || !window.pywebview.api) return;
+    const button = document.getElementById("btnRebuildMarkdownIndex");
+    if (button) button.disabled = true;
+    try {
+      const res = await window.pywebview.api.rebuild_markdown_index();
+      if (res.ok) {
+        showToast(`Índice reconstruído: ${res.indexed} Markdown(s).`, "success");
+        const query = this.searchInput?.value.trim() || "";
+        if (query) await this.executeSearch(query);
+        else await this.loadRecentLibrary();
+      } else {
+        showToast(`Reconstrução incompleta: ${res.failures?.length || 0} falha(s).`, "error");
+      }
+    } catch (error) {
+      showToast(`Falha ao reconstruir índice: ${error}`, "error");
+    } finally {
+      if (button) button.disabled = false;
     }
   }
 

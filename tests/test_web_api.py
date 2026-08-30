@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -87,6 +88,68 @@ class WebApiTests(unittest.TestCase):
         res = api.read_markdown_preview("inexistente.md")
         self.assertFalse(res["ok"])
         self.assertIn("não autorizado", res["error"])
+
+    def test_converted_markdown_is_searchable_and_recovered_after_restart(self) -> None:
+        root = Path(self.storage_dir.name)
+        source = root / "origem.pdf"
+        markdown = root / "resultado.md"
+        source.write_bytes(b"%PDF")
+        markdown.write_text("termo exclusivo persistente", encoding="utf-8")
+        result = ConversionResult(source=source, markdown_path=markdown, asset_count=0, chunk_count=0)
+
+        first_api = BridgeApi()
+        first_events: list[str] = []
+        first_api.set_window(SimpleNamespace(evaluate_js=lambda code: first_events.append(code)))
+        first_api._emit_file_success(result)
+
+        self.assertIn('"index_status": "indexed"', " ".join(first_events))
+        self.assertEqual(first_api.search_library("exclusivo persistente")["total"], 1)
+
+        restarted_api = BridgeApi()
+        recent = restarted_api.get_recent_markdowns()
+        self.assertTrue(recent["ok"])
+        self.assertEqual(recent["items"][-1]["markdown_path"], str(markdown.resolve()))
+        preview = restarted_api.read_markdown_preview(recent["items"][-1]["markdown_id"])
+        self.assertTrue(preview["ok"])
+        self.assertIn("termo exclusivo", preview["content"])
+
+    def test_index_failure_is_reported_persisted_and_rebuildable(self) -> None:
+        root = Path(self.storage_dir.name)
+        source = root / "origem-falha.pdf"
+        markdown = root / "resultado-falha.md"
+        source.write_bytes(b"%PDF")
+        markdown.write_text("conteúdo para reconstrução", encoding="utf-8")
+        result = ConversionResult(source=source, markdown_path=markdown, asset_count=0, chunk_count=0)
+        api = BridgeApi()
+        events: list[str] = []
+        api.set_window(SimpleNamespace(evaluate_js=lambda code: events.append(code)))
+
+        with patch.object(api._library, "index_markdown_file", side_effect=RuntimeError("índice bloqueado")):
+            api._emit_file_success(result)
+
+        self.assertIn('"index_status": "failed"', " ".join(events))
+        self.assertEqual(api.get_recent_markdowns()["items"][-1]["index_status"], "failed")
+        rebuilt = api.rebuild_markdown_index()
+        self.assertTrue(rebuilt["ok"])
+        self.assertEqual(rebuilt["indexed"], 1)
+        self.assertEqual(api.search_library("reconstrucao")["total"], 1)
+
+    def test_pause_state_is_confirmed_from_active_page_checkpoint(self) -> None:
+        api = BridgeApi()
+        checkpoint = Path(self.storage_dir.name) / "checkpoint"
+        checkpoint.mkdir()
+        (checkpoint / "control-status.json").write_text(
+            '{"state":"paused","page_number":7}', encoding="utf-8"
+        )
+        with api._active_checkpoint_lock:
+            api._active_checkpoint_dirs.add(checkpoint)
+        api.is_converting = True
+        api._set_conversion_state("pausing")
+
+        api._sync_active_pause_status()
+
+        self.assertEqual(api.conversion_state, "paused")
+        self.assertTrue(api.is_paused)
 
     def test_start_conversion_validates_empty_files(self) -> None:
         api = BridgeApi()
@@ -420,6 +483,24 @@ class WebApiTests(unittest.TestCase):
         self.assertFalse(thread.is_alive(), "a parada aguardou indefinidamente pela extração ativa")
         self.assertTrue(terminated.is_set(), "o processo ativo não foi encerrado")
 
+    def test_stop_confirms_real_worker_exit_within_three_seconds(self) -> None:
+        pool = ProcessPoolExecutor(max_workers=1)
+        future = pool.submit(time.sleep, 30)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not (getattr(pool, "_processes", {}) or {}):
+            time.sleep(0.02)
+
+        started = time.monotonic()
+        BridgeApi._terminate_conversion_pool(pool)
+        elapsed = time.monotonic() - started
+        completion_deadline = time.monotonic() + 0.5
+        while time.monotonic() < completion_deadline and not future.done():
+            time.sleep(0.01)
+
+        self.assertLessEqual(elapsed, 3.0)
+        self.assertTrue(future.done())
+        self.assertFalse(any(process.is_alive() for process in (getattr(pool, "_processes", {}) or {}).values()))
+
     def test_supervised_process_converts_real_pdf(self) -> None:
         import fitz
 
@@ -449,6 +530,14 @@ class WebApiTests(unittest.TestCase):
             markdown_files = list(output.glob("*.md"))
             self.assertEqual(len(markdown_files), 1)
             self.assertIn("Conversao supervisionada", markdown_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(api.search_library("Conversao supervisionada")["total"], 1)
+
+            restarted_api = BridgeApi()
+            recent = restarted_api.get_recent_markdowns()["items"]
+            self.assertTrue(recent)
+            preview = restarted_api.read_markdown_preview(recent[-1]["markdown_id"])
+            self.assertTrue(preview["ok"])
+            self.assertIn("Conversao supervisionada", preview["content"])
 
     def test_managed_conversion_removes_journal_only_after_success(self) -> None:
         import fitz

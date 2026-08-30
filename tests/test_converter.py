@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -244,10 +246,13 @@ class ConverterTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertEqual([kwargs["pages"] for _, kwargs in calls], [[0], [1], [2]])
 
-    def test_converter_rejects_document_above_image_budget(self) -> None:
+    def test_converter_ignores_repeated_image_references_when_no_assets_are_extracted(self) -> None:
         class FakePage:
             def get_images(self, full: bool = False) -> list[object]:
-                return [object()]
+                return [object()] * 6_000
+
+            def get_text(self, _kind: str = "text") -> str:
+                return "conteúdo"
 
         class FakeDocument:
             page_count = 1
@@ -263,11 +268,50 @@ class ConverterTests(unittest.TestCase):
 
         converter = converter_module.PdfMarkdownConverter.__new__(converter_module.PdfMarkdownConverter)
         converter._pymupdf = SimpleNamespace(open=lambda _source: FakeDocument())
+        converter._to_markdown = lambda *_args, **_kwargs: "conteúdo"
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
             patch.object(converter_module, "MAX_IMAGES_PER_DOCUMENT", 0),
-            self.assertRaisesRegex(converter_module.ResourceBudgetExceeded, "limite de 0 imagens"),
+            patch.object(converter_module, "is_scanned_page", return_value=False),
+        ):
+            result = converter.convert(Path("documento.pdf"), Path(tmp_dir), False, 1000)
+
+        self.assertEqual(result.asset_count, 0)
+
+    def test_converter_rejects_actual_extracted_assets_above_budget(self) -> None:
+        class FakePage:
+            def get_images(self, full: bool = False) -> list[object]:
+                return []
+
+            def get_text(self, _kind: str = "text") -> str:
+                return "conteúdo"
+
+        class FakeDocument:
+            page_count = 1
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def load_page(self, _page_index: int) -> FakePage:
+                return FakePage()
+
+        def fake_to_markdown(_document, **kwargs):
+            (Path(kwargs["image_path"]) / "imagem.png").write_bytes(b"imagem")
+            return "conteúdo"
+
+        converter = converter_module.PdfMarkdownConverter.__new__(converter_module.PdfMarkdownConverter)
+        converter._pymupdf = SimpleNamespace(open=lambda _source: FakeDocument())
+        converter._to_markdown = fake_to_markdown
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.object(converter_module, "MAX_IMAGES_PER_DOCUMENT", 0),
+            patch.object(converter_module, "is_scanned_page", return_value=False),
+            self.assertRaisesRegex(converter_module.ResourceBudgetExceeded, "0 arquivos de imagem"),
         ):
             converter.convert(Path("documento.pdf"), Path(tmp_dir), False, 1000)
 
@@ -320,6 +364,75 @@ class ConverterTests(unittest.TestCase):
             self.assertEqual(calls, [0, 1, 2])
             self.assertIn("página 3", result.markdown_path.read_text(encoding="utf-8"))
             self.assertFalse(checkpoint.exists())
+
+    def test_pause_blocks_active_document_after_current_page_and_resumes(self) -> None:
+        class FakePage:
+            def get_images(self, full: bool = False) -> list[object]:
+                return []
+
+            def get_text(self, _kind: str = "text") -> str:
+                return "conteúdo"
+
+        class FakeDocument:
+            page_count = 3
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def load_page(self, _page_index: int) -> FakePage:
+                return FakePage()
+
+        first_page_extracted = threading.Event()
+        calls: list[int] = []
+
+        def fake_to_markdown(_document, **kwargs):
+            calls.append(kwargs["pages"][0])
+            if len(calls) == 1:
+                first_page_extracted.set()
+            return f"página {len(calls)}"
+
+        converter = converter_module.PdfMarkdownConverter.__new__(converter_module.PdfMarkdownConverter)
+        converter._pymupdf = SimpleNamespace(open=lambda _source: FakeDocument())
+        converter._to_markdown = fake_to_markdown
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source = root / "documento.pdf"
+            source.write_bytes(b"%PDF pause")
+            checkpoint = root / "checkpoint"
+            result_holder: list[object] = []
+
+            with patch.object(converter_module, "is_scanned_page", return_value=False):
+                thread = threading.Thread(
+                    target=lambda: result_holder.append(
+                        converter.convert(source, root / "saida", False, 1000, checkpoint_dir=checkpoint)
+                    )
+                )
+                thread.start()
+                self.assertTrue(first_page_extracted.wait(timeout=2))
+                converter_module._atomic_write_text(checkpoint / "control.json", '{"action":"pause"}')
+
+                status_path = checkpoint / "control-status.json"
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    if status_path.is_file() and '"paused"' in status_path.read_text(encoding="utf-8"):
+                        break
+                    time.sleep(0.02)
+                self.assertTrue(status_path.is_file())
+                self.assertIn('"paused"', status_path.read_text(encoding="utf-8"))
+                paused_call_count = len(calls)
+                time.sleep(0.2)
+                self.assertEqual(len(calls), paused_call_count)
+
+                converter_module._atomic_write_text(checkpoint / "control.json", '{"action":"running"}')
+                thread.join(timeout=3)
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(calls, [0, 1, 2])
+            self.assertEqual(len(result_holder), 1)
 
 
 if __name__ == "__main__":

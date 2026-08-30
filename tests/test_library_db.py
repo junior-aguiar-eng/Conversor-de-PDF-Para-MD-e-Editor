@@ -61,6 +61,23 @@ class LibraryDatabaseTests(unittest.TestCase):
         results = self.db.search("Excelentissimo Juiz")
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["content_type"], "markdown")
+        self.assertTrue(self.db.verify_markdown_index(pdf_path, md_path))
+
+    def test_markdown_index_failure_is_persistent_and_recoverable(self) -> None:
+        pdf_path = Path(self.tmp_dir.name) / "origem.pdf"
+        md_path = Path(self.tmp_dir.name) / "resultado.md"
+        md_path.write_text("termo exclusivo reconstruído", encoding="utf-8")
+
+        self.db.record_markdown_index_failure(pdf_path, md_path, "banco indisponível")
+        failed = self.db.get_recent_markdowns()
+        self.assertEqual(failed[0]["index_status"], "failed")
+        self.assertEqual(failed[0]["index_error"], "banco indisponível")
+        self.assertFalse(self.db.verify_markdown_index(pdf_path, md_path))
+
+        self.db.index_markdown_file(pdf_path, md_path, md_path.read_text(encoding="utf-8"))
+        self.assertTrue(self.db.verify_markdown_index(pdf_path, md_path))
+        self.assertEqual(self.db.get_recent_markdowns()[0]["index_status"], "indexed")
+        self.assertEqual(len(self.db.search("exclusivo reconstruido")), 1)
 
     def test_search_snippet_escapes_indexed_html_and_preserves_highlight(self) -> None:
         pdf_path = Path(self.tmp_dir.name) / "malicioso.pdf"

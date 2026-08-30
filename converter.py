@@ -37,6 +37,10 @@ class ResourceBudgetExceeded(RuntimeError):
     """A conversão excedeu um limite operacional seguro."""
 
 
+class ConversionStopped(RuntimeError):
+    """A conversão foi interrompida por solicitação explícita."""
+
+
 def process_rss_bytes(pid: int | None = None) -> int | None:
     """Retorna o RSS de um processo sem introduzir dependência externa."""
     if os.name == "nt":
@@ -144,6 +148,44 @@ def _atomic_write_text(path: Path, content: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _read_control_action(checkpoint_dir: Path) -> str:
+    try:
+        payload = json.loads((checkpoint_dir / "control.json").read_text(encoding="utf-8"))
+        action = str(payload.get("action", "running"))
+        return action if action in {"running", "pause", "stop"} else "running"
+    except (OSError, json.JSONDecodeError, TypeError):
+        return "running"
+
+
+def _write_control_status(checkpoint_dir: Path, state: str, page_number: int) -> None:
+    _atomic_write_text(
+        checkpoint_dir / "control-status.json",
+        json.dumps({"state": state, "page_number": page_number}, sort_keys=True),
+    )
+
+
+def _honor_conversion_control(checkpoint_dir: Path | None, page_number: int) -> float:
+    if checkpoint_dir is None:
+        return 0.0
+    action = _read_control_action(checkpoint_dir)
+    if action == "stop":
+        _write_control_status(checkpoint_dir, "stopping", page_number)
+        raise ConversionStopped(f"Conversão interrompida após a página {page_number}.")
+    if action != "pause":
+        return 0.0
+    pause_started = time.monotonic()
+    _write_control_status(checkpoint_dir, "paused", page_number)
+    while True:
+        time.sleep(0.1)
+        action = _read_control_action(checkpoint_dir)
+        if action == "stop":
+            _write_control_status(checkpoint_dir, "stopping", page_number)
+            raise ConversionStopped(f"Conversão interrompida após a página {page_number}.")
+        if action == "running":
+            _write_control_status(checkpoint_dir, "running", page_number)
+            return time.monotonic() - pause_started
+
+
 def _checkpoint_signature(source: Path, selected: tuple[int, ...]) -> dict[str, object]:
     stat = source.stat()
     return {
@@ -167,9 +209,15 @@ def _load_or_initialize_checkpoint(
     except (OSError, json.JSONDecodeError, TypeError):
         state = {}
     if any(state.get(key) != value for key, value in signature.items()):
+        control_action = _read_control_action(checkpoint_dir)
         shutil.rmtree(checkpoint_dir, ignore_errors=True)
         state = {**signature, "pages": {}}
         _atomic_write_text(manifest_path, json.dumps(state, ensure_ascii=False, sort_keys=True))
+        if control_action != "running":
+            _atomic_write_text(
+                checkpoint_dir / "control.json",
+                json.dumps({"action": control_action}, sort_keys=True),
+            )
     (checkpoint_dir / "pages").mkdir(parents=True, exist_ok=True)
     (checkpoint_dir / "assets").mkdir(parents=True, exist_ok=True)
     return state
@@ -181,7 +229,6 @@ def _save_page_checkpoint(
     page_number: int,
     rendered_page: str,
     coverage: PageCoverage,
-    image_count: int,
 ) -> None:
     page_path = checkpoint_dir / "pages" / f"{page_number:06}.md"
     _atomic_write_text(page_path, rendered_page)
@@ -194,7 +241,6 @@ def _save_page_checkpoint(
         "fidelity_score": coverage.fidelity_score,
         "fidelity_issues": list(coverage.fidelity_issues),
     }
-    state["image_count"] = image_count
     _atomic_write_text(
         checkpoint_dir / "state.json",
         json.dumps(state, ensure_ascii=False, sort_keys=True),
@@ -317,7 +363,6 @@ class PdfMarkdownConverter:
                 deadline = time.monotonic() + MAX_CONVERSION_SECONDS
                 rendered_pages: list[str] = []
                 coverage: list[PageCoverage] = []
-                image_count = int(checkpoint_state.get("image_count", 0)) if checkpoint_state is not None else 0
                 initial_asset_count, initial_asset_bytes = _directory_usage(temporary_assets_dir)
                 if initial_asset_count > MAX_IMAGES_PER_DOCUMENT or initial_asset_bytes > MAX_EXTRACTED_ASSET_BYTES:
                     raise ResourceBudgetExceeded("O checkpoint excede o orçamento de imagens da conversão.")
@@ -348,6 +393,7 @@ class PdfMarkdownConverter:
                         )
                         rendered_pages.append(checkpoint_page.read_text(encoding="utf-8"))
                         coverage.append(PageCoverage(page_number, status, warning, fidelity_score, fidelity_issues))
+                        deadline += _honor_conversion_control(checkpoint_dir, page_number)
                         continue
                     page_index = page_number - 1
                     try:
@@ -365,15 +411,9 @@ class PdfMarkdownConverter:
                                 page_number,
                                 rendered_page,
                                 page_coverage,
-                                image_count,
                             )
+                        deadline += _honor_conversion_control(checkpoint_dir, page_number)
                         continue
-
-                    image_count += self._page_image_count(page)
-                    if image_count > MAX_IMAGES_PER_DOCUMENT:
-                        raise ResourceBudgetExceeded(
-                            f"O PDF excede o limite de {MAX_IMAGES_PER_DOCUMENT:,} imagens.".replace(",", ".")
-                        )
 
                     detection_warning = ""
                     try:
@@ -410,7 +450,6 @@ class PdfMarkdownConverter:
                             page_number,
                             rendered_page,
                             page_coverage,
-                            image_count,
                         )
                     asset_count, asset_bytes = _directory_usage(temporary_assets_dir)
                     if asset_count > MAX_IMAGES_PER_DOCUMENT:
@@ -422,6 +461,7 @@ class PdfMarkdownConverter:
                             f"As imagens extraídas excederam {MAX_EXTRACTED_ASSET_BYTES // (1024 * 1024)} MB."
                         )
                     self._check_resource_budget(output_dir, source_size, deadline)
+                    deadline += _honor_conversion_control(checkpoint_dir, page_number)
 
                 markdown = "\n\n---\n\n".join(rendered_pages)
                 self._check_resource_budget(output_dir, source_size, deadline)
@@ -466,18 +506,6 @@ class PdfMarkdownConverter:
         if checkpoint_dir is not None:
             shutil.rmtree(checkpoint_dir, ignore_errors=True)
         return result
-
-    @staticmethod
-    def _page_image_count(page: object) -> int:
-        try:
-            return len(page.get_images(full=True))
-        except TypeError:
-            try:
-                return len(page.get_images())
-            except Exception:
-                return 0
-        except Exception:
-            return 0
 
     @staticmethod
     def _check_resource_budget(output_dir: Path, source_size: int, deadline: float) -> None:

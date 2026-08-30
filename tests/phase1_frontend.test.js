@@ -128,6 +128,9 @@ async function run() {
   const api = context.__phase1;
 
   assert.equal(typeof api.resolveDeclarativeAction("appLibrary.removeDocument"), "function");
+  const openLastSource = source.match(/async function openLastMarkdownResult\(\)[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(openLastSource, /previewSpecificMarkdown/);
+  assert.doesNotMatch(openLastSource, /openMarkdownDirectly/);
   assert.equal(api.parseDeclarativeArgument("true", makeElement(), {}), true);
 
   let libraryRefreshes = 0;

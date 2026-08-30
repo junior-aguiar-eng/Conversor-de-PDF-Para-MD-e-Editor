@@ -15,7 +15,9 @@ DEFAULT_MAX_CHUNK_CHARACTERS = 60_000
 # Orçamento operacional por documento. Esses limites também protegem chamadas
 # diretas ao conversor, não apenas a fila da interface.
 MAX_PDF_FILE_SIZE_BYTES = 512 * 1024 * 1024
-MAX_IMAGES_PER_DOCUMENT = 5_000
+# Limita arquivos efetivamente extraídos. Referências repetidas no PDF não
+# representam ativos distintos e, portanto, não entram neste orçamento.
+MAX_IMAGES_PER_DOCUMENT = 25_000
 MAX_EXTRACTED_ASSET_BYTES = 512 * 1024 * 1024
 MAX_CONVERSION_MEMORY_BYTES = 1536 * 1024 * 1024
 MEMORY_RESERVATION_PER_WORKER_BYTES = 1024 * 1024 * 1024

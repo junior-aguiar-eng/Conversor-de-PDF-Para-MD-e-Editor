@@ -470,6 +470,10 @@ class BridgeApi:
         self.resume_processing.set()
         self.is_paused = False
         self.is_converting = False
+        self.conversion_state = "stopped"
+        self._conversion_state_lock = threading.Lock()
+        self._active_checkpoint_dirs: set[Path] = set()
+        self._active_checkpoint_lock = threading.Lock()
         self._shutdown_requested = False
         self._batch_start_time = 0.0
         self._conversion_thread: threading.Thread | None = None
@@ -660,6 +664,70 @@ class BridgeApi:
         except Exception as error:
             logger.debug(f"Erro ao emitir evento {event_name}: {error}")
 
+    def _set_conversion_state(self, state: str, **details: Any) -> None:
+        if state not in {"running", "pausing", "paused", "stopping", "stopped", "completed", "failed"}:
+            raise ValueError(f"Estado de conversão inválido: {state}")
+        with self._conversion_state_lock:
+            self.conversion_state = state
+            self.is_paused = state in {"pausing", "paused"}
+        self._emit("conversion_state", {"state": state, **details})
+
+    @staticmethod
+    def _write_conversion_control(checkpoint_dir: Path, action: str) -> None:
+        _atomic_write_json(checkpoint_dir / "control.json", {"action": action})
+
+    def _control_active_conversions(self, action: str) -> None:
+        with self._active_checkpoint_lock:
+            checkpoints = tuple(self._active_checkpoint_dirs)
+        for checkpoint in checkpoints:
+            try:
+                self._write_conversion_control(checkpoint, action)
+            except OSError as error:
+                logger.warning("Falha ao controlar conversão em %s: %s", checkpoint, error)
+
+    def _sync_active_pause_status(self) -> None:
+        if self.conversion_state != "pausing":
+            return
+        with self._active_checkpoint_lock:
+            checkpoints = tuple(self._active_checkpoint_dirs)
+        if not checkpoints:
+            return
+        pages: list[int] = []
+        for checkpoint in checkpoints:
+            try:
+                status = json.loads((checkpoint / "control-status.json").read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, TypeError):
+                return
+            if status.get("state") != "paused":
+                return
+            pages.append(int(status.get("page_number", 0)))
+        page = pages[0] if len(pages) == 1 else min(pages)
+        self._set_conversion_state("paused", page_number=page, active_documents=len(pages))
+        message = (
+            f"Pausado na página {page}."
+            if len(pages) == 1
+            else f"{len(pages)} documentos pausados em checkpoints de página."
+        )
+        self._emit("status", {"message": message})
+
+    def _persisted_markdowns(self, limit: int = 40) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for item in reversed(self._library.get_recent_markdowns(limit)):
+            try:
+                markdown = self._register_markdown(item["markdown_path"], "persisted_library")
+            except (OSError, ResourceAccessError):
+                continue
+            results.append(
+                {
+                    "name": item["file_name"],
+                    "markdown_path": markdown["markdown_path"],
+                    "markdown_id": markdown["markdown_id"],
+                    "index_status": item.get("index_status", "not_indexed"),
+                    "index_error": item.get("index_error", ""),
+                }
+            )
+        return results
+
     def get_app_info(self) -> dict[str, Any]:
         """Retorna metadados do aplicativo e caminhos padrão."""
         return {
@@ -677,6 +745,8 @@ class BridgeApi:
             "min_free_disk_bytes": MIN_FREE_DISK_BYTES,
             "library_storage": dict(self._library_status),
             "diagnostics": diagnostic_status(),
+            "conversion_state": self.conversion_state,
+            "recent_markdowns": self._persisted_markdowns(),
         }
 
     def get_diagnostic_status(self) -> dict[str, Any]:
@@ -1200,6 +1270,7 @@ class BridgeApi:
         self.resume_processing.set()
         self.is_paused = False
         self.is_converting = True
+        self._set_conversion_state("running")
         self._shutdown_requested = False
         self._conversion_finished.clear()
         self._batch_start_time = time.perf_counter()
@@ -1225,6 +1296,7 @@ class BridgeApi:
             thread.start()
         except RuntimeError as error:
             self.is_converting = False
+            self._set_conversion_state("failed", error=str(error))
             self._conversion_finished.set()
             self._clear_conversion_journal(remove_checkpoints=True)
             return {"started": False, "error": f"Não foi possível iniciar a conversão: {error}"}
@@ -1250,26 +1322,30 @@ class BridgeApi:
         )
 
     def toggle_pause(self) -> dict[str, Any]:
-        """Alterna o estado de pausa da fila de conversão."""
+        """Pausa ou retoma o documento ativo no próximo checkpoint de página."""
         if not self.is_converting:
-            return {"is_paused": False}
+            return {"is_paused": False, "state": self.conversion_state}
 
         if self.is_paused:
+            self._control_active_conversions("running")
             self.resume_processing.set()
-            self.is_paused = False
+            self._set_conversion_state("running")
             self._emit("status", {"message": "Conversão retomada."})
-            return {"is_paused": False}
+            return {"is_paused": False, "state": "running"}
 
         self.resume_processing.clear()
-        self.is_paused = True
-        self._emit("status", {"message": "Pausa solicitada: será aplicada antes do próximo PDF."})
-        return {"is_paused": True}
+        self._set_conversion_state("pausing")
+        self._control_active_conversions("pause")
+        self._emit("status", {"message": "Pausa solicitada: concluindo a página corrente..."})
+        return {"is_paused": True, "state": "pausing"}
 
     def request_stop(self) -> bool:
         """Solicita a interrupção imediata dos processos de conversão."""
         if not self.is_converting:
             return False
+        self._set_conversion_state("stopping")
         self.cancel_requested.set()
+        self._control_active_conversions("stop")
         self.resume_processing.set()
         self._emit("status", {"message": "Parada solicitada: interrompendo a extração ativa..."})
         return True
@@ -1336,6 +1412,29 @@ class BridgeApi:
         except OSError as error:
             self._emit("toast", {"type": "error", "message": f"Erro ao abrir arquivo: {error}"})
             return False
+
+    def get_recent_markdowns(self) -> dict[str, Any]:
+        try:
+            return {"ok": True, "items": self._persisted_markdowns()}
+        except (OSError, sqlite3.Error) as error:
+            return {"ok": False, "items": [], "error": str(error)}
+
+    def rebuild_markdown_index(self) -> dict[str, Any]:
+        indexed = 0
+        failures: list[dict[str, str]] = []
+        for item in self._library.get_recent_markdowns(10_000):
+            source = Path(item["file_path"])
+            markdown = Path(item["markdown_path"])
+            try:
+                content = markdown.read_text(encoding="utf-8")
+                self._library.index_markdown_file(source, markdown, content)
+                if not self._library.verify_markdown_index(source, markdown):
+                    raise RuntimeError("o índice não confirmou o conteúdo gravado")
+                indexed += 1
+            except Exception as error:
+                self._library.record_markdown_index_failure(source, markdown, str(error))
+                failures.append({"markdown_path": str(markdown), "error": str(error)})
+        return {"ok": not failures, "indexed": indexed, "failures": failures}
 
     def open_folder(self, directory_id: str) -> bool:
         """Abre no Explorer somente uma pasta previamente autorizada."""
@@ -2490,6 +2589,7 @@ class BridgeApi:
                 page_numbers_by_file,
             )
         except Exception as error:
+            self._set_conversion_state("failed", error=str(error))
             self._emit(
                 "batch_error",
                 {"error_message": str(error), "details": traceback.format_exc()},
@@ -2497,6 +2597,8 @@ class BridgeApi:
         finally:
             self.is_converting = False
             self.is_paused = False
+            with self._active_checkpoint_lock:
+                self._active_checkpoint_dirs.clear()
             self._conversion_finished.set()
 
     def _resolve_worker_count(self, total_files: int, requested_workers: int | None = None) -> int:
@@ -2632,6 +2734,10 @@ class BridgeApi:
                         },
                     )
                     self._emit("status", {"message": f"Convertendo {next_index}/{total}: {source.name}"})
+                    checkpoint_dir = self._checkpoint_dir(reservation)
+                    self._write_conversion_control(checkpoint_dir, "running")
+                    with self._active_checkpoint_lock:
+                        self._active_checkpoint_dirs.add(checkpoint_dir)
                     pool = ProcessPoolExecutor(max_workers=1, initializer=init_worker)
                     try:
                         future = pool.submit(
@@ -2644,9 +2750,11 @@ class BridgeApi:
                             reservation,
                             split_mode,
                             page_numbers,
-                            self._checkpoint_dir(reservation),
+                            checkpoint_dir,
                         )
                     except (BrokenProcessPool, RuntimeError) as error:
+                        with self._active_checkpoint_lock:
+                            self._active_checkpoint_dirs.discard(checkpoint_dir)
                         pool.shutdown(wait=False, cancel_futures=True)
                         failure = ConversionFailure(source=source, error_message=str(error), details=traceback.format_exc())
                         failures.append(failure)
@@ -2660,10 +2768,14 @@ class BridgeApi:
                 self.resume_processing.wait(timeout=0.2)
                 continue
 
+            self._sync_active_pause_status()
+
             wait_timeout = 0 if self.cancel_requested.is_set() else 0.2
             done, _ = wait(pending.keys(), timeout=wait_timeout, return_when=FIRST_COMPLETED)
             for future in done:
-                source, pool, _, _ = pending.pop(future)
+                source, pool, _, reservation = pending.pop(future)
+                with self._active_checkpoint_lock:
+                    self._active_checkpoint_dirs.discard(self._checkpoint_dir(reservation))
                 try:
                     result = future.result()
                 except Exception as error:
@@ -2672,9 +2784,12 @@ class BridgeApi:
                     pool.shutdown(wait=True, cancel_futures=True)
 
                 if isinstance(result, ConversionFailure):
-                    failures.append(result)
-                    self._mark_journal_file_finished(source, "failed")
-                    self._emit_file_error(result)
+                    if self.cancel_requested.is_set() and result.error_message.startswith("Conversão interrompida"):
+                        pass
+                    else:
+                        failures.append(result)
+                        self._mark_journal_file_finished(source, "failed")
+                        self._emit_file_error(result)
                 else:
                     successes.append(result)
                     self._mark_journal_file_finished(source, "completed")
@@ -2686,6 +2801,8 @@ class BridgeApi:
                     self._terminate_conversion_pool(pool)
                     self._cleanup_conversion_temps(reservation)
                 pending.clear()
+                with self._active_checkpoint_lock:
+                    self._active_checkpoint_dirs.clear()
                 if not self._shutdown_requested:
                     self._clear_conversion_journal(remove_checkpoints=True)
                 break
@@ -2698,6 +2815,8 @@ class BridgeApi:
             ]
             for future in over_budget:
                 source, pool, started, reservation = pending.pop(future)
+                with self._active_checkpoint_lock:
+                    self._active_checkpoint_dirs.discard(self._checkpoint_dir(reservation))
                 timed_out = now - started > MAX_CONVERSION_SECONDS
                 self._terminate_conversion_pool(pool)
                 self._cleanup_conversion_temps(reservation)
@@ -2723,10 +2842,28 @@ class BridgeApi:
 
     @staticmethod
     def _terminate_conversion_pool(pool: ProcessPoolExecutor) -> None:
+        processes = tuple((getattr(pool, "_processes", {}) or {}).values())
         try:
             pool.terminate_workers()
         except (AttributeError, BrokenProcessPool, RuntimeError):
+            for process in processes:
+                try:
+                    process.terminate()
+                except (AttributeError, OSError):
+                    pass
+        deadline = time.monotonic() + 2.5
+        for process in processes:
+            try:
+                process.join(timeout=max(0.0, deadline - time.monotonic()))
+                if process.is_alive():
+                    process.kill()
+                    process.join(timeout=max(0.0, deadline - time.monotonic()))
+            except (AttributeError, OSError):
+                pass
+        try:
             pool.shutdown(wait=False, cancel_futures=True)
+        except (AttributeError, BrokenProcessPool, RuntimeError):
+            pass
 
     @staticmethod
     def _pool_memory_exceeded(pool: ProcessPoolExecutor) -> bool:
@@ -2757,12 +2894,23 @@ class BridgeApi:
                     candidate.unlink(missing_ok=True)
 
     def _emit_file_success(self, result: ConversionResult) -> None:
+        index_status = "indexed"
+        index_error = ""
         try:
-            if result.markdown_path.is_file():
-                content = result.markdown_path.read_text(encoding="utf-8")
-                self._library.index_markdown_file(result.source, result.markdown_path, content)
+            if not result.markdown_path.is_file():
+                raise FileNotFoundError("o Markdown final não foi encontrado")
+            content = result.markdown_path.read_text(encoding="utf-8")
+            self._library.index_markdown_file(result.source, result.markdown_path, content)
+            if not self._library.verify_markdown_index(result.source, result.markdown_path):
+                raise RuntimeError("o índice não confirmou o conteúdo gravado")
         except Exception as err:
-            logger.debug(f"Falha ao indexar markdown {result.markdown_path}: {err}")
+            index_status = "failed"
+            index_error = str(err).replace("\r", " ").replace("\n", " ")[:1000]
+            logger.error("Falha ao indexar markdown %s: %s", result.markdown_path, err, exc_info=True)
+            try:
+                self._library.record_markdown_index_failure(result.source, result.markdown_path, index_error)
+            except Exception:
+                logger.error("Falha ao persistir erro de indexação de %s", result.markdown_path, exc_info=True)
 
         markdown = self._register_markdown(result.markdown_path, "conversion_result")
         output_directory = self._register_directory(result.markdown_path.parent, "conversion_result")
@@ -2792,6 +2940,8 @@ class BridgeApi:
                 "failed_pages": list(result.failed_pages),
                 "warning_pages": list(result.warning_pages),
                 "fidelity_review_pages": list(result.fidelity_review_pages),
+                "index_status": index_status,
+                "index_error": index_error,
             },
         )
 
@@ -2835,6 +2985,7 @@ class BridgeApi:
             for result in successes
             if result.fidelity_review_pages
         ]
+        self._set_conversion_state("completed")
         self._emit(
             "batch_done",
             {
@@ -2859,6 +3010,7 @@ class BridgeApi:
         output_dir: Path,
     ) -> None:
         elapsed_seconds = time.perf_counter() - self._batch_start_time
+        self._set_conversion_state("stopped")
         self._emit(
             "batch_stopped",
             {

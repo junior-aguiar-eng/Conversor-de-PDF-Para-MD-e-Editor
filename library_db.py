@@ -203,7 +203,10 @@ class LibraryDatabase:
                     last_accessed REAL DEFAULT 0,
                     created_at REAL DEFAULT 0,
                     availability_status TEXT DEFAULT 'available',
-                    status_updated_at REAL DEFAULT 0
+                    status_updated_at REAL DEFAULT 0,
+                    index_status TEXT DEFAULT 'not_indexed',
+                    index_error TEXT DEFAULT '',
+                    index_updated_at REAL DEFAULT 0
                 )
             """)
 
@@ -213,6 +216,12 @@ class LibraryDatabase:
                 conn.execute("ALTER TABLE documents ADD COLUMN availability_status TEXT DEFAULT 'available'")
             if "status_updated_at" not in cols:
                 conn.execute("ALTER TABLE documents ADD COLUMN status_updated_at REAL DEFAULT 0")
+            if "index_status" not in cols:
+                conn.execute("ALTER TABLE documents ADD COLUMN index_status TEXT DEFAULT 'not_indexed'")
+            if "index_error" not in cols:
+                conn.execute("ALTER TABLE documents ADD COLUMN index_error TEXT DEFAULT ''")
+            if "index_updated_at" not in cols:
+                conn.execute("ALTER TABLE documents ADD COLUMN index_updated_at REAL DEFAULT 0")
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS bookmarks (
@@ -389,17 +398,20 @@ class LibraryDatabase:
                 """
                 INSERT INTO documents (
                     file_path, file_name, markdown_path, is_converted, last_accessed, created_at,
-                    availability_status, status_updated_at
+                    availability_status, status_updated_at, index_status, index_error, index_updated_at
                 )
-                VALUES (?, ?, ?, 1, ?, ?, 'available', ?)
+                VALUES (?, ?, ?, 1, ?, ?, 'available', ?, 'indexed', '', ?)
                 ON CONFLICT(file_path) DO UPDATE SET
                     markdown_path = excluded.markdown_path,
                     is_converted = 1,
                     last_accessed = excluded.last_accessed,
                     availability_status = 'available',
-                    status_updated_at = excluded.status_updated_at
+                    status_updated_at = excluded.status_updated_at,
+                    index_status = 'indexed',
+                    index_error = '',
+                    index_updated_at = excluded.index_updated_at
                 """,
-                (path_str, file_name, md_path_str, now, now, now),
+                (path_str, file_name, md_path_str, now, now, now, now),
             )
 
             conn.execute("DELETE FROM doc_fts WHERE file_path = ? AND content_type = 'markdown'", (path_str,))
@@ -413,6 +425,65 @@ class LibraryDatabase:
             )
 
         self._execute_write(_do_index_md)
+
+    def verify_markdown_index(self, file_path: str | Path, markdown_path: str | Path) -> bool:
+        path_str = str(Path(file_path).resolve())
+        md_path_str = str(Path(markdown_path).resolve())
+        with _DB_LOCK, self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT d.index_status,
+                       EXISTS(SELECT 1 FROM doc_fts f WHERE f.file_path = d.file_path AND f.content_type = 'markdown') AS indexed
+                FROM documents d
+                WHERE d.file_path = ? AND d.markdown_path = ?
+                """,
+                (path_str, md_path_str),
+            ).fetchone()
+        return bool(row and row["index_status"] == "indexed" and row["indexed"])
+
+    def record_markdown_index_failure(
+        self, file_path: str | Path, markdown_path: str | Path, error: str
+    ) -> None:
+        path_str = str(Path(file_path).resolve())
+        md_path_str = str(Path(markdown_path).resolve())
+        file_name = Path(file_path).name
+        now = time.time()
+        safe_error = str(error).replace("\r", " ").replace("\n", " ")[:1000]
+
+        def _record(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                INSERT INTO documents (
+                    file_path, file_name, markdown_path, is_converted, last_accessed, created_at,
+                    availability_status, status_updated_at, index_status, index_error, index_updated_at
+                ) VALUES (?, ?, ?, 1, ?, ?, 'available', ?, 'failed', ?, ?)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    markdown_path = excluded.markdown_path,
+                    is_converted = 1,
+                    last_accessed = excluded.last_accessed,
+                    index_status = 'failed',
+                    index_error = excluded.index_error,
+                    index_updated_at = excluded.index_updated_at
+                """,
+                (path_str, file_name, md_path_str, now, now, now, safe_error, now),
+            )
+
+        self._execute_write(_record)
+
+    def get_recent_markdowns(self, limit: int = 40) -> list[dict[str, Any]]:
+        with _DB_LOCK, self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT file_path, file_name, markdown_path, last_accessed, index_status, index_error
+                FROM documents
+                WHERE is_converted = 1 AND markdown_path != ''
+                  AND (availability_status IS NULL OR availability_status != 'user_removed')
+                ORDER BY last_accessed DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def check_and_update_document_availability(self, file_path: str) -> str:
         """Verifica a existência física do arquivo e atualiza o status de disponibilidade sem apagar dados."""
