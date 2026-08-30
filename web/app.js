@@ -4893,7 +4893,7 @@ class ManualManager {
   }
 
   getRawMarkdownContent() {
-    return `# NexoJuris v1.4.0 - Manual de Instruções
+    return `# NexoJuris v1.4.1 - Manual de Instruções
 
 ## Capítulo 1: Visão geral e privacidade
 O NexoJuris reúne conversão, leitura, edição, busca e áudio de documentos. As operações centrais acontecem no computador, sem enviar os arquivos a serviços externos.

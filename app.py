@@ -35,6 +35,8 @@ from web_api import BridgeApi
 
 logger = logging.getLogger(__name__)
 
+_SINGLE_INSTANCE_MUTEX_NAME = "Local\\NexoJurisConversor-D3EFD865-4B37-41DB-97FB-A0DB6607E863"
+
 
 def _release_probe_worker(result_queue: Any) -> None:
     """Alvo importável usado para validar multiprocessing com spawn no executável."""
@@ -106,6 +108,26 @@ def _show_message(message: str, *, error: bool) -> None:
         ctypes.windll.user32.MessageBoxW(None, message, APP_NAME, icon)
         return
     print(message, file=sys.stderr if error else sys.stdout)
+
+
+def _acquire_gui_instance_lock() -> tuple[int | None, bool]:
+    """Adquire um mutex por sessão para impedir duas interfaces simultâneas."""
+    if sys.platform != "win32":
+        return None, False
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_mutex = kernel32.CreateMutexW
+    create_mutex.argtypes = (ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p)
+    create_mutex.restype = ctypes.c_void_p
+    handle = create_mutex(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(handle), ctypes.get_last_error() == 183
+
+
+def _release_gui_instance_lock(handle: int | None) -> None:
+    if sys.platform == "win32" and handle is not None:
+        ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
 
 
 def run_quick_convert(paths: list[str]) -> None:
@@ -246,7 +268,15 @@ def main() -> int:
         run_quick_convert(argv_paths)
         return 0
 
+    instance_handle: int | None = None
     try:
+        instance_handle, already_running = _acquire_gui_instance_lock()
+        if already_running:
+            _show_message(
+                f"{APP_NAME} já está aberto. Use a janela existente.",
+                error=False,
+            )
+            return 0
         validate_runtime_dependencies()
         run_gui()
         return 0
@@ -264,6 +294,8 @@ def main() -> int:
             error=True,
         )
         return 1
+    finally:
+        _release_gui_instance_lock(instance_handle)
 
 
 if __name__ == "__main__":
