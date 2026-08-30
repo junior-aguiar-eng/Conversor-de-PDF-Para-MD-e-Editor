@@ -7,7 +7,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from admin_licensing import AdminLicenseService, EncryptedPrivateKeyProvider
+from admin_licensing import (
+    ActiveEncryptedKeyProvider,
+    AdminLicenseService,
+    EncryptedPrivateKeyProvider,
+    EncryptedSigningKeyStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +24,12 @@ class AdminLicenseBridge:
         *,
         admin_user_id: str | None = None,
         private_key_path: str | Path | None = None,
+        signing_key_store: EncryptedSigningKeyStore | None = None,
     ) -> None:
         self.service = service
         self.admin_user_id = admin_user_id
         self.private_key_path = Path(private_key_path).resolve() if private_key_path else None
+        self.signing_key_store = signing_key_store
         self._window: Any = None
 
     def set_window(self, window: Any) -> None:
@@ -238,7 +245,18 @@ class AdminLicenseBridge:
 
         def operation() -> dict[str, Any]:
             service = self.service
-            if self.private_key_path is not None:
+            if self.signing_key_store is not None:
+                provider = ActiveEncryptedKeyProvider(
+                    self.signing_key_store,
+                    purpose="license",
+                    password_provider=lambda: private_key_password,
+                )
+                service = AdminLicenseService(
+                    self.service.database,
+                    key_id=provider.key_id,
+                    private_key_provider=provider,
+                )
+            elif self.private_key_path is not None:
                 provider = EncryptedPrivateKeyProvider(self.private_key_path, lambda: private_key_password)
                 service = AdminLicenseService(
                     self.service.database,

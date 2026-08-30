@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "NexoJuris - Conversor"
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.4.0"
 CURRENT_TERMS_VERSION = "1.0"
 MAX_PAGE_COUNT = 1_000
 DEFAULT_MAX_CHUNK_CHARACTERS = 60_000

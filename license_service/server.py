@@ -78,10 +78,14 @@ def serve_https(
     port: int,
     certificate: str | Path,
     private_key: str | Path,
+    private_key_password: str | None = None,
 ) -> None:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(str(certificate), str(private_key))
+    if private_key_password is None:
+        context.load_cert_chain(str(certificate), str(private_key))
+    else:
+        context.load_cert_chain(str(certificate), str(private_key), password=private_key_password)
     server = ThreadingHTTPServer((host, port), build_handler(api))
     server.socket = context.wrap_socket(server.socket, server_side=True)
     server.serve_forever()

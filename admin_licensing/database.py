@@ -18,7 +18,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 _BACKUP_MAGIC = b"NXJ-ADMIN-BACKUP\x01"
 _BACKUP_SALT_BYTES = 16
 _BACKUP_NONCE_BYTES = 12
@@ -65,9 +65,18 @@ def _derive_backup_key(password: str, salt: bytes) -> bytes:
 class AdminDatabase:
     """Abre conexões curtas e transações ``BEGIN IMMEDIATE`` para concorrência previsível."""
 
-    def __init__(self, path: str | Path, *, busy_timeout_ms: int = 10_000) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        busy_timeout_ms: int = 10_000,
+        environment: str | None = None,
+    ) -> None:
         self.path = Path(path).expanduser().resolve()
         self.busy_timeout_ms = busy_timeout_ms
+        if environment not in {None, "test", "production"}:
+            raise ValueError("O ambiente administrativo deve ser test ou production.")
+        self.environment = environment
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -113,6 +122,11 @@ class AdminDatabase:
                     password_hash TEXT,
                     active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
                     created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS operational_settings (
+                    setting_key TEXT PRIMARY KEY,
+                    setting_value TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS customers (
@@ -236,8 +250,10 @@ class AdminDatabase:
                     token_hash TEXT NOT NULL UNIQUE,
                     label TEXT NOT NULL,
                     active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                    requires_totp INTEGER NOT NULL DEFAULT 0 CHECK (requires_totp IN (0, 1)),
                     created_at TEXT NOT NULL,
                     last_used_at TEXT,
+                    revoked_at TEXT,
                     admin_user_id TEXT REFERENCES admin_users(admin_user_id)
                 );
 
@@ -264,7 +280,7 @@ class AdminDatabase:
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                     version INTEGER NOT NULL
                 );
-                INSERT INTO admin_schema(singleton, version) VALUES (1, 4)
+                INSERT INTO admin_schema(singleton, version) VALUES (1, 5)
                     ON CONFLICT(singleton) DO UPDATE SET version = MAX(version, excluded.version);
 
                 CREATE TRIGGER IF NOT EXISTS immutable_customer_id
@@ -295,6 +311,18 @@ class AdminDatabase:
                 BEFORE DELETE ON legacy_license_migrations BEGIN SELECT RAISE(ABORT, 'legacy migrations are append-only'); END;
                 """
             )
+            if self.environment is not None:
+                bound_environment = connection.execute(
+                    "SELECT setting_value FROM operational_settings WHERE setting_key = 'environment'"
+                ).fetchone()
+                if bound_environment and bound_environment[0] != self.environment:
+                    raise RuntimeError(
+                        f"O banco administrativo pertence ao ambiente {bound_environment[0]}, não a {self.environment}."
+                    )
+                connection.execute(
+                    "INSERT OR IGNORE INTO operational_settings(setting_key, setting_value) VALUES ('environment', ?)",
+                    (self.environment,),
+                )
             license_columns = {
                 str(row[1]) for row in connection.execute("PRAGMA table_info(licenses)").fetchall()
             }
@@ -310,6 +338,15 @@ class AdminDatabase:
             ):
                 if column not in lease_columns:
                     connection.execute(f"ALTER TABLE online_leases ADD COLUMN {column} {declaration}")
+            token_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(admin_api_tokens)").fetchall()
+            }
+            for column, declaration in (
+                ("requires_totp", "INTEGER NOT NULL DEFAULT 0 CHECK (requires_totp IN (0, 1))"),
+                ("revoked_at", "TEXT"),
+            ):
+                if column not in token_columns:
+                    connection.execute(f"ALTER TABLE admin_api_tokens ADD COLUMN {column} {declaration}")
             connection.execute(
                 """
                 INSERT INTO license_search(license_id, content)

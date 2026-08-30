@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from admin_licensing import AdminDatabase, AdminLicenseService
 from admin_licensing.database import utc_now_text
+from admin_licensing.security import verify_totp
 
 from .protocol import LeasePayload, issue_lease, validate_nonce
 
@@ -72,6 +73,8 @@ class LicenseServiceApi:
         lease_private_key_provider: Callable[[], Ed25519PrivateKey],
         public_rate_limit: int = 60,
         admin_rate_limit: int = 120,
+        require_admin_totp: bool = False,
+        admin_totp_secret_provider: Callable[[str], str] | None = None,
     ) -> None:
         self.database = database
         self.admin_service = admin_service
@@ -79,6 +82,10 @@ class LicenseServiceApi:
         self.lease_private_key_provider = lease_private_key_provider
         self.public_limiter = SlidingWindowRateLimiter(limit=public_rate_limit)
         self.admin_limiter = SlidingWindowRateLimiter(limit=admin_rate_limit)
+        if require_admin_totp and admin_totp_secret_provider is None:
+            raise ValueError("O segundo fator administrativo requer um provedor de segredo TOTP.")
+        self.require_admin_totp = require_admin_totp
+        self.admin_totp_secret_provider = admin_totp_secret_provider
 
     def register_admin_token(
         self,
@@ -86,17 +93,29 @@ class LicenseServiceApi:
         *,
         label: str,
         admin_user_id: str | None = None,
+        requires_totp: bool | None = None,
     ) -> str:
         if len(token) < 32:
             raise ValueError("O token administrativo deve possuir ao menos 32 caracteres.")
         token_id = f"TOK-{uuid.uuid4().hex.upper()}"
+        effective_totp = self.require_admin_totp if requires_totp is None else requires_totp
+        if effective_totp and admin_user_id is None:
+            raise ValueError("Tokens com segundo fator devem pertencer a um usuário administrativo.")
         with self.database.transaction() as connection:
             connection.execute(
                 """
-                INSERT INTO admin_api_tokens(token_id, token_hash, label, created_at, admin_user_id)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO admin_api_tokens(
+                    token_id, token_hash, label, requires_totp, created_at, admin_user_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (token_id, self._token_hash(token), label.strip(), utc_now_text(), admin_user_id),
+                (
+                    token_id,
+                    self._token_hash(token),
+                    label.strip(),
+                    int(effective_totp),
+                    utc_now_text(),
+                    admin_user_id,
+                ),
             )
             self._audit(
                 connection,
@@ -104,9 +123,38 @@ class LicenseServiceApi:
                 "admin_token",
                 token_id,
                 admin_user_id,
-                {"label": label.strip()},
+                {"label": label.strip(), "requires_totp": effective_totp},
             )
         return token_id
+
+    def revoke_admin_token(
+        self,
+        token_id: str,
+        *,
+        confirmation: str,
+        admin_user_id: str | None = None,
+    ) -> None:
+        expected = f"REVOGAR-TOKEN:{token_id}"
+        if confirmation != expected:
+            raise PermissionError(f"Confirmação obrigatória: {expected}")
+        with self.database.transaction() as connection:
+            row = connection.execute(
+                "SELECT active FROM admin_api_tokens WHERE token_id = ?", (token_id,)
+            ).fetchone()
+            if not row or not row["active"]:
+                raise ValueError("Token administrativo ativo não encontrado.")
+            connection.execute(
+                "UPDATE admin_api_tokens SET active = 0, revoked_at = ? WHERE token_id = ?",
+                (utc_now_text(), token_id),
+            )
+            self._audit(
+                connection,
+                "admin_token.revoked",
+                "admin_token",
+                token_id,
+                admin_user_id,
+                {},
+            )
 
     def handle(
         self,
@@ -126,7 +174,7 @@ class LicenseServiceApi:
         if not limiter.allow(f"{client_ip}:{'admin' if is_admin else 'public'}", instant):
             return ApiResponse(429, {"error": "rate_limit_exceeded", "message": "Limite de requisições excedido."})
         try:
-            admin_user_id = self._authenticate(headers or {}) if is_admin else None
+            admin_user_id = self._authenticate(headers or {}, instant) if is_admin else None
             if method == "POST" and path in {
                 "/v1/licenses/check",
                 "/v1/licenses/activate",
@@ -271,8 +319,9 @@ class LicenseServiceApi:
                             now + timedelta(days=offline_days),
                         )
                         lease_expiration = self._timestamp(lease_end)
+            lease_key_id = self._active_lease_key_id()
             payload = LeasePayload(
-                key_id=self.lease_key_id,
+                key_id=lease_key_id,
                 license_id=license_id,
                 status=status,
                 server_time=server_time,
@@ -280,7 +329,7 @@ class LicenseServiceApi:
                 lease_expires_at=lease_expiration,
                 nonce=nonce,
             )
-            document = issue_lease(payload, self.lease_private_key_provider())
+            document = issue_lease(payload, self._lease_private_key_for(lease_key_id))
             if status == "active" and device_id:
                 connection.execute(
                     "UPDATE online_leases SET status = 'expired' WHERE license_id = ? AND status = 'active'",
@@ -301,7 +350,7 @@ class LicenseServiceApi:
                         lease_expiration,
                         server_time,
                         nonce_hash,
-                        self.lease_key_id,
+                        lease_key_id,
                         json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8"),
                     ),
                 )
@@ -408,7 +457,7 @@ class LicenseServiceApi:
         )
         return ApiResponse(200, {"device_id": device_id})
 
-    def _authenticate(self, headers: Mapping[str, str]) -> str | None:
+    def _authenticate(self, headers: Mapping[str, str], now: datetime) -> str | None:
         authorization = next((value for key, value in headers.items() if key.casefold() == "authorization"), "")
         if not authorization.startswith("Bearer "):
             raise ApiRequestError(401, "Autenticação administrativa obrigatória.")
@@ -416,13 +465,32 @@ class LicenseServiceApi:
         if len(token) < 32:
             raise ApiRequestError(401, "Token administrativo inválido.")
         token_hash = self._token_hash(token)
-        with self.database.read() as connection:
+        with self.database.transaction() as connection:
             row = connection.execute(
-                "SELECT token_id, admin_user_id FROM admin_api_tokens WHERE token_hash = ? AND active = 1",
+                """
+                SELECT token.token_id, token.admin_user_id, token.requires_totp
+                FROM admin_api_tokens token
+                LEFT JOIN admin_users admin ON admin.admin_user_id = token.admin_user_id
+                WHERE token.token_hash = ? AND token.active = 1
+                  AND (token.admin_user_id IS NULL OR admin.active = 1)
+                """,
                 (token_hash,),
             ).fetchone()
             if not row:
                 raise ApiRequestError(401, "Token administrativo inválido.")
+            if self.require_admin_totp or row["requires_totp"]:
+                if row["admin_user_id"] is None or self.admin_totp_secret_provider is None:
+                    raise ApiRequestError(401, "Segundo fator administrativo indisponível.")
+                supplied_code = next(
+                    (value for key, value in headers.items() if key.casefold() == "x-nexojuris-totp"), ""
+                )
+                secret = self.admin_totp_secret_provider(str(row["admin_user_id"]))
+                if not verify_totp(secret, supplied_code, at=now):
+                    raise ApiRequestError(401, "Segundo fator administrativo inválido.")
+            connection.execute(
+                "UPDATE admin_api_tokens SET last_used_at = ? WHERE token_id = ?",
+                (self._timestamp(now), row["token_id"]),
+            )
         return row["admin_user_id"]
 
     @staticmethod
@@ -437,6 +505,18 @@ class LicenseServiceApi:
     @staticmethod
     def _token_hash(token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def _active_lease_key_id(self) -> str:
+        dynamic_key_id = getattr(self.lease_private_key_provider, "key_id", None)
+        return str(dynamic_key_id or self.lease_key_id)
+
+    def _lease_private_key_for(self, key_id: str) -> Ed25519PrivateKey:
+        resolver = getattr(self.lease_private_key_provider, "for_key", None)
+        if callable(resolver):
+            return resolver(key_id)
+        if key_id != self.lease_key_id:
+            raise RuntimeError(f"A chave privada {key_id} não está disponível para emissão de lease.")
+        return self.lease_private_key_provider()
 
     @staticmethod
     def _utc(value: datetime | None) -> datetime:

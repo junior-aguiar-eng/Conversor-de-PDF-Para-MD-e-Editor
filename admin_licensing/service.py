@@ -29,6 +29,7 @@ from license_core import (
 )
 
 from .database import AdminDatabase, ConfirmationRequiredError, utc_now_text
+from .security import hash_admin_password, verify_admin_password
 
 _MACHINE_ID = re.compile(r"NXJ2-(?:[A-F0-9]{4}-){3}[A-F0-9]{4}")
 _FEATURES = frozenset({"converter", "ocr", "reader"})
@@ -134,22 +135,98 @@ class AdminLicenseService:
         display_name: str,
         *,
         role: str = "operator",
+        password: str | None = None,
         password_hash: str | None = None,
     ) -> str:
         admin_id = _id("ADM")
         normalized_username = username.strip().casefold()
         if not normalized_username or not display_name.strip():
             raise ValueError("Nome de usuário e nome de exibição são obrigatórios.")
+        if password is not None and password_hash is not None:
+            raise ValueError("Informe a senha ou o hash, nunca ambos.")
+        stored_password_hash = hash_admin_password(password) if password is not None else password_hash
         with self.database.transaction() as connection:
             connection.execute(
                 """
                 INSERT INTO admin_users(admin_user_id, username, display_name, role, password_hash, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (admin_id, normalized_username, display_name.strip(), role, password_hash, utc_now_text()),
+                (admin_id, normalized_username, display_name.strip(), role, stored_password_hash, utc_now_text()),
             )
             self._audit(connection, "admin_user.created", "admin_user", admin_id, None, {"role": role})
         return admin_id
+
+    def authenticate_admin(self, username: str, password: str) -> str:
+        normalized_username = username.strip().casefold()
+        with self.database.read() as connection:
+            row = connection.execute(
+                "SELECT admin_user_id, password_hash, active FROM admin_users WHERE username = ?",
+                (normalized_username,),
+            ).fetchone()
+        if not row or not row["active"] or not verify_admin_password(password, row["password_hash"]):
+            raise PermissionError("Credenciais administrativas inválidas.")
+        return str(row["admin_user_id"])
+
+    def set_admin_password(
+        self,
+        admin_user_id: str,
+        new_password: str,
+        *,
+        current_password: str | None = None,
+        acting_admin_user_id: str | None = None,
+    ) -> None:
+        with self.database.transaction() as connection:
+            self._require_admin(connection, acting_admin_user_id)
+            row = connection.execute(
+                "SELECT username, password_hash, active FROM admin_users WHERE admin_user_id = ?",
+                (admin_user_id,),
+            ).fetchone()
+            if not row or not row["active"]:
+                raise RecordNotFoundError("Usuário administrativo ativo não encontrado.")
+            if row["password_hash"] and not verify_admin_password(current_password or "", row["password_hash"]):
+                raise PermissionError("A senha administrativa atual é inválida.")
+            connection.execute(
+                "UPDATE admin_users SET password_hash = ? WHERE admin_user_id = ?",
+                (hash_admin_password(new_password), admin_user_id),
+            )
+            self._audit(
+                connection,
+                "admin_user.password_changed",
+                "admin_user",
+                admin_user_id,
+                acting_admin_user_id,
+            )
+
+    def revoke_admin_user(
+        self,
+        admin_user_id: str,
+        *,
+        reason: str,
+        confirmation: str,
+        acting_admin_user_id: str | None = None,
+    ) -> None:
+        expected = f"REVOGAR-ADMIN:{admin_user_id}"
+        if confirmation != expected:
+            raise ConfirmationRequiredError(f"Confirmação obrigatória: {expected}")
+        if not reason.strip():
+            raise ValueError("O motivo da revogação é obrigatório.")
+        with self.database.transaction() as connection:
+            self._require_admin(connection, acting_admin_user_id)
+            row = connection.execute(
+                "SELECT active FROM admin_users WHERE admin_user_id = ?", (admin_user_id,)
+            ).fetchone()
+            if not row or not row["active"]:
+                raise RecordNotFoundError("Usuário administrativo ativo não encontrado.")
+            connection.execute("UPDATE admin_users SET active = 0 WHERE admin_user_id = ?", (admin_user_id,))
+            connection.execute("UPDATE admin_api_tokens SET active = 0 WHERE admin_user_id = ?", (admin_user_id,))
+            self._audit(
+                connection,
+                "admin_user.revoked",
+                "admin_user",
+                admin_user_id,
+                acting_admin_user_id,
+                {"reason": reason.strip()},
+            )
 
     def create_customer(
         self,
@@ -228,6 +305,7 @@ class AdminLicenseService:
         if issued > starts:
             starts = issued
         expires = _add_months(starts, term_months)
+        active_key_id = self._active_key_id()
         with self.database.transaction() as connection:
             self._require_admin(connection, admin_user_id)
             if not connection.execute("SELECT 1 FROM customers WHERE customer_id = ?", (customer_id,)).fetchone():
@@ -252,7 +330,7 @@ class AdminLicenseService:
                 (
                     license_id,
                     customer_id,
-                    self.key_id,
+                    active_key_id,
                     _timestamp(issued),
                     _timestamp(starts),
                     _timestamp(expires),
@@ -582,7 +660,7 @@ class AdminLicenseService:
             features=features,
             customer_reference=row["customer_reference"],
         )
-        document = issue_license(payload, self.private_key_provider())
+        document = issue_license(payload, self._private_key_for(row["key_id"]))
         target = Path(destination).expanduser().resolve()
         if target.suffix.lower() != LICENSE_FILE_SUFFIX:
             raise ValueError(f"A exportação deve usar a extensão {LICENSE_FILE_SUFFIX}.")
@@ -982,6 +1060,18 @@ class AdminLicenseService:
         ).fetchone()
         if not row or not row[0]:
             raise RecordNotFoundError("Usuário administrativo ativo não encontrado.")
+
+    def _active_key_id(self) -> str:
+        dynamic_key_id = getattr(self.private_key_provider, "key_id", None)
+        return str(dynamic_key_id or self.key_id)
+
+    def _private_key_for(self, key_id: str) -> Ed25519PrivateKey:
+        resolver = getattr(self.private_key_provider, "for_key", None)
+        if callable(resolver):
+            return resolver(key_id)
+        if key_id != self.key_id:
+            raise AdminLicenseError(f"A chave privada {key_id} não está disponível para exportação.")
+        return self.private_key_provider()
 
     def _audit(
         self,

@@ -25,10 +25,12 @@ class InstallerManifestTests(unittest.TestCase):
             "file_authorization.py",
             "library_db.py",
             "licensing.py",
+            "license_online_config.py",
             "markdown_utils.py",
             "models.py",
             "ocr_engine.py",
             "online_services.py",
+            "online_license_client.py",
             "production_diagnostics.py",
             "text_fidelity.py",
             "web_api.py",
@@ -37,6 +39,9 @@ class InstallerManifestTests(unittest.TestCase):
 
         for filename in required_files:
             self.assertTrue((project_root / filename).is_file(), filename)
+        for package in ("license_core",):
+            self.assertIn(f'Join-Path $origem "{package}"', script)
+            self.assertTrue((project_root / package / "__init__.py").is_file(), package)
 
 
 if __name__ == "__main__":
