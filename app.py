@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ctypes
+import json
+import logging
 import multiprocessing
 import sys
 import time
@@ -28,7 +30,73 @@ from models import (
     ConversionResult,
     build_summary_message,
 )
+from production_diagnostics import configure_production_diagnostics, diagnostic_status, log_startup_failure
 from web_api import BridgeApi
+
+logger = logging.getLogger(__name__)
+
+
+def _release_probe_worker(result_queue: Any) -> None:
+    """Alvo importável usado para validar multiprocessing com spawn no executável."""
+    result_queue.put({"pid": multiprocessing.current_process().pid, "spawn": True})
+
+
+def run_release_probe(report_path: Path) -> int:
+    """Executa verificações não interativas diretamente no artefato PyInstaller."""
+    checks: dict[str, Any] = {}
+    failures: list[str] = []
+    try:
+        validate_runtime_dependencies()
+        checks["runtime_dependencies"] = True
+    except Exception as error:
+        checks["runtime_dependencies"] = False
+        failures.append(f"runtime: {error}")
+
+    try:
+        import webview.platforms.edgechromium  # noqa: F401
+
+        checks["edgechromium_backend_import"] = True
+    except Exception as error:
+        checks["edgechromium_backend_import"] = False
+        failures.append(f"edgechromium: {error}")
+
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue()
+    process = context.Process(target=_release_probe_worker, args=(result_queue,), name="ReleaseSpawnProbe")
+    try:
+        process.start()
+        process.join(timeout=30.0)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5.0)
+            raise TimeoutError("o processo spawn não finalizou em 30 segundos")
+        child_result = result_queue.get(timeout=2.0)
+        if process.exitcode != 0 or not child_result.get("spawn"):
+            raise RuntimeError(f"processo spawn retornou exitcode={process.exitcode}")
+        checks["multiprocessing_spawn"] = True
+        checks["spawn_child_pid"] = child_result["pid"]
+    except Exception as error:
+        checks["multiprocessing_spawn"] = False
+        failures.append(f"spawn: {error}")
+    finally:
+        result_queue.close()
+
+    payload = {
+        "ok": not failures,
+        "app_version": APP_VERSION,
+        "executable": str(Path(sys.executable).resolve()),
+        "checks": checks,
+        "failures": failures,
+    }
+    report_path = report_path.expanduser().resolve()
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = report_path.with_suffix(f"{report_path.suffix}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(report_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return 0 if payload["ok"] else 1
 
 
 def _show_message(message: str, *, error: bool) -> None:
@@ -46,18 +114,21 @@ def run_quick_convert(paths: list[str]) -> None:
     try:
         require_software_activation()
     except LicenseRequiredError as error:
+        logger.warning("Conversão rápida bloqueada por licença: %s", error)
         _show_message(str(error), error=True)
         return
 
     try:
         validate_runtime_dependencies()
     except RuntimeError as error:
+        logger.error("Dependências de runtime indisponíveis: %s", error, exc_info=True)
         _show_message(str(error), error=True)
         return
 
     try:
         DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     except OSError as error:
+        logger.error("Falha de permissão ou disco na pasta de saída: %s", error, exc_info=True)
         _show_message(f"Não foi possível criar a pasta de saída:\n{error}", error=True)
         return
 
@@ -102,6 +173,7 @@ def run_quick_convert(paths: list[str]) -> None:
                 )
             )
         except Exception as error:
+            logger.error("Falha na conversão rápida do PDF %s: %s", source.name, error, exc_info=True)
             failures.append(ConversionFailure(source=source, error_message=str(error), details=traceback.format_exc()))
 
     summary = BatchConversionSummary(successes, failures)
@@ -131,6 +203,7 @@ def configure_shutdown_handlers(window: Any, api: BridgeApi) -> None:
                 "Uma operação local ainda está finalizando uma escrita. Aguarde alguns segundos e tente fechar novamente.",
             )
             return False
+        logger.info("Encerramento coordenado concluído")
         return True
 
     window.events.closing += handle_closing
@@ -140,6 +213,7 @@ def configure_shutdown_handlers(window: Any, api: BridgeApi) -> None:
 def run_gui() -> None:
     """Inicia a interface gráfica moderna em Chromium com Edge WebView2."""
     api = BridgeApi()
+    logger.info("Inicializando interface WebView2")
     html_path = resource_root() / "web" / "index.html"
 
     if not html_path.exists():
@@ -159,20 +233,37 @@ def run_gui() -> None:
     webview.start(gui="edgechromium", debug=False)
 
 
-def main() -> None:
+def main() -> int:
+    try:
+        configure_production_diagnostics()
+    except Exception:
+        # O diagnóstico jamais deve impedir o uso em um perfil somente leitura.
+        pass
     argv_paths = sys.argv[1:]
+    if len(argv_paths) == 2 and argv_paths[0] == "--release-probe":
+        return run_release_probe(Path(argv_paths[1]))
     if argv_paths:
         run_quick_convert(argv_paths)
-        return
+        return 0
 
     try:
         validate_runtime_dependencies()
         run_gui()
+        return 0
     except Exception as error:
+        log_startup_failure(error)
+        status = diagnostic_status()
+        diagnostic_message = (
+            f"Registro de diagnóstico: {status['log_file']}"
+            if status["configured"]
+            else "O registro persistente de diagnóstico não pôde ser inicializado."
+        )
         _show_message(
-            f"Erro ao iniciar o aplicativo:\n\n{error}\n\nDetalhes:\n{traceback.format_exc()}",
+            f"Erro ao iniciar o aplicativo:\n\n{error}\n\n"
+            f"{diagnostic_message}",
             error=True,
         )
+        return 1
 
 
 if __name__ == "__main__":
@@ -181,4 +272,4 @@ if __name__ == "__main__":
     # paralela) reexecutaria o .exe inteiro e poderia reabrir a interface
     # gráfica recursivamente.
     multiprocessing.freeze_support()
-    main()
+    raise SystemExit(main())

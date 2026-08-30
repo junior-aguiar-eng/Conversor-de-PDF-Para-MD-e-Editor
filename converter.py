@@ -26,6 +26,7 @@ from licensing import require_software_activation
 from markdown_utils import HeadingProfile, SplitMode, finalize_markdown, reserve_batch_output_paths
 from models import ConversionFailure, ConversionResult, OutputReservation, PageCoverage
 from ocr_engine import is_scanned_page, ocr_page_to_markdown
+from text_fidelity import assess_page_fidelity
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,8 @@ def _save_page_checkpoint(
     pages[str(page_number)] = {
         "status": coverage.status,
         "warning": coverage.warning,
+        "fidelity_score": coverage.fidelity_score,
+        "fidelity_issues": list(coverage.fidelity_issues),
     }
     state["image_count"] = image_count
     _atomic_write_text(
@@ -335,8 +338,16 @@ class PdfMarkdownConverter:
                         if status not in {"native", "ocr", "fallback", "empty", "failed"}:
                             raise RuntimeError("Checkpoint de conversão contém status inválido.")
                         warning = str(checkpoint_entry.get("warning", ""))
+                        raw_fidelity_score = checkpoint_entry.get("fidelity_score")
+                        fidelity_score = float(raw_fidelity_score) if isinstance(raw_fidelity_score, (int, float)) else None
+                        raw_fidelity_issues = checkpoint_entry.get("fidelity_issues", [])
+                        fidelity_issues = (
+                            tuple(str(item) for item in raw_fidelity_issues)
+                            if isinstance(raw_fidelity_issues, list)
+                            else ()
+                        )
                         rendered_pages.append(checkpoint_page.read_text(encoding="utf-8"))
-                        coverage.append(PageCoverage(page_number, status, warning))
+                        coverage.append(PageCoverage(page_number, status, warning, fidelity_score, fidelity_issues))
                         continue
                     page_index = page_number - 1
                     try:
@@ -378,7 +389,17 @@ class PdfMarkdownConverter:
                         str(temporary_assets_dir),
                     )
                     combined_warning = "; ".join(item for item in (detection_warning, warning) if item)
-                    page_coverage = PageCoverage(page_number, status, combined_warning)
+                    fidelity = assess_page_fidelity(page, text, status)
+                    page_coverage = PageCoverage(
+                        page_number,
+                        status,
+                        combined_warning,
+                        fidelity.score,
+                        fidelity.issues,
+                    )
+                    if fidelity.issues:
+                        fidelity_warning = "Fidelidade textual: " + "; ".join(fidelity.issues) + "."
+                        combined_warning = "; ".join(item for item in (combined_warning, fidelity_warning) if item)
                     rendered_page = self._format_page(page_number, status, text, combined_warning)
                     coverage.append(page_coverage)
                     rendered_pages.append(rendered_page)

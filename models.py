@@ -21,6 +21,8 @@ class PageCoverage:
     page_number: int
     status: PageExtractionStatus
     warning: str = ""
+    fidelity_score: float | None = None
+    fidelity_issues: tuple[str, ...] = ()
 
 
 def format_duration(seconds: float) -> str:
@@ -46,7 +48,11 @@ class ConversionResult:
 
     @property
     def warning_pages(self) -> tuple[int, ...]:
-        return tuple(item.page_number for item in self.page_coverage if item.warning)
+        return tuple(item.page_number for item in self.page_coverage if item.warning or item.fidelity_issues)
+
+    @property
+    def fidelity_review_pages(self) -> tuple[int, ...]:
+        return tuple(item.page_number for item in self.page_coverage if item.fidelity_issues)
 
 
 @dataclass(frozen=True)
@@ -84,6 +90,13 @@ def build_summary_message(
                 for result in problematic
             )
             message.extend(["", f"Páginas não recuperadas:\n{page_lines}"])
+        fidelity_alerts = [result for result in summary.successes if result.fidelity_review_pages]
+        if fidelity_alerts:
+            fidelity_lines = "\n".join(
+                f"- {result.source.name}: {', '.join(map(str, result.fidelity_review_pages))}"
+                for result in fidelity_alerts
+            )
+            message.extend(["", f"Páginas que exigem conferência de fidelidade:\n{fidelity_lines}"])
     if summary.failures:
         failed_names = "\n".join(f"- {failure.source.name}" for failure in summary.failures[:10])
         message.extend(["", f"Falhas nesta execução:\n{failed_names}"])

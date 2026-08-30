@@ -31,7 +31,7 @@ let declarativeEventsInitialized = false;
 const ALLOWED_DECLARATIVE_ACTIONS = new Set([
   "appLicense.copyMachineId", "appLicense.submitActivation",
   "appLibrary.relocateDocument", "appLibrary.removeDocument",
-  "appManual.close", "appManual.filterContent", "appManual.open", "appManual.printManual",
+  "appManual.close", "appManual.exportDiagnostics", "appManual.filterContent", "appManual.open", "appManual.printManual",
   "appManual.scrollToChapter", "appManual.toggleViewMode",
   "appSearch.clearInput", "appSearch.closeModal", "appSearch.onSearchInput", "appSearch.openModal",
   "appSearch.openResult", "appSearch.setFilter", "appSelection.copySelectedText",
@@ -491,6 +491,7 @@ function addProcessedFiles(newFiles) {
         chunk_count: 0,
         failed_pages: [],
         warning_pages: [],
+        fidelity_review_pages: [],
         duration: "",
         error_message: ""
       });
@@ -588,9 +589,12 @@ function renderFileList() {
       actionButtons = ``;
     } else if (file.status === "success") {
       const problemCount = file.failed_pages?.length || 0;
+      const fidelityCount = file.fidelity_review_pages?.length || 0;
       statusBadge = problemCount
         ? `<span class="px-2.5 py-0.5 rounded-lg text-[10.5px] font-semibold bg-amber-100 text-amber-800" title="Páginas: ${file.failed_pages.join(", ")}">Concluído com ${problemCount} falha(s)</span>`
-        : `<span class="px-2.5 py-0.5 rounded-lg text-[10.5px] font-semibold bg-emerald-100 text-emerald-800">Concluído (${file.duration})</span>`;
+        : fidelityCount
+          ? `<span class="px-2.5 py-0.5 rounded-lg text-[10.5px] font-semibold bg-amber-100 text-amber-800" title="Conferir páginas: ${file.fidelity_review_pages.join(", ")}">Conferir ${fidelityCount} página(s)</span>`
+          : `<span class="px-2.5 py-0.5 rounded-lg text-[10.5px] font-semibold bg-emerald-100 text-emerald-800">Concluído (${file.duration})</span>`;
       actionButtons = `
         <button data-action="openQueuedPdf(${idx})" class="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 transition" title="Abrir no Super PDF">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
@@ -1065,6 +1069,7 @@ window.onBackendEvent = function (eventName, data) {
       file.chunk_count = data.chunk_count;
       file.failed_pages = data.failed_pages || [];
       file.warning_pages = data.warning_pages || [];
+      file.fidelity_review_pages = data.fidelity_review_pages || [];
     }
     state.convertedResults.push(data);
     updatePreviewDropdown();
@@ -1074,7 +1079,11 @@ window.onBackendEvent = function (eventName, data) {
     
     const completedCount = state.files.filter((f) => f.status === "success" || f.status === "error").length;
     progressController.onFileDone(completedCount, state.files.length);
-    const pageWarning = data.failed_pages?.length ? `; páginas não recuperadas: ${data.failed_pages.join(", ")}` : "";
+    const failedWarning = data.failed_pages?.length ? `; páginas não recuperadas: ${data.failed_pages.join(", ")}` : "";
+    const fidelityWarning = data.fidelity_review_pages?.length
+      ? `; conferir fidelidade nas páginas: ${data.fidelity_review_pages.join(", ")}`
+      : "";
+    const pageWarning = `${failedWarning}${fidelityWarning}`;
     appendLog("OK", `${data.name} -> ${data.markdown_path} (${data.asset_count} imgs, ${data.duration_formatted}${pageWarning})`);
   } else if (eventName === "file_error") {
     playBeep("error");
@@ -1094,12 +1103,22 @@ window.onBackendEvent = function (eventName, data) {
     updateControlsState();
     clearInterval(state.timerInterval);
     progressController.finishSuccess();
-    const pageWarning = data.problem_page_count ? `, ${data.problem_page_count} página(s) não recuperada(s)` : "";
+    const failedWarning = data.problem_page_count ? `, ${data.problem_page_count} página(s) não recuperada(s)` : "";
+    const fidelityWarning = data.fidelity_review_page_count
+      ? `, ${data.fidelity_review_page_count} página(s) exigem conferência de fidelidade`
+      : "";
+    const pageWarning = `${failedWarning}${fidelityWarning}`;
     document.getElementById("statusMessage").innerText = `Concluído: ${data.success_count} convertido(s), ${data.failure_count} com erro${pageWarning}.`;
-    showToast(`Conversão finalizada em ${data.elapsed_formatted}${pageWarning}!`, data.problem_page_count ? "info" : "success");
+    showToast(
+      `Conversão finalizada em ${data.elapsed_formatted}${pageWarning}!`,
+      data.problem_page_count || data.fidelity_review_page_count ? "info" : "success"
+    );
     appendLog("INFO", `Lote concluído em ${data.elapsed_formatted}. Arquivos salvos em: ${data.output_dir}`);
     for (const item of data.problem_pages || []) {
       appendLog("AVISO", `${item.name}: páginas não recuperadas ${item.pages.join(", ")}.`);
+    }
+    for (const item of data.fidelity_pages || []) {
+      appendLog("AVISO", `${item.name}: conferir fidelidade textual nas páginas ${item.pages.join(", ")}.`);
     }
   } else if (eventName === "batch_stopped") {
     state.isConverting = false;
@@ -4395,6 +4414,20 @@ class ManualManager {
     window.print();
   }
 
+  async exportDiagnostics() {
+    try {
+      const result = await window.pywebview.api.export_diagnostic_report();
+      if (result?.ok) {
+        showToast(result.message || "Relatório de diagnóstico exportado.", "success");
+      } else if (!result?.cancelled) {
+        showToast(result?.error || "Não foi possível exportar o diagnóstico.", "error");
+      }
+    } catch (error) {
+      console.error("Falha ao exportar diagnóstico:", error);
+      showToast("Falha na comunicação com o diagnóstico local.", "error");
+    }
+  }
+
   getRawMarkdownContent() {
     return `# NexoJuris v1.3.2 - Manual de Instruções
 
@@ -4404,6 +4437,7 @@ Dica: Os arquivos PDF e as imagens não são enviados à nuvem. Tradução e voz
 
 ## Capítulo 2: Motor de Conversão (Jurisprudência vs Curso, Híbrido)
 Processador híbrido inteligente que detecta texto vetorial nativo e aciona OCR local apenas em imagens ou páginas digitalizadas.
+O aplicativo sinaliza possíveis omissões, inversões de leitura e caracteres inválidos. Toda página processada por OCR exige conferência visual com o PDF original.
 - Perfil Jurisprudência: Estruturação ideal para STF/STJ.
 - Perfil Material de Curso: Limpeza de ruídos e títulos espúrios de OCR.
 

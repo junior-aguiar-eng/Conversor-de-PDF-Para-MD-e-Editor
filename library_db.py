@@ -7,33 +7,47 @@ ranqueamento estatístico BM25 e geração de snippets realçados.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sqlite3
 import threading
 import time
 import uuid
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
 from typing import Any
 
 import fitz
 
-from constants import application_root
+from app_storage import library_database_path, migrate_legacy_user_data
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DB_PATH = application_root() / "data" / "nexojuris_acervo.db"
-_DB_LOCK = threading.Lock()
+_DB_LOCK = threading.RLock()
+_BACKUP_INTERVAL_SECONDS = 24 * 60 * 60
+_MAX_BACKUPS = 5
 
 
 class LibraryDatabase:
     """Repositório de persistência do acervo e índice de pesquisa FTS5."""
 
     def __init__(self, db_path: Path | str | None = None) -> None:
-        self.db_path = Path(db_path).resolve() if db_path else _DEFAULT_DB_PATH.resolve()
-        self._init_db()
+        using_default_path = db_path is None
+        if using_default_path:
+            migrate_legacy_user_data()
+        self.db_path = Path(db_path).resolve() if db_path else library_database_path().resolve()
+        self.backup_dir = self.db_path.parent / "backups"
+        self.recovery_status: dict[str, Any] = {
+            "state": "healthy",
+            "database_path": str(self.db_path),
+            "recovered_from": None,
+            "quarantined_path": None,
+        }
+        self._initialized = False
+        self._prepare_database()
 
     @contextmanager
     def _connection(self) -> Generator[sqlite3.Connection]:
@@ -56,7 +70,10 @@ class LibraryDatabase:
         for attempt in range(max_retries):
             try:
                 with _DB_LOCK, self._connection() as conn:
-                    return operation(conn)
+                    result = operation(conn)
+                if self._initialized:
+                    self._maybe_backup()
+                return result
             except sqlite3.OperationalError as error:
                 err_msg = str(error).lower()
                 if ("locked" in err_msg or "busy" in err_msg) and attempt < max_retries - 1:
@@ -71,6 +88,105 @@ class LibraryDatabase:
                 raise
         if last_error:
             raise last_error
+
+    @staticmethod
+    def _integrity_ok(path: Path) -> bool:
+        if not path.is_file():
+            return False
+        try:
+            with closing(sqlite3.connect(str(path), timeout=5.0)) as conn:
+                result = conn.execute("PRAGMA integrity_check").fetchone()
+            return result is not None and str(result[0]).lower() == "ok"
+        except sqlite3.Error:
+            return False
+
+    @staticmethod
+    def _copy_database(source: Path, destination: Path) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with closing(sqlite3.connect(str(source), timeout=5.0)) as source_conn:
+                with closing(sqlite3.connect(str(temporary), timeout=5.0)) as target_conn:
+                    source_conn.backup(target_conn)
+                    target_conn.commit()
+            if not LibraryDatabase._integrity_ok(temporary):
+                raise sqlite3.DatabaseError("a cópia do banco falhou no PRAGMA integrity_check")
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _backup_candidates(self) -> list[Path]:
+        if not self.backup_dir.is_dir():
+            return []
+        return sorted(self.backup_dir.glob(f"{self.db_path.stem}.*.db"), key=lambda item: item.stat().st_mtime, reverse=True)
+
+    def _quarantine_database(self) -> Path | None:
+        if not self.db_path.exists():
+            return None
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+        quarantined = self.db_path.with_name(f"{self.db_path.stem}.corrupt-{stamp}-{uuid.uuid4().hex[:8]}.db")
+        os.replace(self.db_path, quarantined)
+        for suffix in ("-wal", "-shm"):
+            sidecar = self.db_path.with_name(self.db_path.name + suffix)
+            if sidecar.exists():
+                os.replace(sidecar, quarantined.with_name(quarantined.name + suffix))
+        return quarantined
+
+    def _restore_latest_valid_backup(self) -> Path | None:
+        for backup in self._backup_candidates():
+            if not self._integrity_ok(backup):
+                continue
+            try:
+                self._copy_database(backup, self.db_path)
+                return backup
+            except (OSError, sqlite3.Error) as error:
+                logger.warning("Falha ao restaurar backup %s: %s", backup, error)
+        return None
+
+    def _prepare_database(self) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.db_path.exists() and not self._integrity_ok(self.db_path):
+            quarantined = self._quarantine_database()
+            restored = self._restore_latest_valid_backup()
+            if restored is not None:
+                self.recovery_status.update(
+                    state="restored",
+                    recovered_from=str(restored),
+                    quarantined_path=str(quarantined) if quarantined else None,
+                )
+            else:
+                self.recovery_status.update(
+                    state="rebuilt",
+                    quarantined_path=str(quarantined) if quarantined else None,
+                )
+        self._init_db()
+        if not self._integrity_ok(self.db_path):
+            raise sqlite3.DatabaseError("o banco do acervo falhou no PRAGMA integrity_check após a inicialização")
+        self._initialized = True
+        self._maybe_backup(force=not self._backup_candidates())
+
+    def _maybe_backup(self, *, force: bool = False) -> Path | None:
+        candidates = self._backup_candidates()
+        if not force and candidates and time.time() - candidates[0].stat().st_mtime < _BACKUP_INTERVAL_SECONDS:
+            return None
+        if not self._integrity_ok(self.db_path):
+            return None
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
+        destination = self.backup_dir / f"{self.db_path.stem}.{stamp}.db"
+        with _DB_LOCK:
+            self._copy_database(self.db_path, destination)
+            candidates = self._backup_candidates()
+            for obsolete in candidates[_MAX_BACKUPS:]:
+                obsolete.unlink(missing_ok=True)
+        return destination
+
+    def create_backup(self) -> Path:
+        """Cria uma cópia SQLite consistente e aplica a rotação configurada."""
+        backup = self._maybe_backup(force=True)
+        if backup is None:
+            raise sqlite3.DatabaseError("não foi possível criar backup de um banco inconsistente")
+        return backup
 
     def _init_db(self) -> None:
         def _do_init(conn: sqlite3.Connection) -> None:

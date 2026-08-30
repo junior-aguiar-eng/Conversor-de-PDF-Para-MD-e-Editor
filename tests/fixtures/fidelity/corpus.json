@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "stf-re-1276977-ed-vector",
+      "file": "stf_re_1276977_ed.pdf",
+      "source_url": "https://digital.stf.jus.br/decisoes-monocraticas/api/public/votos/324053/conteudo.pdf",
+      "sha256": "fb208a2b7e37c2ff8ae3d50d4d480b4a8b1c7fbe9f0db5b8157cd04d565f2e87",
+      "document_kind": "decisao_stf_vetorial_com_cabecalho_rodape_e_unicode",
+      "pages": [1, 3],
+      "ordered_anchors": [
+        "EMB.DECL. NO RECURSO EXTRAORDINÁRIO 1.276.977",
+        "VOTO",
+        "alegações da parte embargante",
+        "exigência legal de carência",
+        "salário-maternidade",
+        "Constituição Federal",
+        "fator previdenciário"
+      ],
+      "minimum_page_fidelity_score": 0.65,
+      "expected_fidelity_review_pages": [1]
+    },
+    {
+      "id": "stj-resp-612539-vector",
+      "file": "stj_resp_612539.pdf",
+      "source_url": "https://processo.stj.jus.br/SCON/GetInteiroTeorDoAcordao?dt_publicacao=07%2F05%2F2007&num_registro=200302101818",
+      "sha256": "637612d7b295994a3691124bb09f1c87676390c3a61a27d551e2b07bec5255a7",
+      "document_kind": "acordao_stj_vetorial_com_ementa_citacoes_e_rodape",
+      "pages": [1, 3],
+      "ordered_anchors": [
+        "RECURSO ESPECIAL Nº 612.539",
+        "ACÓRDÃO",
+        "Vistos, relatados e discutidos",
+        "ARTIGO 535 DO CPC",
+        "MINISTRO HUMBERTO GOMES DE BARROS",
+        "ação monitória dispensa-se a demonstração"
+      ],
+      "minimum_page_fidelity_score": 0.75
+    },
+    {
+      "id": "cnj-manual-layout-longo",
+      "file": "cnj_manual_gestao_documental_2024.pdf",
+      "source_url": "https://bibliotecadigital.cnj.jus.br/bitstream/123456789/987/1/Manual_de_Gestao_Documental_PJ___2024__Ed.%203.pdf",
+      "sha256": "003534c030bdac57fc953bf0e88b7423a1f72f2bc7bdb5709dff9f1eeb3d5054",
+      "document_kind": "manual_cnj_longo_com_listas_notas_glossario_e_hierarquia",
+      "pages": [21, 50, 100, 140],
+      "ordered_anchors": [
+        "3.4 Organização",
+        "Comissão Permanente de Gestão Documental",
+        "Implementação de funcionalidades",
+        "Integração dos sistemas informatizados",
+        "Manuseio",
+        "Gestão de riscos",
+        "VALOR ADMINISTRATIVO",
+        "VALOR PROBATÓRIO"
+      ],
+      "minimum_page_fidelity_score": 0.75
+    },
+    {
+      "id": "stf-re-1276977-ed-scan-inclinado",
+      "file": "stf_re_1276977_ed_scanned_skewed.pdf",
+      "derived_from": "stf-re-1276977-ed-vector",
+      "sha256": "6a00bfbd80056d07cef5b921fb35eae90098d42fa0885655a78ee11656087136",
+      "document_kind": "digitalizacao_inclinada_para_ocr",
+      "pages": [1],
+      "ordered_anchors": [
+        "benefício de salário-maternidade",
+        "proteção à maternidade",
+        "Constituição Federal"
+      ],
+      "anchor_matching": "accent_insensitive",
+      "required_status": "ocr",
+      "require_fidelity_review": true,
+      "expected_fidelity_review_pages": [1]
+    }
+  ]
+}

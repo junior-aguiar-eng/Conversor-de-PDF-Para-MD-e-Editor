@@ -15,21 +15,23 @@ import platform
 import re
 import sqlite3
 import subprocess
+import tempfile
 import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from constants import application_root
+from app_storage import library_database_path, license_backup_path, migrate_legacy_user_data
 
 logger = logging.getLogger(__name__)
 
-_LICENSE_DB_PATH = application_root() / "data" / "nexojuris_acervo.db"
-_LICENSE_BACKUP_PATH = application_root() / "data" / "license.sig"
+_LICENSE_DB_PATH = library_database_path()
+_LICENSE_BACKUP_PATH = license_backup_path()
 _LICENSE_KEY_PREFIX = "ACT2-01-"
 _LICENSE_KEY_PREFIX_V3 = "ACT3-01-"
 _LICENSE_PAYLOAD_PREFIX = b"nexojuris-license:v2:"
@@ -177,6 +179,8 @@ def verify_license_key(machine_id: str, key: str) -> bool:
 @contextmanager
 def _db_conn() -> Generator[sqlite3.Connection]:
     """Gerenciador de contexto seguro que fecha conexões SQLite após a execução."""
+    if _LICENSE_DB_PATH.resolve() == library_database_path().resolve():
+        migrate_legacy_user_data()
     _LICENSE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(_LICENSE_DB_PATH), timeout=5.0)
     conn.row_factory = sqlite3.Row
@@ -205,6 +209,8 @@ def _init_license_table() -> None:
 
 def _get_stored_license() -> tuple[str | None, str | None]:
     """Recupera (machine_id, activation_key) armazenados no banco ou no arquivo de backup."""
+    if _LICENSE_DB_PATH.resolve() == library_database_path().resolve():
+        migrate_legacy_user_data()
     _init_license_table()
 
     # 1. Tenta recuperar do SQLite
@@ -258,7 +264,17 @@ def _save_license(machine_id: str, activation_key: str) -> bool:
     # 2. Salva no arquivo de contingência
     try:
         _LICENSE_BACKUP_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _LICENSE_BACKUP_PATH.write_text(f"{machine_id}:{activation_key}", encoding="utf-8")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{_LICENSE_BACKUP_PATH.name}.", suffix=".tmp", dir=str(_LICENSE_BACKUP_PATH.parent)
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as temporary_file:
+                temporary_file.write(f"{machine_id}:{activation_key}")
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            os.replace(temporary_name, _LICENSE_BACKUP_PATH)
+        finally:
+            Path(temporary_name).unlink(missing_ok=True)
         saved = True
     except Exception as err:
         logger.error(f"Erro ao salvar licença em arquivo: {err}")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -40,6 +41,15 @@ TRANSLATION_CHUNK_CHARACTERS = 4_500
 MAX_TTS_CHARACTERS = 50_000
 TTS_CHUNK_CHARACTERS = 5_000
 
+# Resiliência dos serviços externos opcionais. O prazo é global por ação,
+# incluindo todas as tentativas e todos os blocos do texto.
+TRANSLATION_TIMEOUT_SECONDS = 30.0
+TTS_TIMEOUT_SECONDS = 45.0
+ONLINE_SERVICE_MAX_ATTEMPTS = 3
+ONLINE_SERVICE_BACKOFF_SECONDS = 0.35
+ONLINE_SERVICE_CIRCUIT_FAILURE_THRESHOLD = 3
+ONLINE_SERVICE_CIRCUIT_RESET_SECONDS = 60.0
+
 
 def application_root() -> Path:
     """Retorna a pasta-base da aplicação (onde fica o .exe ou a raiz do código)."""
@@ -54,6 +64,17 @@ def resource_root() -> Path:
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS).resolve()
     return Path(__file__).resolve().parent
+
+
+def user_data_root() -> Path:
+    """Retorna a pasta persistente e gravável do usuário, independente do executável."""
+    override = os.environ.get("NEXOJURIS_DATA_DIR", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_app_data:
+        return Path(local_app_data).resolve() / "NexoJuris" / "Conversor"
+    return Path.home().resolve() / ".local" / "share" / "NexoJuris" / "Conversor"
 
 
 DEFAULT_OUTPUT_DIR = application_root() / "PDFs Convertidos"

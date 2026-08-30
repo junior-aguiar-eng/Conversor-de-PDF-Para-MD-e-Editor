@@ -18,13 +18,18 @@ if ($LASTEXITCODE -ne 0) {
 New-Item -ItemType Directory -Force -Path $Destino | Out-Null
 $arquivosDoAplicativo = @(
     "app.py",
+    "app_storage.py",
     "constants.py",
     "converter.py",
+    "file_authorization.py",
     "library_db.py",
     "licensing.py",
     "markdown_utils.py",
     "models.py",
     "ocr_engine.py",
+    "online_services.py",
+    "production_diagnostics.py",
+    "text_fidelity.py",
     "web_api.py",
     "requirements.lock.txt",
     "iniciar.vbs"

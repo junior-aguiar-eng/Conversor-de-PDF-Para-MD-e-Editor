@@ -19,13 +19,18 @@ class InstallerManifestTests(unittest.TestCase):
 
         required_files = {
             "app.py",
+            "app_storage.py",
             "constants.py",
             "converter.py",
+            "file_authorization.py",
             "library_db.py",
             "licensing.py",
             "markdown_utils.py",
             "models.py",
             "ocr_engine.py",
+            "online_services.py",
+            "production_diagnostics.py",
+            "text_fidelity.py",
             "web_api.py",
         }
         self.assertEqual(required_files - manifest, set())

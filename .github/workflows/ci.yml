@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  linux-tests:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -15,19 +15,97 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tk
 
       - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
-
-      - name: Add uv to PATH
-        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
 
       - name: Install Python 3.14
         run: uv python install 3.14
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --frozen --group dev
 
       - name: Lint with ruff
         run: uv run ruff check .
 
       - name: Run tests
         run: uv run python -m unittest discover -s tests -v
+
+  windows-release:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      REQUIRE_SIGNED_RELEASE: ${{ secrets.WINDOWS_SIGNING_REQUIRED }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.14
+        run: uv python install 3.14
+
+      - name: Install locked dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Lint and unit tests on Windows
+        shell: pwsh
+        run: |
+          uv run ruff check .
+          uv run python -m unittest discover -s tests -v
+
+      - name: Build official PyInstaller release
+        shell: pwsh
+        run: .\build_release.ps1
+
+      - name: Sign release when certificate is configured
+        if: env.REQUIRE_SIGNED_RELEASE == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
+          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "nexojuris-signing.pfx"
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE_BASE64))
+            $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+            if (-not $signTool) { throw "SignTool não encontrado no runner Windows." }
+            & $signTool.FullName sign /fd SHA256 /f $pfx /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD "release\dist\NexoJuris Conversor\NexoJuris Conversor.exe"
+            if ($LASTEXITCODE -ne 0) { throw "Assinatura Authenticode falhou." }
+          } finally {
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Exercise Windows release
+        shell: pwsh
+        run: |
+          $gate = @{
+            ReleaseRoot = "release\dist\NexoJuris Conversor"
+            ReportPath = "release\windows-release-gate.json"
+            SoakSeconds = 60
+          }
+          if ($env:REQUIRE_SIGNED_RELEASE -eq "true") {
+            $gate.RequireSignature = $true
+          }
+          .\scripts\windows_release_gate.ps1 @gate
+
+      - name: Upload Windows gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-gate
+          path: release/windows-release-gate.json
+          if-no-files-found: warn
+
+      - name: Upload validated Windows release
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexojuris-windows-release
+          path: release/dist/NexoJuris Conversor
+          if-no-files-found: error

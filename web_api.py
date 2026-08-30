@@ -11,7 +11,9 @@ import mimetypes
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 import traceback
@@ -27,6 +29,7 @@ import edge_tts
 import fitz
 from deep_translator import GoogleTranslator
 
+from app_storage import data_directory
 from constants import (
     APP_NAME,
     APP_VERSION,
@@ -56,9 +59,15 @@ from constants import (
     MEMORY_RESERVATION_PER_WORKER_BYTES,
     MIN_FREE_DISK_BYTES,
     MIN_RENDER_DPI,
+    ONLINE_SERVICE_BACKOFF_SECONDS,
+    ONLINE_SERVICE_CIRCUIT_FAILURE_THRESHOLD,
+    ONLINE_SERVICE_CIRCUIT_RESET_SECONDS,
+    ONLINE_SERVICE_MAX_ATTEMPTS,
     TRANSLATION_CHUNK_CHARACTERS,
+    TRANSLATION_TIMEOUT_SECONDS,
     TTS_CHUNK_CHARACTERS,
-    application_root,
+    TTS_TIMEOUT_SECONDS,
+    user_data_root,
 )
 from converter import (
     PdfMarkdownConverter,
@@ -81,12 +90,18 @@ from licensing import (
 )
 from markdown_utils import HeadingProfile, SplitMode, reserve_batch_output_paths
 from models import ConversionFailure, ConversionResult, OutputReservation, format_duration
+from online_services import CircuitBreaker, ServiceCircuitOpen, ServiceOperationTimeout, call_with_resilience
+from production_diagnostics import (
+    build_diagnostic_report,
+    diagnostic_status,
+    write_diagnostic_report,
+)
 
 logger = logging.getLogger(__name__)
 
 MAX_PARALLEL_WORKERS = 4
 MIN_CHUNK_CHARACTERS = 1_000
-CONVERSION_JOURNAL_PATH = application_root() / "data" / "conversion-journal.json"
+CONVERSION_JOURNAL_PATH = data_directory() / "conversion-journal.json"
 
 ANNOTATION_TYPES = {
     "ink",
@@ -472,9 +487,29 @@ class BridgeApi:
         self._close_lock = threading.Lock()
         self._services_shutdown = False
         self._pdf_passwords: dict[str, str] = {}
-        self._library = LibraryDatabase()
+        try:
+            self._library = LibraryDatabase()
+            self._library_status = dict(self._library.recovery_status)
+            self._library_status["persistent"] = True
+        except (OSError, sqlite3.Error) as error:
+            logger.error("Acervo persistente indisponível; iniciando armazenamento temporário: %s", error)
+            fallback_path = Path(tempfile.gettempdir()) / "NexoJuris" / f"acervo-temporario-{os.getpid()}.db"
+            self._library = LibraryDatabase(fallback_path)
+            self._library_status = {
+                "state": "degraded",
+                "persistent": False,
+                "database_path": str(fallback_path),
+                "error": str(error),
+                "recovered_from": None,
+                "quarantined_path": None,
+            }
         self._resources = AuthorizedResourceRegistry()
-        self._default_output_resource = self._register_directory(DEFAULT_OUTPUT_DIR, "default_output")
+        self._default_output_dir = DEFAULT_OUTPUT_DIR
+        try:
+            self._default_output_resource = self._register_directory(self._default_output_dir, "default_output")
+        except OSError:
+            self._default_output_dir = user_data_root() / "PDFs Convertidos"
+            self._default_output_resource = self._register_directory(self._default_output_dir, "default_output_fallback")
         self._indexing_cancel_events: dict[str, threading.Event] = {}
         self._indexing_pause_events: dict[str, threading.Event] = {}
         self._indexing_threads: dict[str, threading.Thread] = {}
@@ -482,6 +517,16 @@ class BridgeApi:
         self._page_indexing_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="PageIndex")
         self._pending_page_indexes: set[tuple[str, int]] = set()
         self._page_indexing_lock = threading.Lock()
+        self._online_service_breakers = {
+            "translation": CircuitBreaker(
+                ONLINE_SERVICE_CIRCUIT_FAILURE_THRESHOLD,
+                ONLINE_SERVICE_CIRCUIT_RESET_SECONDS,
+            ),
+            "tts": CircuitBreaker(
+                ONLINE_SERVICE_CIRCUIT_FAILURE_THRESHOLD,
+                ONLINE_SERVICE_CIRCUIT_RESET_SECONDS,
+            ),
+        }
 
     def _register_pdf(self, path: str | Path, origin: str) -> dict[str, Any]:
         resolved = Path(path).expanduser().resolve()
@@ -620,7 +665,7 @@ class BridgeApi:
         return {
             "app_name": APP_NAME,
             "app_version": APP_VERSION,
-            "default_output_dir": str(DEFAULT_OUTPUT_DIR),
+            "default_output_dir": str(self._default_output_dir),
             "default_output_dir_id": self._default_output_resource["directory_id"],
             "default_chunk_limit": DEFAULT_MAX_CHUNK_CHARACTERS,
             "max_page_count": MAX_PAGE_COUNT,
@@ -630,7 +675,52 @@ class BridgeApi:
             "max_conversion_memory_bytes": MAX_CONVERSION_MEMORY_BYTES,
             "max_conversion_seconds": MAX_CONVERSION_SECONDS,
             "min_free_disk_bytes": MIN_FREE_DISK_BYTES,
+            "library_storage": dict(self._library_status),
+            "diagnostics": diagnostic_status(),
         }
+
+    def get_diagnostic_status(self) -> dict[str, Any]:
+        """Retorna metadados operacionais sem conteúdo dos documentos."""
+        return {
+            "ok": True,
+            **diagnostic_status(),
+            "library_storage": dict(self._library_status),
+            "online_services": self.get_online_services_status()["services"],
+        }
+
+    def export_diagnostic_report(self) -> dict[str, Any]:
+        """Exporta relatório sanitizado para destino autorizado por diálogo nativo."""
+        if not self._window:
+            return {"ok": False, "error": "A janela do aplicativo não está disponível."}
+        try:
+            import webview
+
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            result = self._window.create_file_dialog(
+                webview.SAVE_DIALOG,
+                save_filename=f"NexoJuris-Diagnostico-{stamp}.txt",
+                file_types=("Relatório de diagnóstico (*.txt)",),
+            )
+            if not result:
+                return {"ok": False, "cancelled": True}
+            selected = result if isinstance(result, str) else result[0]
+            destination = Path(selected)
+            if destination.suffix.casefold() != ".txt":
+                destination = destination.with_suffix(".txt")
+            report = build_diagnostic_report(
+                library_status=dict(self._library_status),
+                online_services=self.get_online_services_status()["services"],
+            )
+            write_diagnostic_report(destination, report)
+            logger.info("Relatório de diagnóstico exportado para %s", destination)
+            return {
+                "ok": True,
+                "path": str(destination.resolve()),
+                "message": "Relatório de diagnóstico exportado com sucesso.",
+            }
+        except Exception as error:
+            logger.error("Falha ao exportar relatório de diagnóstico: %s", error, exc_info=True)
+            return {"ok": False, "error": f"Não foi possível exportar o diagnóstico: {error}"}
 
     def get_terms_acceptance_status(self) -> dict[str, Any]:
         """Verifica se o usuário já aceitou os termos de uso formalmente e se a versão vigente confere (Item 18)."""
@@ -2009,6 +2099,63 @@ class BridgeApi:
     # --------------------------------------------------------------------------
     # Serviços online opcionais de síntese de voz neural e tradução multilíngue
     # --------------------------------------------------------------------------
+    def _online_breaker(self, service: str) -> CircuitBreaker:
+        breakers = getattr(self, "_online_service_breakers", None)
+        if breakers is None:
+            breakers = {}
+            self._online_service_breakers = breakers
+        if service not in breakers:
+            breakers[service] = CircuitBreaker(
+                ONLINE_SERVICE_CIRCUIT_FAILURE_THRESHOLD,
+                ONLINE_SERVICE_CIRCUIT_RESET_SECONDS,
+            )
+        return breakers[service]
+
+    def _online_service_status(self, service: str) -> dict[str, Any]:
+        timeout = TRANSLATION_TIMEOUT_SECONDS if service == "translation" else TTS_TIMEOUT_SECONDS
+        return {
+            "service": service,
+            **self._online_breaker(service).status(),
+            "timeout_seconds": timeout,
+            "max_attempts": ONLINE_SERVICE_MAX_ATTEMPTS,
+            "external_dependency": True,
+            "contractual_availability_guarantee": False,
+            "critical_use_recommended": False,
+        }
+
+    def get_online_services_status(self) -> dict[str, Any]:
+        """Expõe a condição operacional sem realizar chamadas aos provedores."""
+        return {
+            "ok": True,
+            "services": {
+                name: self._online_service_status(name)
+                for name in ("translation", "tts")
+            },
+        }
+
+    def _online_failure(self, service: str, error: BaseException) -> dict[str, Any]:
+        status = self._online_service_status(service)
+        prefix = "Falha ao traduzir trecho: " if service == "translation" else "Falha na síntese de voz: "
+        if isinstance(error, ServiceCircuitOpen):
+            error_code = "circuit_open"
+            message = (
+                "Serviço temporariamente suspenso após falhas consecutivas. "
+                f"Tente novamente em cerca de {max(1, round(error.retry_after_seconds))} segundos."
+            )
+        elif isinstance(error, ServiceOperationTimeout):
+            error_code = "service_timeout"
+            message = "O serviço online não respondeu dentro do tempo máximo. Tente novamente mais tarde."
+        else:
+            error_code = "service_unavailable"
+            message = "O serviço online está indisponível no momento. Tente novamente mais tarde."
+        return {
+            "ok": False,
+            "error": f"{prefix}{message}",
+            "error_code": error_code,
+            "retryable": True,
+            "service_status": status,
+        }
+
     def get_available_voices(self) -> dict[str, Any]:
         """Retorna as vozes neurais suportadas para leitura com alta fidelidade."""
         voices = [
@@ -2023,7 +2170,7 @@ class BridgeApi:
             {"id": "it-IT-ElsaNeural", "name": "Elsa (Italiano - Itália)", "gender": "Feminina", "lang": "it-IT"},
             {"id": "de-DE-KatjaNeural", "name": "Katja (Alemão - Alemanha)", "gender": "Feminina", "lang": "de-DE"},
         ]
-        return {"ok": True, "voices": voices}
+        return {"ok": True, "voices": voices, "service_status": self._online_service_status("tts")}
 
     def synthesize_speech(
         self,
@@ -2057,18 +2204,14 @@ class BridgeApi:
             return audio_segments
 
         try:
-            # Runner seguro para evitar conflitos de event loop em background threads
-            audio_segments: list[bytes]
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-
-            if loop and loop.is_running():
-                with ThreadPoolExecutor(max_workers=1) as pool:
-                    audio_segments = pool.submit(asyncio.run, _run_tts()).result()
-            else:
-                audio_segments = asyncio.run(_run_tts())
+            resilient = call_with_resilience(
+                lambda: asyncio.run(_run_tts()),
+                self._online_breaker("tts"),
+                timeout_seconds=TTS_TIMEOUT_SECONDS,
+                max_attempts=ONLINE_SERVICE_MAX_ATTEMPTS,
+                backoff_seconds=ONLINE_SERVICE_BACKOFF_SECONDS,
+            )
+            audio_segments: list[bytes] = resilient.value
 
             if not audio_segments:
                 return {"ok": False, "error": "Nenhum dado de áudio foi gerado."}
@@ -2084,10 +2227,12 @@ class BridgeApi:
                 "voice": voice,
                 "text_length": len(cleaned_text),
                 "chunk_count": len(text_chunks),
+                "attempts": resilient.attempts,
+                "service_status": self._online_service_status("tts"),
             }
         except Exception as error:
             logger.error(f"Erro no Edge-TTS: {error}", exc_info=True)
-            return {"ok": False, "error": f"Falha na síntese de voz: {error}"}
+            return self._online_failure("tts", error)
 
     def translate_text(self, text: str, target_lang: str = "pt", source_lang: str = "auto") -> dict[str, Any]:
         """Traduz texto online com Google Translator por meio de deep-translator."""
@@ -2111,32 +2256,35 @@ class BridgeApi:
                 translated_chunks.append(f"{translated}{separator}")
             return "".join(translated_chunks)
 
+        def _translate_with_fallback() -> tuple[str, str]:
+            try:
+                return _translate_chunks(source_lang), source_lang
+            except Exception:
+                if source_lang == "auto":
+                    raise
+                return _translate_chunks("auto"), "auto"
+
         try:
-            translated = _translate_chunks(source_lang)
+            resilient = call_with_resilience(
+                _translate_with_fallback,
+                self._online_breaker("translation"),
+                timeout_seconds=TRANSLATION_TIMEOUT_SECONDS,
+                max_attempts=ONLINE_SERVICE_MAX_ATTEMPTS,
+                backoff_seconds=ONLINE_SERVICE_BACKOFF_SECONDS,
+            )
+            translated, effective_source = resilient.value
             return {
                 "ok": True,
                 "original_text": cleaned_text,
                 "translated_text": translated or "",
-                "source_lang": source_lang,
+                "source_lang": effective_source,
                 "target_lang": target_lang,
+                "attempts": resilient.attempts,
+                "service_status": self._online_service_status("translation"),
             }
         except Exception as error:
-            if source_lang != "auto":
-                try:
-                    translated = _translate_chunks("auto")
-                    if translated:
-                        return {
-                            "ok": True,
-                            "original_text": cleaned_text,
-                            "translated_text": translated,
-                            "source_lang": "auto",
-                            "target_lang": target_lang,
-                        }
-                except Exception:
-                    pass
-
             logger.error(f"Erro na tradução: {error}", exc_info=True)
-            return {"ok": False, "error": f"Falha ao traduzir trecho: {error}"}
+            return self._online_failure("translation", error)
 
     # --------------------------------------------------------------------------
     # Módulos de Acervo Pessoal & Busca Textual Instantânea (SQLite FTS5)
@@ -2636,15 +2784,24 @@ class BridgeApi:
                         "page_number": item.page_number,
                         "status": item.status,
                         "warning": item.warning,
+                        "fidelity_score": item.fidelity_score,
+                        "fidelity_issues": list(item.fidelity_issues),
                     }
                     for item in result.page_coverage
                 ],
                 "failed_pages": list(result.failed_pages),
                 "warning_pages": list(result.warning_pages),
+                "fidelity_review_pages": list(result.fidelity_review_pages),
             },
         )
 
     def _emit_file_error(self, failure: ConversionFailure) -> None:
+        logger.error(
+            "Falha de conversão document=%s error=%s details=%s",
+            failure.source.name,
+            failure.error_message,
+            failure.details,
+        )
         self._emit(
             "file_error",
             {
@@ -2673,6 +2830,11 @@ class BridgeApi:
             for result in successes
             if result.failed_pages
         ]
+        fidelity_pages = [
+            {"name": result.source.name, "pages": list(result.fidelity_review_pages)}
+            for result in successes
+            if result.fidelity_review_pages
+        ]
         self._emit(
             "batch_done",
             {
@@ -2684,6 +2846,8 @@ class BridgeApi:
                 "output_dir": str(output_dir),
                 "problem_pages": problem_pages,
                 "problem_page_count": sum(len(item["pages"]) for item in problem_pages),
+                "fidelity_pages": fidelity_pages,
+                "fidelity_review_page_count": sum(len(item["pages"]) for item in fidelity_pages),
             },
         )
 
