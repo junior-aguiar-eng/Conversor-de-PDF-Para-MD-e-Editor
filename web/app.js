@@ -831,43 +831,6 @@ async function retryFailedPages(index) {
   appendLog("INFO", `Reprocessando páginas ${file.failed_pages.join(", ")} de ${file.name}.`);
 }
 
-async function togglePause() {
-  if (!state.isConverting) return;
-  playBeep("click");
-  const res = await window.pywebview.api.toggle_pause();
-  state.isPaused = res.is_paused;
-  document.getElementById("btnPauseConvert").innerText = state.isPaused ? "Retomar" : "Pausar";
-}
-
-async function requestStop() {
-  if (!state.isConverting) return;
-  playBeep("click");
-  await window.pywebview.api.request_stop();
-  document.getElementById("btnStopConvert").disabled = true;
-  document.getElementById("btnPauseConvert").disabled = true;
-}
-
-function updateControlsState() {
-  document.getElementById("btnStartConvert").disabled = state.isConverting;
-  document.getElementById("btnPauseConvert").disabled = !state.isConverting;
-  document.getElementById("btnStopConvert").disabled = !state.isConverting;
-  document.getElementById("btnPauseConvert").innerText = "Pausar";
-}
-
-function startTimer() {
-  if (state.timerInterval) clearInterval(state.timerInterval);
-  state.timerInterval = setInterval(() => {
-    if (!state.isConverting) {
-      clearInterval(state.timerInterval);
-      return;
-    }
-    const elapsedSecs = Math.round((performance.now() - state.startTime) / 1000);
-    const mins = Math.floor(elapsedSecs / 60);
-    const secs = elapsedSecs % 60;
-    document.getElementById("statDuration").innerText = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-  }, 1000);
-}
-
 // --------------------------------------------------------------------------
 // Controlador da Barra de Progresso Deslizante em Tempo Real
 // --------------------------------------------------------------------------
@@ -1322,15 +1285,38 @@ function renderMarkdownToHtml(markdown) {
 async function hydrateMarkdownAssets(container, markdownId) {
   if (!container || !markdownId || !window.pywebview?.api) return;
   const images = Array.from(container.querySelectorAll("img[src]")).slice(0, 200);
-  for (let offset = 0; offset < images.length; offset += 8) {
-    const batch = images.slice(offset, offset + 8);
-    await Promise.all(batch.map(async (image) => {
-      const relativeRef = image.getAttribute("src");
-      image.removeAttribute("src");
-      if (!isSafeRelativeAssetRef(relativeRef)) return;
-      const result = await window.pywebview.api.read_markdown_asset(markdownId, relativeRef);
-      if (result?.ok) image.src = result.data_uri;
-    }));
+  const pending = [];
+  for (const image of images) {
+    const relativeRef = image.getAttribute("src");
+    image.removeAttribute("src");
+    if (!isSafeRelativeAssetRef(relativeRef)) continue;
+    image.dataset.markdownAssetRef = relativeRef;
+    image.loading = "lazy";
+    pending.push(image);
+  }
+
+  const loadImage = async (image) => {
+    const relativeRef = image.dataset.markdownAssetRef;
+    if (!relativeRef) return;
+    delete image.dataset.markdownAssetRef;
+    const result = await window.pywebview.api.read_markdown_asset(markdownId, relativeRef);
+    if (result?.ok) image.src = result.data_uri;
+  };
+
+  if ("IntersectionObserver" in window) {
+    const observer = new window.IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        observer.unobserve(entry.target);
+        void loadImage(entry.target);
+      }
+    }, { root: container, rootMargin: "320px 0px" });
+    pending.forEach((image) => observer.observe(image));
+    return;
+  }
+
+  for (let offset = 0; offset < pending.length; offset += 8) {
+    await Promise.all(pending.slice(offset, offset + 8).map(loadImage));
   }
 }
 
@@ -1425,7 +1411,10 @@ class LRUMemoryCache {
   }
 
   set(key, data, width = 800, height = 1100) {
-    const memoryBytes = Math.round(width * height * 4);
+    const pixelWidth = Number(data?.pixel_width) || width;
+    const pixelHeight = Number(data?.pixel_height) || height;
+    const encodedBytes = typeof data?.image === "string" ? data.image.length * 2 : 0;
+    const memoryBytes = Math.round(pixelWidth * pixelHeight * 4 + encodedBytes);
     if (this.cache.has(key)) {
       const oldEntry = this.cache.get(key);
       this.currentMemoryBytes -= oldEntry.memoryBytes;
@@ -1433,6 +1422,22 @@ class LRUMemoryCache {
     this.cache.set(key, { data, memoryBytes, lastAccessed: Date.now() });
     this.currentMemoryBytes += memoryBytes;
     this.evict();
+  }
+
+  delete(key) {
+    const entry = this.cache.get(key);
+    if (!entry) return false;
+    this.currentMemoryBytes -= entry.memoryBytes;
+    return this.cache.delete(key);
+  }
+
+  retainRecentPages(fileId, currentPage, distance = 2) {
+    const prefix = `${fileId}:`;
+    for (const key of Array.from(this.cache.keys())) {
+      if (!key.startsWith(prefix)) continue;
+      const page = Number(key.split(":")[1]);
+      if (Number.isInteger(page) && Math.abs(page - currentPage) > distance) this.delete(key);
+    }
   }
 
   evict() {
@@ -1512,6 +1517,7 @@ class SuperPdfController {
     this.saveStateTimeout = null;
     this.loadRequestId = 0;
     this.renderRequestId = 0;
+    this.preloadRequestId = 0;
     this.documentSwitchResolver = null;
     this.documentSwitchDecisionProvider = null;
     this.initialized = false;
@@ -2050,6 +2056,7 @@ class SuperPdfController {
   async renderCurrentPage(forceReload = false) {
     if (!this.currentFileId) return;
     const requestId = ++this.renderRequestId;
+    this.preloadRequestId += 1;
     const requestedFileId = this.currentFileId;
     const requestedPage = this.currentPage;
     this.isRendering = true;
@@ -2064,11 +2071,18 @@ class SuperPdfController {
     this.updateActiveThumbnail();
 
     try {
-      const cacheKey = `${requestedFileId}:${requestedPage}`;
+      const metadata = this.activeDocumentState?.pages?.find((page) => page?.page_number === requestedPage);
+      if (metadata) {
+        this.pageWidth = metadata.width || this.pageWidth;
+        this.pageHeight = metadata.height || this.pageHeight;
+      }
+      const renderDpi = this.calculateRenderDpi();
+      const cacheKey = `${requestedFileId}:${requestedPage}:${renderDpi}`;
       let pageData = this.lruCache.get(cacheKey);
 
       if (!pageData || forceReload) {
-        pageData = await window.pywebview.api.render_page_hq(requestedFileId, requestedPage, 150);
+        if (forceReload) this.lruCache.delete(cacheKey);
+        pageData = await window.pywebview.api.render_page_hq(requestedFileId, requestedPage, renderDpi);
         if (
           requestId !== this.renderRequestId ||
           requestedFileId !== this.currentFileId ||
@@ -2088,8 +2102,9 @@ class SuperPdfController {
           this.isRendering = false;
           return;
         }
-        this.lruCache.set(cacheKey, pageData, pageData.width || 800, pageData.height || 1100);
+        this.lruCache.set(cacheKey, pageData, pageData.pixel_width || 800, pageData.pixel_height || 1100);
       }
+      this.lruCache.retainRecentPages(requestedFileId, requestedPage);
       this.pageWidth = pageData.width;
       this.pageHeight = pageData.height;
       this.pageRotation = pageData.rotation;
@@ -2100,6 +2115,7 @@ class SuperPdfController {
 
       const pageCanvas = document.getElementById("pdfPageCanvas");
       const annotCanvas = document.getElementById("pdfAnnotationCanvas");
+      const transientCanvas = document.getElementById("pdfTransientCanvas");
       const wrapper = document.getElementById("pdfCanvasWrapper");
 
       if (wrapper) {
@@ -2121,7 +2137,14 @@ class SuperPdfController {
         annotCanvas.style.height = `${displayHeight}px`;
       }
 
-      const imageUrl = pageData.image || pageData.image_base64 || "";
+      if (transientCanvas) {
+        transientCanvas.width = displayWidth;
+        transientCanvas.height = displayHeight;
+        transientCanvas.style.width = `${displayWidth}px`;
+        transientCanvas.style.height = `${displayHeight}px`;
+      }
+
+      const imageUrl = pageData.image || "";
       if (pageCanvas && imageUrl) {
         const ctx = pageCanvas.getContext("2d");
         const img = new Image();
@@ -2136,6 +2159,7 @@ class SuperPdfController {
           ctx.clearRect(0, 0, pageCanvas.width, pageCanvas.height);
           ctx.drawImage(img, 0, 0);
           this.redrawAnnotations();
+          this.preloadAdjacentPages(requestedFileId, requestedPage, renderDpi);
           if (loader) loader.classList.add("hidden");
           this.isRendering = false;
         };
@@ -2173,6 +2197,35 @@ class SuperPdfController {
       return Math.max(0.3, Math.min(availableWidth / this.pageWidth, availableHeight / this.pageHeight));
     }
     return parseFloat(val) || 1.0;
+  }
+
+  calculateRenderDpi() {
+    const displayScale = this.calculateDisplayScale();
+    const deviceScale = Math.max(1, Number(window.devicePixelRatio) || 1);
+    return Math.max(72, Math.min(300, Math.round(72 * displayScale * deviceScale)));
+  }
+
+  preloadAdjacentPages(fileId, pageNumber, dpi) {
+    const preloadId = ++this.preloadRequestId;
+    const schedule = window.requestIdleCallback || ((callback) => setTimeout(callback, 0));
+    schedule(async () => {
+      if (preloadId !== this.preloadRequestId || fileId !== this.currentFileId) return;
+      const adjacent = [pageNumber - 1, pageNumber + 1].filter((page) => page >= 0 && page < this.totalPages);
+      for (const page of adjacent) {
+        if (preloadId !== this.preloadRequestId || fileId !== this.currentFileId) return;
+        const key = `${fileId}:${page}:${dpi}`;
+        if (this.lruCache.get(key)) continue;
+        try {
+          const data = await window.pywebview.api.render_page_hq(fileId, page, dpi);
+          if (data?.ok && preloadId === this.preloadRequestId && fileId === this.currentFileId) {
+            this.lruCache.set(key, data, data.pixel_width || 800, data.pixel_height || 1100);
+            this.lruCache.retainRecentPages(fileId, pageNumber);
+          }
+        } catch (_error) {
+          // Pré-carregamento é oportunista e não interfere na navegação atual.
+        }
+      }
+    }, { timeout: 750 });
   }
 
   setZoom(val) {
@@ -2467,6 +2520,7 @@ class SuperPdfController {
 
     this.isInteracting = true;
     this.startPoint = { x: clientX, y: clientY, pdfX: pdfPt.x, pdfY: pdfPt.y };
+    this.clearTransientCanvas();
 
     if (this.currentTool === "pen" || this.currentTool === "highlight_pen") {
       this.currentStroke = [[pdfPt.x, pdfPt.y]];
@@ -2485,47 +2539,42 @@ class SuperPdfController {
     const clientY = e.clientY - rect.top;
     const pdfPt = this.screenToPdf(clientX, clientY);
 
-    const canvas = document.getElementById("pdfAnnotationCanvas");
+    const canvas = document.getElementById("pdfTransientCanvas");
+    if (!canvas) return;
     const ctx = canvas.getContext("2d");
 
     if (this.currentTool === "pen") {
       this.currentStroke.push([pdfPt.x, pdfPt.y]);
-      this.redrawAnnotations();
-
       ctx.save();
       ctx.beginPath();
       ctx.strokeStyle = this.penColor;
       ctx.lineWidth = this.penWidth * (canvas.width / this.pageWidth);
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
-      const start = this.pdfToScreen(this.currentStroke[0][0], this.currentStroke[0][1]);
+      const previous = this.currentStroke[this.currentStroke.length - 2];
+      const start = this.pdfToScreen(previous[0], previous[1]);
       ctx.moveTo(start.x, start.y);
-      for (let i = 1; i < this.currentStroke.length; i++) {
-        const pt = this.pdfToScreen(this.currentStroke[i][0], this.currentStroke[i][1]);
-        ctx.lineTo(pt.x, pt.y);
-      }
+      const pt = this.pdfToScreen(pdfPt.x, pdfPt.y);
+      ctx.lineTo(pt.x, pt.y);
       ctx.stroke();
       ctx.restore();
     } else if (this.currentTool === "highlight_pen") {
       this.currentStroke.push([pdfPt.x, pdfPt.y]);
-      this.redrawAnnotations();
-
       ctx.save();
       ctx.beginPath();
       ctx.strokeStyle = this.hexToRgba(this.highlightColor, 0.45);
       ctx.lineWidth = this.highlightPenWidth * (canvas.width / this.pageWidth);
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
-      const start = this.pdfToScreen(this.currentStroke[0][0], this.currentStroke[0][1]);
+      const previous = this.currentStroke[this.currentStroke.length - 2];
+      const start = this.pdfToScreen(previous[0], previous[1]);
       ctx.moveTo(start.x, start.y);
-      for (let i = 1; i < this.currentStroke.length; i++) {
-        const pt = this.pdfToScreen(this.currentStroke[i][0], this.currentStroke[i][1]);
-        ctx.lineTo(pt.x, pt.y);
-      }
+      const pt = this.pdfToScreen(pdfPt.x, pdfPt.y);
+      ctx.lineTo(pt.x, pt.y);
       ctx.stroke();
       ctx.restore();
     } else if (this.currentTool === "highlight_block") {
-      this.redrawAnnotations();
+      this.clearTransientCanvas();
       ctx.save();
       ctx.fillStyle = this.hexToRgba(this.highlightColor, 0.45);
       const w = clientX - this.startPoint.x;
@@ -2533,7 +2582,7 @@ class SuperPdfController {
       ctx.fillRect(this.startPoint.x, this.startPoint.y, w, h);
       ctx.restore();
     } else if (this.currentTool === "snippet") {
-      this.redrawAnnotations();
+      this.clearTransientCanvas();
       ctx.save();
       ctx.setLineDash([4, 4]);
       ctx.strokeStyle = "#0284c7";
@@ -2552,6 +2601,7 @@ class SuperPdfController {
   async onPointerUp(e) {
     if (!this.isInteracting) return;
     this.isInteracting = false;
+    this.clearTransientCanvas();
 
     const rect = e.target.getBoundingClientRect();
     const clientX = e.clientX - rect.left;
@@ -2613,8 +2663,14 @@ class SuperPdfController {
   onPointerLeave() {
     if (this.isInteracting) {
       this.isInteracting = false;
-      this.redrawAnnotations();
+      this.clearTransientCanvas();
     }
+  }
+
+  clearTransientCanvas() {
+    const canvas = document.getElementById("pdfTransientCanvas");
+    if (!canvas) return;
+    canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
   }
 
   createInlineTextInput(screenX, screenY, pdfX, pdfY) {

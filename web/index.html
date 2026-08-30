@@ -697,6 +697,9 @@
             
             <!-- Foreground Layer: Native vector annotations & user drawing -->
             <canvas id="pdfAnnotationCanvas" class="absolute inset-0 cursor-default"></canvas>
+
+            <!-- Transient Layer: current stroke or selection preview only -->
+            <canvas id="pdfTransientCanvas" class="absolute inset-0 pointer-events-none"></canvas>
             
             <!-- Interactive DOM Text Editor Layer (Nativo WebView2) -->
             <div id="pdfOverlayTextContainer" class="text-annotation-layer absolute inset-0 pointer-events-none"></div>

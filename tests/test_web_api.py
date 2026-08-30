@@ -593,7 +593,8 @@ class WebApiTests(unittest.TestCase):
             render_res = api.render_page_hq(file_id, page_number=0, dpi=72)
             self.assertTrue(render_res["ok"])
             self.assertIn("data:image/png;base64,", render_res["image"])
-            self.assertIn("data:image/png;base64,", render_res["image_base64"])
+            self.assertIn("data:image/png;base64,", render_res["image"])
+            self.assertNotIn("image_base64", render_res)
             self.assertEqual(render_res["page_count"], 1)
 
             # 3. rotate_pdf_page

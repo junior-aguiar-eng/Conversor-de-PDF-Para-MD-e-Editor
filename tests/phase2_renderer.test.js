@@ -7,8 +7,11 @@ const { marked } = require("marked");
 const createDOMPurify = require("dompurify");
 
 function extractFunction(source, name) {
-  const start = source.indexOf(`function ${name}(`);
-  assert.notEqual(start, -1, `função ausente: ${name}`);
+  const functionStart = source.indexOf(`function ${name}(`);
+  assert.notEqual(functionStart, -1, `função ausente: ${name}`);
+  const start = source.slice(Math.max(0, functionStart - 6), functionStart) === "async "
+    ? functionStart - 6
+    : functionStart;
   const open = source.indexOf("{", start);
   let depth = 0;
   let quote = null;
@@ -36,6 +39,17 @@ function extractFunction(source, name) {
 
 const root = path.resolve(__dirname, "..");
 const source = fs.readFileSync(path.join(root, "web", "app.js"), "utf8");
+assert.equal((source.match(/async function togglePause\(/g) || []).length, 1);
+assert.equal((source.match(/async function requestStop\(/g) || []).length, 1);
+assert.equal((source.match(/function updateControlsState\(/g) || []).length, 1);
+assert.equal((source.match(/function startTimer\(/g) || []).length, 1);
+const pointerMoveStart = source.indexOf("  onPointerMove(e) {");
+const pointerMoveEnd = source.indexOf("  async onPointerUp(e) {", pointerMoveStart);
+const pointerMoveSource = source.slice(pointerMoveStart, pointerMoveEnd);
+assert.match(pointerMoveSource, /pdfTransientCanvas/);
+assert.doesNotMatch(pointerMoveSource, /redrawAnnotations/);
+assert.match(source, /IntersectionObserver/);
+assert.doesNotMatch(source, /pageData\.image_base64/);
 const dom = new JSDOM("<!doctype html><body></body>", { url: "file:///web/index.html" });
 dom.window.marked = marked;
 dom.window.DOMPurify = createDOMPurify(dom.window);
@@ -46,7 +60,7 @@ const context = vm.createContext({
   console,
   markdownSanitizerConfigured: false,
 });
-for (const name of ["isSafeHttpUrl", "isSafeRelativeAssetRef", "configureMarkdownSanitizer", "renderMarkdownToHtml"]) {
+for (const name of ["isSafeHttpUrl", "isSafeRelativeAssetRef", "configureMarkdownSanitizer", "renderMarkdownToHtml", "hydrateMarkdownAssets"]) {
   vm.runInContext(extractFunction(source, name), context);
 }
 
@@ -107,4 +121,35 @@ assert.equal(maliciousDom.querySelector("a[href]"), null);
 assert.equal(maliciousDom.querySelector("img[src]"), null);
 assert.equal([...maliciousDom.querySelectorAll("a, img")].some((node) => /javascript:/i.test(node.getAttribute("href") || node.getAttribute("src") || "")), false);
 
-process.stdout.write("phase2_renderer_ok\n");
+async function verifyLazyHydration() {
+  const container = dom.window.document.createElement("div");
+  container.innerHTML = '<img src="assets/um.png"><img src="assets/dois.png">';
+  const observed = [];
+  let intersectionCallback = null;
+  let assetReads = 0;
+  dom.window.IntersectionObserver = class {
+    constructor(callback) { intersectionCallback = callback; }
+    observe(image) { observed.push(image); }
+    unobserve() {}
+  };
+  dom.window.pywebview = {
+    api: {
+      read_markdown_asset: async (_markdownId, relativeRef) => {
+        assetReads += 1;
+        return { ok: true, data_uri: `data:image/png;base64,${relativeRef}` };
+      },
+    },
+  };
+  context.lazyContainer = container;
+  await vm.runInContext('hydrateMarkdownAssets(lazyContainer, "md-test")', context);
+  assert.equal(assetReads, 0);
+  assert.equal(observed.length, 2);
+  intersectionCallback([{ isIntersecting: true, target: observed[0] }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(assetReads, 1);
+  assert.match(observed[0].src, /^data:image\/png;base64,/);
+}
+
+verifyLazyHydration()
+  .then(() => process.stdout.write("phase2_renderer_ok\n"))
+  .catch((error) => { console.error(error); process.exit(1); });

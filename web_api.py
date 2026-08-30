@@ -1654,7 +1654,6 @@ class BridgeApi:
             return {
                 "ok": True,
                 "image": data_uri,
-                "image_base64": data_uri,  # Dupla chave para compatibilidade (Item 14)
                 "width": page.rect.width,
                 "height": page.rect.height,
                 "pixel_width": pix.width,

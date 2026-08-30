@@ -77,7 +77,7 @@ class TestPhase4ReaderAndIndexing(unittest.TestCase):
         result = api.render_page_hq(resource["file_id"], page_number=4)
         self.assertTrue(result["ok"])
         self.assertIn("image", result)
-        self.assertIn("image_base64", result)
+        self.assertNotIn("image_base64", result)
         deadline = time.monotonic() + 2
         matches = []
         while time.monotonic() < deadline:

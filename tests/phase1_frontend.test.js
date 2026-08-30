@@ -118,7 +118,7 @@ const appPath = path.resolve(__dirname, "..", "web", "app.js");
 const source = fs.readFileSync(appPath, "utf8") + `
 globalThis.__phase1 = {
   escapeHtml, safeSearchSnippetHtml, renderFileList, appendLog, onBridgeReady,
-  initializeAfterTerms, state, SuperPdfController, GlobalSearchController, appLicense,
+  initializeAfterTerms, state, SuperPdfController, LRUMemoryCache, GlobalSearchController, appLicense,
   appLibrary, appSearch, appTts, progressController, parseDeclarativeArgument, playBeep,
   resolveDeclarativeAction,
 };`;
@@ -126,6 +126,20 @@ vm.runInContext(source, context, { filename: appPath });
 
 async function run() {
   const api = context.__phase1;
+
+  const memoryCache = new api.LRUMemoryCache(10_000);
+  memoryCache.set("doc:0:96", { pixel_width: 10, pixel_height: 20, image: "abcd" });
+  assert.equal(memoryCache.currentMemoryBytes, 808);
+  memoryCache.set("doc:1:96", { pixel_width: 10, pixel_height: 20, image: "x" });
+  memoryCache.set("doc:4:96", { pixel_width: 10, pixel_height: 20, image: "x" });
+  memoryCache.retainRecentPages("doc", 1, 1);
+  assert.equal(memoryCache.cache.has("doc:4:96"), false);
+  assert.equal(memoryCache.cache.has("doc:0:96"), true);
+  for (let page = 0; page < 100; page += 1) {
+    memoryCache.set(`long:${page}:72`, { pixel_width: 10, pixel_height: 20, image: "x" });
+    memoryCache.retainRecentPages("long", page, 2);
+  }
+  assert.ok([...memoryCache.cache.keys()].filter((key) => key.startsWith("long:")).length <= 3);
 
   assert.equal(typeof api.resolveDeclarativeAction("appLibrary.removeDocument"), "function");
   const openLastSource = source.match(/async function openLastMarkdownResult\(\)[\s\S]*?\n\}/)?.[0] || "";
@@ -385,6 +399,11 @@ async function run() {
   const docStateB = renderRace.activateDocumentState(idB, docB);
   docStateB.pages = [{ page_number: 0, width: 111, height: 222 }, { page_number: 1, width: 222, height: 333 }];
   renderRace.totalPages = 2;
+  document.getElementById("pdfZoomSelect").value = "1.0";
+  assert.equal(renderRace.calculateRenderDpi(), 72);
+  document.getElementById("pdfZoomSelect").value = "2.0";
+  assert.equal(renderRace.calculateRenderDpi(), 144);
+  document.getElementById("pdfZoomSelect").value = "1.0";
   renderRace.currentPage = 0;
   const firstRender = renderRace.renderCurrentPage();
   renderRace.currentPage = 1;
