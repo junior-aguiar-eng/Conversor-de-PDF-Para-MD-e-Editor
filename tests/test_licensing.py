@@ -60,12 +60,17 @@ class IsolatedLicensingTestCase(unittest.TestCase):
 
 class LicensingUnitTests(IsolatedLicensingTestCase):
     def test_windows_machine_identity_uses_registry_once_per_session(self) -> None:
+        open_key = MagicMock()
+        query_value = MagicMock(return_value=("machine-guid-test-1234", 1))
+        winreg_module = MagicMock()
+        winreg_module.HKEY_LOCAL_MACHINE = object()
+        winreg_module.OpenKey = open_key
+        winreg_module.QueryValueEx = query_value
         licensing_module._get_motherboard_uuid.cache_clear()
         try:
             with (
                 patch.object(licensing_module.platform, "system", return_value="Windows"),
-                patch("winreg.OpenKey") as open_key,
-                patch("winreg.QueryValueEx", return_value=("machine-guid-test-1234", 1)) as query_value,
+                patch.dict("sys.modules", {"winreg": winreg_module}),
                 patch.object(licensing_module.subprocess, "check_output") as check_output,
             ):
                 first = licensing_module._get_motherboard_uuid()
