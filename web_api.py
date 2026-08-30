@@ -85,6 +85,8 @@ from licensing import (
     LicenseRequiredError,
     activate_act4_license,
     get_license_status,
+    online_refresh_is_due,
+    refresh_online_license,
     require_software_activation,
 )
 from licensing import (
@@ -846,7 +848,16 @@ class BridgeApi:
     def get_license_info(self) -> dict[str, Any]:
         """Retorna o estado completo, preservando o booleano consumido pela UI atual."""
         status = get_license_status()
-        return {"is_activated": status.allows("converter"), **status.to_mapping()}
+        online_result = None
+        if online_refresh_is_due(status):
+            online_result = refresh_online_license()
+            status = get_license_status()
+        return {
+            "is_activated": status.allows("converter"),
+            "online_attempted": online_result is not None,
+            "online_error_code": online_result.get("error_code") if online_result else None,
+            **status.to_mapping(),
+        }
 
     def activate_software(self, key: str) -> dict[str, Any]:
         """Processa a chave de ativação fornecida pelo usuário e desbloqueia o software."""
@@ -886,8 +897,25 @@ class BridgeApi:
             return {"ok": False, "error": "Falha inesperada ao importar a licença selecionada."}
 
     def verify_license_now(self) -> dict[str, Any]:
-        """Refaz a verificação local; a consulta remota será acoplada pelo serviço online."""
+        """Refaz a verificação local e tenta renovar o lease quando o serviço está configurado."""
+        online_result = refresh_online_license()
         status = get_license_status()
+        if online_result.get("ok"):
+            return {
+                **status.to_mapping(),
+                "ok": status.can_use_protected_features,
+                "online_attempted": True,
+                "message": status.message,
+            }
+        error_code = online_result.get("error_code")
+        if error_code not in {"service_not_configured", "act4_required"}:
+            return {
+                **status.to_mapping(),
+                "ok": status.can_use_protected_features,
+                "online_attempted": True,
+                "service_error": error_code,
+                "message": online_result.get("error", status.message),
+            }
         if status.state == LicenseState.ONLINE_CHECK_REQUIRED:
             message = (
                 "A licença local foi verificada, mas é necessário conectar-se à internet "

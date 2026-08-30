@@ -25,6 +25,7 @@ const ACTION_LABELS = {
   "license.revoked": "Licença revogada",
   "device.replaced": "Dispositivo substituído",
   "license.exported": "Licença exportada",
+  "license.migrated_from_legacy": "Licença legada migrada para ACT4",
   "database.backup_created": "Backup criado",
   "database.backup_restored": "Backup restaurado",
 };
@@ -40,6 +41,19 @@ function formatDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Data inválida";
   return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(date);
+}
+
+function projectedRenewalDate(currentExpiration, months) {
+  const current = new Date(currentExpiration);
+  const base = current.getTime() > Date.now() ? current : new Date();
+  const day = base.getUTCDate();
+  const projected = new Date(base);
+  projected.setUTCDate(1);
+  projected.setUTCMonth(projected.getUTCMonth() + months);
+  projected.setUTCDate(Math.min(day, new Date(Date.UTC(
+    projected.getUTCFullYear(), projected.getUTCMonth() + 1, 0,
+  )).getUTCDate()));
+  return projected;
 }
 
 function statusBadge(status) {
@@ -172,7 +186,19 @@ async function performAction(action) {
     if (action === "renew") {
       const months = window.prompt("Prazo da renovação em meses: 3, 6 ou 12", "12");
       if (months === null) return;
-      await bridge("renew_license", licenseId, Number(months));
+      const term = Number(months);
+      if (![3, 6, 12].includes(term)) throw new Error("A renovação deve ser de 3, 6 ou 12 meses.");
+      const projected = projectedRenewalDate(ui.selectedLicense.expires_at, term);
+      const confirmed = window.confirm(
+        `Confirmar renovação de ${term} meses?\nNovo vencimento previsto: ${formatDate(projected.toISOString())}`,
+      );
+      if (!confirmed) return;
+      const renewal = await bridge("renew_license", licenseId, term);
+      toast(`Licença renovada até ${formatDate(renewal.expires_at)}.`);
+      if (ui.selectedLicense.validation_mode === "offline" && window.confirm("Exportar agora a licença offline renovada?")) {
+        const password = window.prompt("Senha da chave privada administrativa:");
+        if (password !== null) await bridge("export_license", licenseId, password);
+      }
     } else if (action === "suspend") {
       const reason = window.prompt("Motivo obrigatório da suspensão:");
       if (reason === null) return;
@@ -199,6 +225,10 @@ async function performAction(action) {
       const confirmation = window.prompt(`Digite TROCAR:${licenseId} para confirmar:`);
       if (confirmation === null) return;
       await bridge("replace_device", licenseId, machine, reason, confirmation);
+      if (window.confirm("Exportar agora a licença ACT4 para o novo computador?")) {
+        const password = window.prompt("Senha da chave privada administrativa:");
+        if (password !== null) await bridge("export_license", licenseId, password);
+      }
     } else if (action === "export") {
       const password = window.prompt("Senha da chave privada administrativa:");
       if (password === null) return;
@@ -245,6 +275,42 @@ async function submitNewLicense(event) {
   }
 }
 
+async function submitMigration(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const errorBox = document.getElementById("migrationError");
+  errorBox.classList.add("hidden");
+  try {
+    const migrated = await bridge("migrate_legacy_license", {
+      name: data.get("name"),
+      email: data.get("email"),
+      commercial_reference: data.get("commercial_reference"),
+      machine_id: data.get("machine_id"),
+      activation_key: data.get("activation_key"),
+      confirmation: data.get("confirmation"),
+      term_months: Number(data.get("term_months")),
+      validation_mode: data.get("validation_mode"),
+      max_offline_days: Number(data.get("max_offline_days")),
+      features: data.getAll("features"),
+    });
+    form.reset();
+    document.getElementById("migrationOfflineDays").disabled = true;
+    document.getElementById("migrationModal").classList.add("hidden");
+    toast(`Migração registrada: ${migrated.license_id}. A licença antiga não foi desativada.`);
+    if (window.confirm("Exportar agora o arquivo ACT4 para o cliente?")) {
+      const password = window.prompt("Senha da chave privada administrativa:");
+      if (password !== null) await bridge("export_license", migrated.license_id, password);
+    }
+    await loadDashboard();
+    await runSearch(migrated.license_id, 1);
+    await openDetail(migrated.license_id);
+  } catch (error) {
+    errorBox.textContent = error.message;
+    errorBox.classList.remove("hidden");
+  }
+}
+
 function bindEvents() {
   document.getElementById("searchForm").addEventListener("submit", event => {
     event.preventDefault();
@@ -255,9 +321,19 @@ function bindEvents() {
     document.getElementById("newLicenseModal").classList.remove("hidden");
     document.querySelector('#newLicenseForm input[name="name"]').focus();
   });
+  document.getElementById("migrateLicenseButton").addEventListener("click", () => {
+    document.getElementById("migrationModal").classList.remove("hidden");
+    document.querySelector('#migrationForm input[name="name"]').focus();
+  });
   document.getElementById("newLicenseForm").addEventListener("submit", submitNewLicense);
+  document.getElementById("migrationForm").addEventListener("submit", submitMigration);
   document.getElementById("validationMode").addEventListener("change", event => {
     const input = document.getElementById("offlineDays");
+    input.disabled = event.target.value !== "hybrid";
+    input.value = event.target.value === "hybrid" ? "7" : "0";
+  });
+  document.getElementById("migrationValidationMode").addEventListener("change", event => {
+    const input = document.getElementById("migrationOfflineDays");
     input.disabled = event.target.value !== "hybrid";
     input.value = event.target.value === "hybrid" ? "7" : "0";
   });

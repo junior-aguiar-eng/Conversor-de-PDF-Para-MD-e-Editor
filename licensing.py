@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import platform
-import re
 import sqlite3
 import subprocess
 import tempfile
@@ -21,15 +20,18 @@ import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
-from app_storage import library_database_path, license_backup_path, license_time_state_path, migrate_legacy_user_data
+from app_storage import (
+    library_database_path,
+    license_backup_path,
+    license_lease_path,
+    license_time_state_path,
+    migrate_legacy_user_data,
+)
 from license_core import (
     LicenseCoreError,
     LicenseState,
@@ -37,8 +39,10 @@ from license_core import (
     PublicKeyRing,
     evaluate_act4,
     invalid_status,
+    legacy_license_payload,
     legacy_valid_status,
     unlicensed_status,
+    verify_legacy_activation_key,
     verify_license,
 )
 from license_core import (
@@ -51,14 +55,8 @@ logger = logging.getLogger(__name__)
 _LICENSE_DB_PATH = library_database_path()
 _LICENSE_BACKUP_PATH = license_backup_path()
 _LICENSE_TIME_STATE_PATH = license_time_state_path()
-_LICENSE_KEY_PREFIX = "ACT2-01-"
-_LICENSE_KEY_PREFIX_V3 = "ACT3-01-"
-_LICENSE_PAYLOAD_PREFIX = b"nexojuris-license:v2:"
-_LICENSE_PAYLOAD_PREFIX_V3 = b"nexojuris-license:v3:"
 _LICENSE_PUBLIC_KEY_B64 = "80WGyZ+9TwHmcKDPpjOncNZVVYgFHgNBl59aBK5Hpug="
 _ACT4_PUBLIC_KEYS_B64 = {"license-main-2026-01": _LICENSE_PUBLIC_KEY_B64}
-_LICENSE_KEY_PATTERN = re.compile(r"ACT2-01-(?:[A-Z2-7]{8}-){12}[A-Z2-7]{7}")
-_LICENSE_KEY_PATTERN_V3 = re.compile(r"ACT3-01-(?:[A-Z2-7]{8}-){12}[A-Z2-7]{7}")
 
 
 class LicenseRequiredError(PermissionError):
@@ -72,36 +70,8 @@ class LicenseRequiredError(PermissionError):
 def license_payload(machine_id: str, version: int = 2) -> bytes:
     """Produz o payload canônico e versionado assinado pelo emissor administrativo."""
     normalized_id = machine_id.strip().upper()
-    if version == 3 or normalized_id.startswith("NXJ2-"):
-        return _LICENSE_PAYLOAD_PREFIX_V3 + normalized_id.encode("ascii")
-    return _LICENSE_PAYLOAD_PREFIX + normalized_id.encode("ascii")
-
-
-def _decode_activation_signature(key: str) -> tuple[bytes | None, int]:
-    candidate = (key or "").strip().upper()
-    prefix = ""
-    version = 2
-    if _LICENSE_KEY_PATTERN.fullmatch(candidate):
-        prefix = _LICENSE_KEY_PREFIX
-        version = 2
-    elif _LICENSE_KEY_PATTERN_V3.fullmatch(candidate):
-        prefix = _LICENSE_KEY_PREFIX_V3
-        version = 3
-    else:
-        return None, 2
-
-    encoded = candidate.removeprefix(prefix).replace("-", "")
-    padding = "=" * ((8 - len(encoded) % 8) % 8)
-    try:
-        signature = base64.b32decode(encoded + padding, casefold=False)
-    except ValueError:
-        return None, version
-    return (signature if len(signature) == 64 else None), version
-
-
-def _public_key() -> Ed25519PublicKey:
-    public_bytes = base64.b64decode(_LICENSE_PUBLIC_KEY_B64, validate=True)
-    return Ed25519PublicKey.from_public_bytes(public_bytes)
+    effective_version = 3 if version == 3 or normalized_id.startswith("NXJ2-") else 2
+    return legacy_license_payload(normalized_id, effective_version)
 
 
 @lru_cache(maxsize=1)
@@ -182,18 +152,7 @@ def get_machine_fingerprint(version: int = 2) -> str:
 
 def verify_license_key(machine_id: str, key: str) -> bool:
     """Valida uma assinatura Ed25519 vinculada ao Machine ID informado (suporta v1 e v2)."""
-    if not machine_id or not key:
-        return False
-
-    signature, version = _decode_activation_signature(key)
-    if signature is None:
-        return False
-
-    try:
-        _public_key().verify(signature, license_payload(machine_id, version=version))
-        return True
-    except (InvalidSignature, ValueError):
-        return False
+    return verify_legacy_activation_key(machine_id, key, public_key_b64=_LICENSE_PUBLIC_KEY_B64)
 
 
 @contextmanager
@@ -223,6 +182,17 @@ def _init_license_table() -> None:
                     activated_at REAL NOT NULL,
                     license_format TEXT NOT NULL DEFAULT 'legacy',
                     license_document BLOB
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS system_license_history (
+                    history_id TEXT PRIMARY KEY,
+                    machine_id TEXT NOT NULL,
+                    activation_key TEXT NOT NULL,
+                    license_format TEXT NOT NULL,
+                    license_document BLOB,
+                    archived_at REAL NOT NULL,
+                    restored_at REAL
                 )
             """)
             columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(system_license)").fetchall()}
@@ -321,6 +291,33 @@ def _backup_mapping(record: _StoredLicense) -> dict[str, str]:
     return value
 
 
+def _save_backup(record: _StoredLicense) -> bool:
+    try:
+        _LICENSE_BACKUP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{_LICENSE_BACKUP_PATH.name}.", suffix=".tmp", dir=str(_LICENSE_BACKUP_PATH.parent)
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as temporary_file:
+                json.dump(
+                    _backup_mapping(record),
+                    temporary_file,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                temporary_file.write("\n")
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            os.replace(temporary_name, _LICENSE_BACKUP_PATH)
+        finally:
+            Path(temporary_name).unlink(missing_ok=True)
+        return True
+    except Exception as err:
+        logger.error(f"Erro ao salvar licença em arquivo: {err}")
+        return False
+
+
 def _save_record(record: _StoredLicense) -> bool:
     """Persiste uma licença e seu backup de forma transacional e versionada."""
     _init_license_table()
@@ -332,6 +329,31 @@ def _save_record(record: _StoredLicense) -> bool:
     # 1. Salva no banco SQLite
     try:
         with _db_conn() as conn:
+            previous = conn.execute(
+                "SELECT machine_id, activation_key, license_format, license_document FROM system_license WHERE id = 1"
+            ).fetchone()
+            if previous and (
+                previous["machine_id"],
+                previous["activation_key"],
+                previous["license_format"],
+                previous["license_document"],
+            ) != (record.machine_id, record.activation_key, record.license_format, record.license_document):
+                conn.execute(
+                    """
+                    INSERT INTO system_license_history(
+                        history_id, machine_id, activation_key, license_format,
+                        license_document, archived_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"HIS-{uuid.uuid4().hex.upper()}",
+                        previous["machine_id"],
+                        previous["activation_key"],
+                        previous["license_format"],
+                        previous["license_document"],
+                        now,
+                    ),
+                )
             conn.execute(
                 """
                 INSERT INTO system_license (
@@ -358,23 +380,7 @@ def _save_record(record: _StoredLicense) -> bool:
         logger.error(f"Erro ao salvar licença no banco: {err}")
 
     # 2. Salva no arquivo de contingência
-    try:
-        _LICENSE_BACKUP_PATH.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{_LICENSE_BACKUP_PATH.name}.", suffix=".tmp", dir=str(_LICENSE_BACKUP_PATH.parent)
-        )
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as temporary_file:
-                json.dump(_backup_mapping(record), temporary_file, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-                temporary_file.write("\n")
-                temporary_file.flush()
-                os.fsync(temporary_file.fileno())
-            os.replace(temporary_name, _LICENSE_BACKUP_PATH)
-        finally:
-            Path(temporary_name).unlink(missing_ok=True)
-        saved = True
-    except Exception as err:
-        logger.error(f"Erro ao salvar licença em arquivo: {err}")
+    saved = _save_backup(record) or saved
 
     return saved
 
@@ -385,6 +391,76 @@ def _save_license(machine_id: str, activation_key: str) -> bool:
 
 def _save_act4_license(machine_id: str, document: bytes) -> bool:
     return _save_record(_StoredLicense("act4", machine_id, license_document=document))
+
+
+def rollback_license_replacement(*, confirmation: str) -> dict[str, Any]:
+    """Restaura a licença anterior preservada, mediante confirmação de suporte."""
+    expected = "RESTAURAR:LICENCA-ANTERIOR"
+    if confirmation != expected:
+        return {"ok": False, "error": f"Confirmação obrigatória: {expected}"}
+    _init_license_table()
+    import time
+
+    try:
+        with _db_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM system_license_history
+                WHERE restored_at IS NULL ORDER BY archived_at DESC LIMIT 1
+                """
+            ).fetchone()
+            if not row:
+                return {"ok": False, "error": "Não existe uma licença anterior disponível para restauração."}
+            document = row["license_document"]
+            if isinstance(document, str):
+                document = document.encode("utf-8")
+            previous = _StoredLicense(
+                str(row["license_format"]),
+                str(row["machine_id"]),
+                activation_key=str(row["activation_key"] or ""),
+                license_document=document if isinstance(document, bytes) else None,
+            )
+            if previous.license_format == "legacy":
+                valid = verify_license_key(previous.machine_id, previous.activation_key)
+            elif previous.license_format == "act4" and previous.license_document is not None:
+                verify_license(previous.license_document, _act4_key_ring(), check_time=False)
+                valid = True
+            else:
+                valid = False
+            if not valid:
+                return {"ok": False, "error": "A licença anterior preservada não pôde ser validada."}
+            restored_at = time.time()
+            conn.execute(
+                """
+                UPDATE system_license SET machine_id = ?, activation_key = ?, activated_at = ?,
+                    license_format = ?, license_document = ? WHERE id = 1
+                """,
+                (
+                    previous.machine_id,
+                    previous.activation_key,
+                    restored_at,
+                    previous.license_format,
+                    previous.license_document,
+                ),
+            )
+            conn.execute(
+                "UPDATE system_license_history SET restored_at = ? WHERE history_id = ?",
+                (restored_at, row["history_id"]),
+            )
+    except (LicenseCoreError, OSError, sqlite3.Error, ValueError) as error:
+        logger.error("Falha ao restaurar licença anterior: %s", error)
+        return {"ok": False, "error": "Não foi possível restaurar a licença anterior com segurança."}
+    if not _save_backup(previous):
+        return {
+            "ok": False,
+            "error": "A licença foi restaurada no banco, mas o backup de contingência não pôde ser atualizado.",
+        }
+    return {
+        "ok": True,
+        "message": "Licença anterior restaurada com sucesso.",
+        "license_format": previous.license_format,
+        "machine_id": previous.machine_id,
+    }
 
 
 def _act4_key_ring() -> PublicKeyRing:
@@ -406,7 +482,7 @@ def record_trusted_server_time(server_time: datetime, *, observed_at: datetime |
 def get_license_status(
     *,
     now: datetime | None = None,
-    online_status: str = "active",
+    online_status: str | None = None,
     offline_until: datetime | None = None,
 ) -> LicenseStatus:
     """Avalia centralmente licenças legadas e ACT4 sem efeitos protegidos."""
@@ -437,6 +513,16 @@ def get_license_status(
     except (LicenseCoreError, TemporalStateError, OSError, ValueError) as error:
         logger.warning("Falha ao validar licença ACT4: %s", error)
         return invalid_status(v2_id, "A licença ACT4 ou sua proteção temporal é inválida.")
+    entitlement_expires_at = None
+    if online_status is None:
+        online_status = "active"
+        client = _configured_online_client()
+        if client is not None:
+            lease = client.load_cached(expected_license_id=payload.license_id)
+            if lease is not None:
+                online_status = lease.status
+                offline_until = datetime.strptime(lease.lease_expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+                entitlement_expires_at = lease.entitlement_expires_at
     return evaluate_act4(
         payload,
         v2_id,
@@ -444,8 +530,94 @@ def get_license_status(
         online_status=online_status,
         offline_until=offline_until,
         last_online_validation=assessment.last_trusted_server_at,
+        entitlement_expires_at=entitlement_expires_at,
         clock_tampered=assessment.clock_tampered,
     )
+
+
+def _configured_online_client() -> Any | None:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    from license_online_config import LEASE_PUBLIC_KEYS_B64, LICENSE_SERVICE_URL
+    from online_license_client import OnlineLicenseClient
+
+    if not LICENSE_SERVICE_URL or not LEASE_PUBLIC_KEYS_B64:
+        return None
+    try:
+        keys = {
+            key_id: Ed25519PublicKey.from_public_bytes(base64.b64decode(value, validate=True))
+            for key_id, value in LEASE_PUBLIC_KEYS_B64.items()
+        }
+        return OnlineLicenseClient(LICENSE_SERVICE_URL, keys, lease_path=license_lease_path())
+    except (ValueError, TypeError):
+        logger.error("A configuração pública do serviço de licenças é inválida.")
+        return None
+
+
+def refresh_online_license() -> dict[str, Any]:
+    """Consulta o serviço sem remover um lease válido quando a rede falha."""
+    from license_service.protocol import parse_time
+    from online_license_client import LicenseServiceResponseError, LicenseServiceUnavailable
+
+    machine_id = get_machine_fingerprint_v2()
+    record = _get_stored_record()
+    if record is None or record.license_format != "act4" or record.license_document is None:
+        return {"ok": False, "error_code": "act4_required", "error": "A verificação online exige uma licença ACT4."}
+    try:
+        payload = verify_license(record.license_document, _act4_key_ring(), check_time=False)
+    except LicenseCoreError:
+        return {"ok": False, "error_code": "invalid_license", "error": "A licença ACT4 armazenada é inválida."}
+    if payload.machine_id != machine_id:
+        return {"ok": False, "error_code": "machine_mismatch", "error": "A licença pertence a outro computador."}
+    client = _configured_online_client()
+    if client is None:
+        return {
+            "ok": False,
+            "error_code": "service_not_configured",
+            "error": "O serviço online de licenças ainda não está configurado neste cliente.",
+        }
+    try:
+        lease = client.refresh(payload.license_id, machine_id)
+    except LicenseServiceUnavailable:
+        return {
+            "ok": False,
+            "error_code": "service_unavailable",
+            "error": "O serviço de licenças está indisponível; o prazo offline vigente foi preservado.",
+        }
+    except LicenseServiceResponseError:
+        return {
+            "ok": False,
+            "error_code": "invalid_service_response",
+            "error": "A resposta do serviço não pôde ser autenticada; o lease anterior foi preservado.",
+        }
+    record_trusted_server_time(parse_time(lease.server_time, "server_time"))
+    status = get_license_status()
+    return {"ok": True, "message": status.message, **status.to_mapping()}
+
+
+def online_refresh_is_due(status: LicenseStatus, *, now: datetime | None = None) -> bool:
+    """Agenda a consulta diária e antecipa-a para estados reversíveis pelo Admin."""
+    if status.license_format != "act4" or status.validation_mode != "hybrid":
+        return False
+    if status.state in {
+        LicenseState.EXPIRED,
+        LicenseState.ONLINE_CHECK_REQUIRED,
+        LicenseState.REVOKED,
+        LicenseState.SUSPENDED,
+    }:
+        return True
+    if not status.last_online_validation:
+        return True
+    instant = datetime.now(UTC) if now is None else now
+    if instant.tzinfo is None or instant.utcoffset() is None:
+        raise ValueError("now deve possuir fuso horário.")
+    try:
+        last_validation = datetime.strptime(
+            status.last_online_validation, "%Y-%m-%dT%H:%M:%SZ"
+        ).replace(tzinfo=UTC)
+    except ValueError:
+        return True
+    return instant.astimezone(UTC) - last_validation >= timedelta(hours=24)
 
 
 def is_software_activated() -> tuple[bool, str]:

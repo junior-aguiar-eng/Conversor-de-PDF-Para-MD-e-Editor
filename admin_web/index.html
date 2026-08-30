@@ -14,7 +14,10 @@
       <h1>Licenças Admin</h1>
       <p class="subtitle">Administração local, rastreável e orientada por busca.</p>
     </div>
-    <button id="newLicenseButton" class="primary">Nova licença</button>
+    <div class="topbar-actions">
+      <button id="migrateLicenseButton" class="secondary">Migrar ACT2/ACT3</button>
+      <button id="newLicenseButton" class="primary">Nova licença</button>
+    </div>
   </header>
 
   <main>
@@ -94,6 +97,34 @@
   </div>
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <div id="migrationModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="migrationTitle">
+    <article class="modal-card">
+      <button class="modal-close" data-close="migrationModal" aria-label="Fechar migração">×</button>
+      <p class="eyebrow">MIGRAÇÃO EXPLÍCITA</p>
+      <h2 id="migrationTitle">Migrar licença ACT2/ACT3 para ACT4</h2>
+      <p class="subtitle">A licença antiga continuará válida até o cliente importar o novo arquivo ACT4.</p>
+      <form id="migrationForm" class="form-grid">
+        <label class="span-2">Nome do cliente<input name="name" required maxlength="160"></label>
+        <label>E-mail<input name="email" type="email" maxlength="254"></label>
+        <label>Referência comercial<input name="commercial_reference" maxlength="80"></label>
+        <label class="span-2">Código da máquina<input name="machine_id" required placeholder="NXJ2-0000-0000-0000-0000" maxlength="24"></label>
+        <label class="span-2">Licença ACT2/ACT3<textarea name="activation_key" required rows="3" maxlength="160"></textarea></label>
+        <label>Prazo ACT4<select name="term_months"><option value="3">3 meses</option><option value="6">6 meses</option><option value="12">12 meses</option></select></label>
+        <label>Validação<select id="migrationValidationMode" name="validation_mode"><option value="offline">Totalmente offline</option><option value="hybrid">Híbrida</option></select></label>
+        <label>Prazo offline (dias)<input id="migrationOfflineDays" name="max_offline_days" type="number" min="0" max="30" value="0" disabled></label>
+        <label class="span-2">Confirmação<input name="confirmation" required placeholder="MIGRAR:NXJ2-0000-0000-0000-0000"></label>
+        <fieldset class="span-2 feature-fieldset">
+          <legend>Funcionalidades ACT4</legend>
+          <label><input type="checkbox" name="features" value="converter" checked> Conversor</label>
+          <label><input type="checkbox" name="features" value="ocr" checked> OCR</label>
+          <label><input type="checkbox" name="features" value="reader" checked> Leitor</label>
+        </fieldset>
+        <div id="migrationError" class="alert error hidden span-2" role="alert"></div>
+        <button class="primary span-2" type="submit">Validar licença antiga e emitir ACT4</button>
+      </form>
+    </article>
+  </div>
   <script src="app.js"></script>
 </body>
 </html>

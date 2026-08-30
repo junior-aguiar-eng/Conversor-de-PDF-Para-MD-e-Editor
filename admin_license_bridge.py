@@ -111,14 +111,64 @@ class AdminLicenseBridge:
 
         return self._safe(operation)
 
+    def migrate_legacy_license(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Converte uma licença legada somente após validação e ciência explícita."""
+        def operation() -> dict[str, Any]:
+            machine_id = str(payload.get("machine_id", "")).strip().upper()
+            activation_key = str(payload.get("activation_key", "")).strip().upper()
+            confirmation = str(payload.get("confirmation", ""))
+            term_months = int(payload.get("term_months", 0))
+            features = tuple(payload.get("features") or ())
+            validation_mode = str(payload.get("validation_mode", "offline"))
+            max_offline_days = int(payload.get("max_offline_days", 0))
+            self.service.validate_legacy_migration(
+                machine_id,
+                activation_key,
+                confirmation=confirmation,
+            )
+            if term_months not in {3, 6, 12}:
+                raise ValueError("O prazo deve ser de 3, 6 ou 12 meses.")
+            if not features or not set(features).issubset({"converter", "ocr", "reader"}):
+                raise ValueError("Selecione ao menos uma funcionalidade válida.")
+            if validation_mode == "offline" and max_offline_days != 0:
+                raise ValueError("Licenças offline não usam prazo de lease.")
+            if validation_mode == "hybrid" and not 1 <= max_offline_days <= 30:
+                raise ValueError("O prazo offline híbrido deve ficar entre 1 e 30 dias.")
+            customer_id = self.service.create_customer(
+                str(payload.get("name", "")),
+                email=payload.get("email"),
+                phone=payload.get("phone"),
+                tax_id=payload.get("tax_id"),
+                commercial_reference=payload.get("commercial_reference"),
+                admin_user_id=self.admin_user_id,
+            )
+            migration_id, license_id = self.service.migrate_legacy_license(
+                customer_id,
+                machine_id=machine_id,
+                activation_key=activation_key,
+                confirmation=confirmation,
+                term_months=term_months,
+                features=features,
+                validation_mode=validation_mode,
+                max_offline_days=max_offline_days,
+                commercial_reference=payload.get("commercial_reference"),
+                admin_user_id=self.admin_user_id,
+            )
+            return {"migration_id": migration_id, "customer_id": customer_id, "license_id": license_id}
+
+        return self._safe(operation)
+
     def renew_license(self, license_id: str, term_months: int) -> dict[str, Any]:
-        return self._safe(
-            lambda: {
-                "renewal_id": self.service.renew_license(
-                    license_id, term_months=int(term_months), admin_user_id=self.admin_user_id
-                )
+        def operation() -> dict[str, Any]:
+            renewal_id = self.service.renew_license(
+                license_id, term_months=int(term_months), admin_user_id=self.admin_user_id
+            )
+            return {
+                "renewal_id": renewal_id,
+                "expires_at": self.service.get_license(license_id)["expires_at"],
             }
-        )
+
+        return self._safe(operation)
 
     def suspend_license(self, license_id: str, reason: str) -> dict[str, Any]:
         return self._safe(

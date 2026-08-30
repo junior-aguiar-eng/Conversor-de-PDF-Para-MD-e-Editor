@@ -31,6 +31,10 @@ def license_time_state_path() -> Path:
     return data_directory() / "license-time.dat"
 
 
+def license_lease_path() -> Path:
+    return data_directory() / "license-lease.json"
+
+
 def legacy_data_directory() -> Path:
     return application_root() / "data"
 

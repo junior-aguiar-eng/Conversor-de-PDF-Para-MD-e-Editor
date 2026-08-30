@@ -99,6 +99,7 @@ def evaluate_act4(
     online_status: str = "active",
     offline_until: datetime | None = None,
     last_online_validation: datetime | None = None,
+    entitlement_expires_at: str | None = None,
     clock_tampered: bool = False,
 ) -> LicenseStatus:
     """Avalia o direito já autenticado sem executar efeitos colaterais."""
@@ -107,11 +108,13 @@ def evaluate_act4(
     instant = at.astimezone(UTC)
     normalized_offline_until = offline_until.astimezone(UTC) if offline_until else None
     normalized_last_validation = last_online_validation.astimezone(UTC) if last_online_validation else None
+    effective_expiration_text = entitlement_expires_at or payload.expires_at
+    effective_expiration = _parse_timestamp(effective_expiration_text, "entitlement_expires_at")
     base = {
         "machine_id": machine_id,
         "license_id": payload.license_id,
         "license_format": "act4",
-        "expires_at": payload.expires_at,
+        "expires_at": effective_expiration_text,
         "features": payload.features,
         "validation_mode": payload.validation_mode,
         "offline_until": normalized_offline_until.strftime("%Y-%m-%dT%H:%M:%SZ") if normalized_offline_until else None,
@@ -135,6 +138,16 @@ def evaluate_act4(
         return LicenseStatus(state=LicenseState.REVOKED, message="A licença foi revogada.", **base)
     if online_status == "suspended":
         return LicenseStatus(state=LicenseState.SUSPENDED, message="A licença está suspensa.", **base)
+    if online_status == "expired":
+        return LicenseStatus(state=LicenseState.EXPIRED, message="A licença expirou.", days_remaining=0, **base)
+    if online_status == "machine_mismatch":
+        return LicenseStatus(
+            state=LicenseState.MACHINE_MISMATCH,
+            message="O dispositivo ativo no serviço não corresponde a este computador.",
+            **base,
+        )
+    if online_status == "not_found":
+        return LicenseStatus(state=LicenseState.INVALID, message="A licença não foi encontrada pelo serviço.", **base)
     if online_status != "active":
         return LicenseStatus(state=LicenseState.INVALID, message="O status online da licença é inválido.", **base)
     if clock_tampered:
@@ -145,7 +158,7 @@ def evaluate_act4(
         )
 
     starts = _parse_timestamp(payload.not_before, "not_before")
-    expires = _parse_timestamp(payload.expires_at, "expires_at")
+    expires = effective_expiration
     if instant < starts:
         return LicenseStatus(state=LicenseState.INVALID, message="A licença ainda não alcançou a data inicial.", **base)
     if instant >= expires:

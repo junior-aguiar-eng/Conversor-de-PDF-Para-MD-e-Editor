@@ -18,7 +18,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 4
 _BACKUP_MAGIC = b"NXJ-ADMIN-BACKUP\x01"
 _BACKUP_SALT_BYTES = 16
 _BACKUP_NONCE_BYTES = 12
@@ -33,6 +33,7 @@ _REQUIRED_TABLES = frozenset(
         "license_status_changes",
         "offline_exports",
         "online_leases",
+        "legacy_license_migrations",
         "audit_events",
         "admin_users",
     }
@@ -143,6 +144,7 @@ class AdminDatabase:
                     max_offline_days INTEGER NOT NULL CHECK (max_offline_days BETWEEN 0 AND 30),
                     customer_reference TEXT NOT NULL UNIQUE,
                     commercial_reference TEXT,
+                    activation_secret_hash TEXT,
                     created_by TEXT REFERENCES admin_users(admin_user_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_licenses_customer ON licenses(customer_id);
@@ -208,6 +210,37 @@ class AdminDatabase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_online_leases_license ON online_leases(license_id, expires_at);
 
+                CREATE TABLE IF NOT EXISTS legacy_license_migrations (
+                    migration_id TEXT PRIMARY KEY,
+                    legacy_version TEXT NOT NULL CHECK (legacy_version IN ('ACT2', 'ACT3')),
+                    legacy_key_hash TEXT NOT NULL UNIQUE,
+                    machine_id TEXT NOT NULL,
+                    customer_id TEXT NOT NULL REFERENCES customers(customer_id),
+                    license_id TEXT NOT NULL REFERENCES licenses(license_id),
+                    acknowledged_at TEXT NOT NULL,
+                    admin_user_id TEXT REFERENCES admin_users(admin_user_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_legacy_migrations_machine
+                    ON legacy_license_migrations(machine_id, acknowledged_at);
+
+                CREATE TABLE IF NOT EXISTS request_nonces (
+                    nonce_hash TEXT PRIMARY KEY,
+                    scope TEXT NOT NULL,
+                    seen_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_request_nonces_expiry ON request_nonces(expires_at);
+
+                CREATE TABLE IF NOT EXISTS admin_api_tokens (
+                    token_id TEXT PRIMARY KEY,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    label TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                    created_at TEXT NOT NULL,
+                    last_used_at TEXT,
+                    admin_user_id TEXT REFERENCES admin_users(admin_user_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS audit_events (
                     event_id TEXT PRIMARY KEY,
                     action TEXT NOT NULL,
@@ -231,7 +264,7 @@ class AdminDatabase:
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                     version INTEGER NOT NULL
                 );
-                INSERT INTO admin_schema(singleton, version) VALUES (1, 2)
+                INSERT INTO admin_schema(singleton, version) VALUES (1, 4)
                     ON CONFLICT(singleton) DO UPDATE SET version = MAX(version, excluded.version);
 
                 CREATE TRIGGER IF NOT EXISTS immutable_customer_id
@@ -256,8 +289,27 @@ class AdminDatabase:
                 BEFORE UPDATE ON offline_exports BEGIN SELECT RAISE(ABORT, 'offline_exports is append-only'); END;
                 CREATE TRIGGER IF NOT EXISTS exports_no_delete
                 BEFORE DELETE ON offline_exports BEGIN SELECT RAISE(ABORT, 'offline_exports is append-only'); END;
+                CREATE TRIGGER IF NOT EXISTS legacy_migrations_no_update
+                BEFORE UPDATE ON legacy_license_migrations BEGIN SELECT RAISE(ABORT, 'legacy migrations are append-only'); END;
+                CREATE TRIGGER IF NOT EXISTS legacy_migrations_no_delete
+                BEFORE DELETE ON legacy_license_migrations BEGIN SELECT RAISE(ABORT, 'legacy migrations are append-only'); END;
                 """
             )
+            license_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(licenses)").fetchall()
+            }
+            if "activation_secret_hash" not in license_columns:
+                connection.execute("ALTER TABLE licenses ADD COLUMN activation_secret_hash TEXT")
+            lease_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(online_leases)").fetchall()
+            }
+            for column, declaration in (
+                ("nonce_hash", "TEXT"),
+                ("key_id", "TEXT"),
+                ("lease_document", "BLOB"),
+            ):
+                if column not in lease_columns:
+                    connection.execute(f"ALTER TABLE online_leases ADD COLUMN {column} {declaration}")
             connection.execute(
                 """
                 INSERT INTO license_search(license_id, content)

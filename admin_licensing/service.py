@@ -19,7 +19,14 @@ from typing import Any
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from license_core import LICENSE_FILE_SUFFIX, LicensePayload, issue_license
+from license_core import (
+    LICENSE_FILE_SUFFIX,
+    LegacyLicenseVersion,
+    LicensePayload,
+    detect_legacy_activation_key,
+    issue_license,
+    verify_legacy_activation_key,
+)
 
 from .database import AdminDatabase, ConfirmationRequiredError, utc_now_text
 
@@ -114,10 +121,12 @@ class AdminLicenseService:
         *,
         key_id: str,
         private_key_provider: Callable[[], Ed25519PrivateKey],
+        legacy_key_verifier: Callable[[str, str], bool] = verify_legacy_activation_key,
     ) -> None:
         self.database = database
         self.key_id = key_id
         self.private_key_provider = private_key_provider
+        self.legacy_key_verifier = legacy_key_verifier
 
     def create_admin_user(
         self,
@@ -192,6 +201,7 @@ class AdminLicenseService:
         customer_reference: str | None = None,
         commercial_reference: str | None = None,
         machine_id: str | None = None,
+        activation_secret: str | None = None,
         admin_user_id: str | None = None,
     ) -> str:
         if term_months not in _TERMS:
@@ -208,6 +218,11 @@ class AdminLicenseService:
         normalized_machine = (machine_id or "").strip().upper()
         if normalized_machine and not _MACHINE_ID.fullmatch(normalized_machine):
             raise ValueError("O código da máquina NXJ2 é inválido.")
+        activation_secret_hash = None
+        if activation_secret is not None:
+            if len(activation_secret) < 32:
+                raise ValueError("O segredo de ativação deve possuir ao menos 32 caracteres.")
+            activation_secret_hash = hashlib.sha256(activation_secret.encode("utf-8")).hexdigest()
         starts = _utc(starts_at)
         issued = _utc()
         if issued > starts:
@@ -231,7 +246,8 @@ class AdminLicenseService:
                     license_id, customer_id, key_id, status, issued_at, not_before,
                     expires_at, term_months, validation_mode, max_offline_days,
                     customer_reference, commercial_reference, created_by
-                ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    , activation_secret_hash
+                ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     license_id,
@@ -246,6 +262,7 @@ class AdminLicenseService:
                     reference,
                     _optional_text(commercial_reference),
                     admin_user_id,
+                    activation_secret_hash,
                 ),
             )
             connection.executemany(
@@ -281,6 +298,95 @@ class AdminLicenseService:
                     {"device_id": device_id, "machine_id": normalized_machine},
                 )
         return license_id
+
+    def validate_legacy_migration(
+        self,
+        machine_id: str,
+        activation_key: str,
+        *,
+        confirmation: str,
+    ) -> LegacyLicenseVersion:
+        normalized_machine = machine_id.strip().upper()
+        normalized_key = activation_key.strip().upper()
+        if not _MACHINE_ID.fullmatch(normalized_machine):
+            raise ValueError("O código da máquina NXJ2 é inválido.")
+        version = detect_legacy_activation_key(normalized_key)
+        if version not in {LegacyLicenseVersion.ACT2, LegacyLicenseVersion.ACT3}:
+            raise ValueError("Informe uma licença legada ACT2 ou ACT3 válida.")
+        expected = f"MIGRAR:{normalized_machine}"
+        if confirmation != expected:
+            raise ConfirmationRequiredError(f"Confirmação obrigatória: {expected}")
+        if not self.legacy_key_verifier(normalized_machine, normalized_key):
+            raise ValueError("A licença legada não é válida para a máquina informada.")
+        return version
+
+    def migrate_legacy_license(
+        self,
+        customer_id: str,
+        *,
+        machine_id: str,
+        activation_key: str,
+        confirmation: str,
+        term_months: int,
+        features: Iterable[str] = ("converter", "ocr", "reader"),
+        validation_mode: str = "offline",
+        max_offline_days: int = 0,
+        commercial_reference: str | None = None,
+        admin_user_id: str | None = None,
+    ) -> tuple[str, str]:
+        normalized_machine = machine_id.strip().upper()
+        normalized_key = activation_key.strip().upper()
+        version = self.validate_legacy_migration(
+            normalized_machine,
+            normalized_key,
+            confirmation=confirmation,
+        )
+        legacy_key_hash = hashlib.sha256(normalized_key.encode("ascii")).hexdigest()
+        with self.database.read() as connection:
+            if connection.execute(
+                "SELECT 1 FROM legacy_license_migrations WHERE legacy_key_hash = ?",
+                (legacy_key_hash,),
+            ).fetchone():
+                raise InvalidTransitionError("Esta licença legada já possui uma migração registrada.")
+        license_id = self.issue_license(
+            customer_id,
+            term_months=term_months,
+            features=features,
+            validation_mode=validation_mode,
+            max_offline_days=max_offline_days,
+            machine_id=normalized_machine,
+            commercial_reference=commercial_reference,
+            admin_user_id=admin_user_id,
+        )
+        migration_id = _id("MIG")
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO legacy_license_migrations(
+                    migration_id, legacy_version, legacy_key_hash, machine_id,
+                    customer_id, license_id, acknowledged_at, admin_user_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    migration_id,
+                    version.value,
+                    legacy_key_hash,
+                    normalized_machine,
+                    customer_id,
+                    license_id,
+                    utc_now_text(),
+                    admin_user_id,
+                ),
+            )
+            self._audit(
+                connection,
+                "license.migrated_from_legacy",
+                "license",
+                license_id,
+                admin_user_id,
+                {"migration_id": migration_id, "legacy_version": version.value, "machine_id": normalized_machine},
+            )
+        return migration_id, license_id
 
     def bind_device(self, license_id: str, machine_id: str, *, admin_user_id: str | None = None) -> str:
         normalized_machine = machine_id.strip().upper()

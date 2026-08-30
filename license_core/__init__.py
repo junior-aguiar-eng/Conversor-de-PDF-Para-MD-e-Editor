@@ -10,7 +10,12 @@ from .errors import (
     UnknownKeyError,
     UnsupportedSchemaError,
 )
-from .legacy import LegacyLicenseVersion, detect_legacy_activation_key
+from .legacy import (
+    LegacyLicenseVersion,
+    detect_legacy_activation_key,
+    legacy_license_payload,
+    verify_legacy_activation_key,
+)
 from .protocol import (
     LICENSE_FILE_FORMAT,
     LICENSE_FILE_SUFFIX,
@@ -77,8 +82,10 @@ __all__ = [
     "issue_license",
     "load_license_file",
     "legacy_valid_status",
+    "legacy_license_payload",
     "parse_license",
     "require_feature",
     "unlicensed_status",
     "verify_license",
+    "verify_legacy_activation_key",
 ]
