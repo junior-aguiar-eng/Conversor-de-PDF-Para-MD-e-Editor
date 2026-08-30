@@ -220,6 +220,42 @@ async function run() {
   assert.equal(api.appTts.audioSegmentIndex, 1);
   assert.equal(api.appTts.audio.src, "segmento-2");
   assert.equal(segmentPlays, 1);
+
+  const pendingSpeech = [];
+  const speechCalls = [];
+  api.appTts.audio = {
+    src: "", paused: true, playbackRate: 1,
+    pause() { this.paused = true; },
+    play() { this.paused = false; api.appTts.setPlayState(true); return Promise.resolve(); },
+    removeAttribute() { this.src = ""; },
+    load() {},
+  };
+  api.appTts.playerEl = makeElement();
+  api.appTts.statusEl = makeElement();
+  api.appTts.loadingBadge = makeElement();
+  api.appTts.waveEl = makeElement();
+  windowObject.pywebview = { api: {
+    synthesize_speech: (...args) => {
+      speechCalls.push(args);
+      return new Promise((resolve) => pendingSpeech.push(resolve));
+    },
+  } };
+  const firstSpeech = api.appTts.playText("Texto para leitura");
+  assert.equal(speechCalls[0][1], "pt-BR-FranciscaNeural");
+  api.appTts.setVoice("pt-BR-AntonioNeural");
+  assert.equal(speechCalls[1][1], "pt-BR-AntonioNeural");
+  pendingSpeech[1]({ ok: true, voice: "pt-BR-AntonioNeural", audio_segments: ["audio-antonio"] });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(api.appTts.audio.src, "audio-antonio");
+  assert.equal(api.appTts.synthesizedVoice, "pt-BR-AntonioNeural");
+  pendingSpeech[0]({ ok: true, voice: "pt-BR-FranciscaNeural", audio_segments: ["audio-obsoleto"] });
+  await firstSpeech;
+  assert.equal(api.appTts.audio.src, "audio-antonio");
+  api.appTts.setVoice("pt-BR-FranciscaNeural");
+  assert.equal(speechCalls[2][1], "pt-BR-FranciscaNeural");
+  pendingSpeech[2]({ ok: true, voice: "pt-BR-FranciscaNeural", audio_segments: ["audio-francisca"] });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(api.appTts.audio.src, "audio-francisca");
   windowObject.AudioContext = null;
   context.setTimeout = () => 1;
   context.clearTimeout = () => {};
@@ -249,6 +285,68 @@ async function run() {
   reader.init();
   assert.equal(initEffects, 4);
   reader.currentFilePath = "C:/atual.pdf";
+  reader.currentTool = "pen";
+  reader.handleToolMainClick("pen");
+  assert.equal(reader.currentTool, "pan");
+
+  const erasable = { type: "text", x: 10, y: 10, width: 80, height: 40, text: "nota" };
+  reader.currentPage = 0;
+  reader.annotations.set(0, [erasable]);
+  assert.equal(reader.eraseAnnotationAt(20, 20), true);
+  assert.equal(reader.annotations.get(0).length, 0);
+  reader.undoAnnotation();
+  assert.equal(reader.annotations.get(0)[0], erasable);
+  assert.equal(reader.annotationContainsPoint({ type: "highlight_block", rect: [90, 90, 140, 130] }, 100, 100), true);
+  assert.equal(reader.annotationContainsPoint({ type: "ink", width: 4, strokes: [[[150, 150], [190, 150]]] }, 170, 153), true);
+
+  const created = { type: "highlight_block", rect: [200, 200, 240, 230] };
+  reader.addAnnotation(created);
+  assert.equal(reader.annotations.get(0).includes(created), true);
+  reader.undoAnnotation();
+  assert.equal(reader.annotations.get(0).includes(created), false);
+
+  const beforeMove = { x: erasable.x, y: erasable.y };
+  erasable.x = 30;
+  erasable.y = 35;
+  reader.recordAnnotationUpdate(erasable, beforeMove, { x: erasable.x, y: erasable.y });
+  reader.undoAnnotation();
+  assert.deepEqual({ x: erasable.x, y: erasable.y }, beforeMove);
+
+  const editReader = new api.SuperPdfController();
+  editReader.currentFileId = "edit-id";
+  editReader.currentFilePath = "C:/edit.pdf";
+  editReader.currentFileName = "edit.pdf";
+  editReader.pageRotation = 0;
+  const readerStage = document.getElementById("pdfStageContainer");
+  const readerSidebar = document.getElementById("pdfThumbnailsSidebar");
+  readerStage.scrollTop = 77;
+  readerStage.scrollLeft = 31;
+  readerSidebar.scrollTop = 19;
+  editReader.renderCurrentPage = async () => {
+    readerStage.scrollTop = 0;
+    readerStage.scrollLeft = 0;
+    readerSidebar.scrollTop = 0;
+  };
+  let savedPayload = null;
+  windowObject.pywebview = { api: {
+    choose_pdf_save_destination: async () => ({ ok: true, output_file_id: "copy-id" }),
+    save_pdf_annotations: async (payload) => {
+      savedPayload = payload;
+      return { ok: true, is_copy: true, saved_count: payload.annotations.length, rotation_count: payload.rotations.length, message: "ok" };
+    },
+  } };
+  await editReader.rotatePage(90);
+  assert.equal(editReader.pendingRotations.get(0).target, 90);
+  assert.equal(editReader.hasPendingEdits(), true);
+  assert.equal(readerStage.scrollTop, 77);
+  assert.equal(readerStage.scrollLeft, 31);
+  assert.equal(readerSidebar.scrollTop, 19);
+  await editReader.saveAnnotations(true);
+  assert.equal(savedPayload.rotations.length, 1);
+  assert.equal(savedPayload.rotations[0].page_number, 0);
+  assert.equal(savedPayload.rotations[0].degrees, 90);
+  assert.equal(savedPayload.output_file_id, "copy-id");
+  assert.equal(editReader.hasPendingEdits(), false);
   reader.bookmarks = [{ id: 1, page_number: 0, title: `<svg onload=alert(1)>` }];
   reader.renderBookmarksList();
   assert.ok(document.getElementById("pdfBookmarksContainer").innerHTML.includes("&lt;svg onload=alert(1)&gt;"));
@@ -325,6 +423,7 @@ async function run() {
   drafts.activateDocumentState(idA, docA);
   drafts.activeDocumentState.opened = true;
   drafts.annotations.set(0, [{ type: "highlight" }]);
+  drafts.pendingRotations.set(0, { base: 0, target: 90 });
   drafts.undoStack.push({ page: 0 });
   drafts.currentPassword = "senha-a";
   drafts.currentPage = 1;
@@ -336,6 +435,7 @@ async function run() {
   drafts.annotations.set(1, [{ type: "text" }]);
   assert.equal(await drafts.loadDocument(idA, null, docA), true);
   assert.equal(drafts.annotations.get(0).length, 1);
+  assert.equal(drafts.pendingRotations.get(0).target, 90);
   assert.equal(drafts.currentPassword, "senha-a");
   assert.equal(drafts.currentPage, 1);
   assert.equal(document.getElementById("pdfZoomSelect").value, "1.5");
@@ -359,9 +459,11 @@ async function run() {
   discardReader.currentFilePath = docA;
   discardReader.activateDocumentState(idA, docA);
   discardReader.annotations.set(0, [{ type: "ink" }]);
+  discardReader.pendingRotations.set(0, { base: 0, target: 90 });
   discardReader.documentSwitchDecisionProvider = () => "discard";
   assert.equal(await discardReader.loadDocument(idB, null, docB), true);
   assert.equal(discardReader.getOrCreateDocumentState(idA, docA).annotations.size, 0);
+  assert.equal(discardReader.getOrCreateDocumentState(idA, docA).pendingRotations.size, 0);
 
   const saveReader = new api.SuperPdfController();
   saveReader.renderCurrentPage = async () => {};

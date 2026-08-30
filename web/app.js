@@ -51,7 +51,7 @@ const ALLOWED_DECLARATIVE_ACTIONS = new Set([
   "superPdf.goToPage", "superPdf.handleToolMainClick", "superPdf.nextPage", "superPdf.onHlWidthChange",
   "superPdf.onPenWidthChange", "superPdf.onSelectDocument", "superPdf.onTextSizeChange",
   "superPdf.openFileDialog", "superPdf.openProtectModal", "superPdf.pauseIndexing", "superPdf.prevPage", "superPdf.printDocument",
-  "superPdf.rotatePage", "superPdf.saveAnnotations", "superPdf.setHighlightColor",
+  "superPdf.restoreLastSave", "superPdf.rotatePage", "superPdf.saveAnnotations", "superPdf.setHighlightColor",
   "superPdf.setHighlightMode", "superPdf.setPenColor", "superPdf.setSidebarTab", "superPdf.setTextBoxStyle",
   "superPdf.setTextColor", "superPdf.setTool", "superPdf.setZoom", "superPdf.startFullIndexing", "superPdf.submitProtectPdf",
   "superPdf.submitUnlockPdf", "superPdf.submitUnprotectPdf", "superPdf.toggleBookmark",
@@ -206,13 +206,6 @@ function initializeAfterTerms() {
         state.outputDirId = info.default_output_dir_id;
         state.maxChunkCharacters = info.default_chunk_limit;
         state.convertedResults = Array.isArray(info.recent_markdowns) ? info.recent_markdowns : [];
-
-        if (info.app_version) {
-          const badge = document.getElementById("appVersionBadge");
-          if (badge) {
-            badge.innerText = `MOTOR NATIVO LOCAL • v${info.app_version} • OCR ONNX INTEGRADO • SEM TESSERACT EXTERNO`;
-          }
-        }
 
         document.getElementById("inputOutputDir").value = state.outputDir;
         document.getElementById("inputMaxChars").value = state.maxChunkCharacters;
@@ -1479,7 +1472,7 @@ class SuperPdfController {
     this.pageWidth = 595.0;
     this.pageHeight = 842.0;
     this.pageRotation = 0;
-    this.currentTool = "pan"; // "pan" | "pen" | "highlight_pen" | "highlight_block" | "text" | "snippet"
+    this.currentTool = "pan"; // "pan" | "pen" | "highlight_pen" | "highlight_block" | "text" | "eraser" | "snippet"
     
     // Configurações de Caneta e Grifador
     this.penColor = "#0284c7";
@@ -1497,6 +1490,7 @@ class SuperPdfController {
     this.documentStates = new Map();
     this.activeDocumentState = null;
     this.annotations = new Map(); // pageIndex -> Array of annotation objects
+    this.pendingRotations = new Map(); // pageIndex -> { base, target }
     this.undoStack = [];
     this.isInteracting = false;
     this.currentStroke = [];
@@ -1520,6 +1514,7 @@ class SuperPdfController {
     this.preloadRequestId = 0;
     this.documentSwitchResolver = null;
     this.documentSwitchDecisionProvider = null;
+    this.canRevertLastSave = false;
     this.initialized = false;
 
     // 24 Cores no estilo Microsoft Edge PDF
@@ -1565,6 +1560,7 @@ class SuperPdfController {
         pages: [],
         pageCache: new Map(),
         annotations: new Map(),
+        pendingRotations: new Map(),
         undoStack: [],
         password: "",
         currentPage: 0,
@@ -1572,6 +1568,7 @@ class SuperPdfController {
         bookmarks: [],
         metadata: {},
         opened: false,
+        canRevertLastSave: false,
       };
       this.documentStates.set(identity, documentState);
     }
@@ -1585,30 +1582,50 @@ class SuperPdfController {
     this.activeDocumentState.filePath = this.currentFilePath;
     this.activeDocumentState.pageCache = this.pageCache;
     this.activeDocumentState.annotations = this.annotations;
+    this.activeDocumentState.pendingRotations = this.pendingRotations;
     this.activeDocumentState.undoStack = this.undoStack;
     this.activeDocumentState.password = this.currentPassword;
     this.activeDocumentState.currentPage = this.currentPage;
     this.activeDocumentState.zoom = zoomSelect?.value || this.activeDocumentState.zoom || "1.0";
     this.activeDocumentState.bookmarks = this.bookmarks;
+    this.activeDocumentState.canRevertLastSave = this.canRevertLastSave;
   }
 
   activateDocumentState(fileId, filePath, password = null) {
     const documentState = this.getOrCreateDocumentState(fileId, filePath);
     this.activeDocumentState = documentState;
     this.annotations = documentState.annotations;
+    this.pendingRotations = documentState.pendingRotations;
     this.undoStack = documentState.undoStack;
     this.pageCache = documentState.pageCache;
     this.currentPassword = password ?? documentState.password;
     this.currentPage = documentState.currentPage;
     this.bookmarks = documentState.bookmarks;
+    this.canRevertLastSave = documentState.canRevertLastSave;
+    this.updateEditActionState();
     return documentState;
   }
 
-  hasPendingAnnotations() {
+  hasPendingEdits() {
+    if (this.pendingRotations.size > 0) return true;
     for (const list of this.annotations.values()) {
       if (list.length > 0) return true;
     }
     return false;
+  }
+
+  hasPendingAnnotations() {
+    return this.hasPendingEdits();
+  }
+
+  updateEditActionState() {
+    const hasChanges = this.hasPendingEdits();
+    for (const id of ["btnToolSaveCopy", "btnToolApplyOriginal"]) {
+      const button = document.getElementById(id);
+      if (button) button.disabled = !hasChanges;
+    }
+    const revertButton = document.getElementById("btnToolRevertSave");
+    if (revertButton) revertButton.disabled = !this.canRevertLastSave;
   }
 
   requestDocumentSwitchDecision(nextFilePath) {
@@ -1651,8 +1668,10 @@ class SuperPdfController {
     if (action === "save") return this.saveAnnotations();
     if (action === "discard") {
       this.annotations.clear();
+      this.pendingRotations.clear();
       this.undoStack.length = 0;
       this.captureActiveDocumentState();
+      this.updateEditActionState();
     }
     return action === "draft" || action === "discard";
   }
@@ -1754,20 +1773,23 @@ class SuperPdfController {
   handleToolMainClick(toolName) {
     if (toolName === "pen") {
       if (this.currentTool === "pen") {
-        this.toggleFlyout("pen");
+        this.closeAllFlyouts();
+        this.setTool("pan");
       } else {
         this.setTool("pen");
       }
     } else if (toolName === "highlight") {
       const targetTool = this.highlightMode === "block" ? "highlight_block" : "highlight_pen";
       if (this.currentTool === targetTool) {
-        this.toggleFlyout("highlight");
+        this.closeAllFlyouts();
+        this.setTool("pan");
       } else {
         this.setTool(targetTool);
       }
     } else if (toolName === "text") {
       if (this.currentTool === "text") {
-        this.toggleFlyout("text");
+        this.closeAllFlyouts();
+        this.setTool("pan");
       } else {
         this.setTool("text");
       }
@@ -1924,6 +1946,8 @@ class SuperPdfController {
     this.bookmarks = info.bookmarks || [];
     documentState.bookmarks = this.bookmarks;
     documentState.metadata = info.metadata || {};
+    this.canRevertLastSave = Boolean(info.backup_available);
+    documentState.canRevertLastSave = this.canRevertLastSave;
 
     // Solcita primeira faixa de 50 páginas por demanda (Item 12)
     const rangeData = await window.pywebview.api.get_pdf_page_range(fileId, 0, 50, password);
@@ -1974,8 +1998,7 @@ class SuperPdfController {
     if (btnProtect) btnProtect.disabled = false;
     const btnPrint = document.getElementById("btnToolPrint");
     if (btnPrint) btnPrint.disabled = false;
-    const btnSave = document.getElementById("btnToolSave");
-    if (btnSave) btnSave.disabled = false;
+    this.updateEditActionState();
 
     const emptyState = document.getElementById("pdfEmptyState");
     if (emptyState) emptyState.classList.add("hidden");
@@ -2040,12 +2063,20 @@ class SuperPdfController {
   }
 
   updateActiveThumbnail() {
+    const sidebar = document.getElementById("pdfThumbnailsSidebar");
     for (let i = 0; i < this.totalPages; i++) {
       const el = document.getElementById(`thumb-card-${i}`);
       if (el) {
         if (i === this.currentPage) {
           el.classList.add("active");
-          el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          if (sidebar) {
+            const itemTop = el.offsetTop;
+            const itemBottom = itemTop + el.offsetHeight;
+            if (itemTop < sidebar.scrollTop) sidebar.scrollTop = itemTop;
+            else if (itemBottom > sidebar.scrollTop + sidebar.clientHeight) {
+              sidebar.scrollTop = itemBottom - sidebar.clientHeight;
+            }
+          }
         } else {
           el.classList.remove("active");
         }
@@ -2077,12 +2108,20 @@ class SuperPdfController {
         this.pageHeight = metadata.height || this.pageHeight;
       }
       const renderDpi = this.calculateRenderDpi();
-      const cacheKey = `${requestedFileId}:${requestedPage}:${renderDpi}`;
+      const pendingRotation = this.pendingRotations.get(requestedPage);
+      const targetRotation = pendingRotation ? pendingRotation.target : null;
+      const cacheKey = `${requestedFileId}:${requestedPage}:${renderDpi}:${targetRotation ?? "disk"}`;
       let pageData = this.lruCache.get(cacheKey);
 
       if (!pageData || forceReload) {
         if (forceReload) this.lruCache.delete(cacheKey);
-        pageData = await window.pywebview.api.render_page_hq(requestedFileId, requestedPage, renderDpi);
+        pageData = await window.pywebview.api.render_page_hq(
+          requestedFileId,
+          requestedPage,
+          renderDpi,
+          this.currentPassword || null,
+          targetRotation,
+        );
         if (
           requestId !== this.renderRequestId ||
           requestedFileId !== this.currentFileId ||
@@ -2392,6 +2431,7 @@ class SuperPdfController {
     const containerPen = document.getElementById("tool-pen-container");
     const containerHl = document.getElementById("tool-highlight-container");
     const containerText = document.getElementById("tool-text-container");
+    const btnEraser = document.getElementById("tool-eraser");
     const btnSnippet = document.getElementById("tool-snippet");
 
     if (btnPan) {
@@ -2416,6 +2456,12 @@ class SuperPdfController {
       containerText.classList.toggle("ring-blue-500", tool === "text");
       containerText.classList.toggle("bg-blue-50", tool === "text");
     }
+    if (btnEraser) {
+      btnEraser.classList.toggle("bg-rose-50", tool === "eraser");
+      btnEraser.classList.toggle("text-rose-700", tool === "eraser");
+      btnEraser.classList.toggle("ring-2", tool === "eraser");
+      btnEraser.classList.toggle("ring-rose-500", tool === "eraser");
+    }
     if (btnSnippet) {
       btnSnippet.classList.toggle("bg-rose-50", tool === "snippet");
       btnSnippet.classList.toggle("text-rose-700", tool === "snippet");
@@ -2431,8 +2477,11 @@ class SuperPdfController {
       else if (tool === "highlight_pen") canvas.classList.add("cursor-highlight-pen");
       else if (tool === "highlight_block") canvas.classList.add("cursor-highlight-block");
       else if (tool === "text") canvas.classList.add("cursor-text-tool");
+      else if (tool === "eraser") canvas.classList.add("cursor-eraser");
       else if (tool === "snippet") canvas.classList.add("cursor-snippet");
     }
+    const textContainer = document.getElementById("pdfOverlayTextContainer");
+    if (textContainer) textContainer.classList.toggle("eraser-active", tool === "eraser");
   }
 
   setPenColor(color) {
@@ -2517,6 +2566,11 @@ class SuperPdfController {
     const clientX = e.clientX - rect.left;
     const clientY = e.clientY - rect.top;
     const pdfPt = this.screenToPdf(clientX, clientY);
+
+    if (this.currentTool === "eraser") {
+      this.eraseAnnotationAt(pdfPt.x, pdfPt.y);
+      return;
+    }
 
     this.isInteracting = true;
     this.startPoint = { x: clientX, y: clientY, pdfX: pdfPt.x, pdfY: pdfPt.y };
@@ -2702,13 +2756,15 @@ class SuperPdfController {
     }, 50);
   }
 
-  deleteAnnotation(annot) {
-    const list = this.annotations.get(this.currentPage) || [];
+  deleteAnnotation(annot, page = this.currentPage, recordUndo = true) {
+    const list = this.annotations.get(page) || [];
     const idx = list.indexOf(annot);
     if (idx !== -1) {
       list.splice(idx, 1);
-      this.annotations.set(this.currentPage, list);
+      this.annotations.set(page, list);
+      if (recordUndo) this.undoStack.push({ type: "delete", page, annot, index: idx });
       this.redrawAnnotations();
+      this.updateEditActionState();
       playBeep("click");
     }
   }
@@ -2717,8 +2773,53 @@ class SuperPdfController {
     const list = this.annotations.get(this.currentPage) || [];
     list.push(annot);
     this.annotations.set(this.currentPage, list);
-    this.undoStack.push({ page: this.currentPage, annot });
+    this.undoStack.push({ type: "add", page: this.currentPage, annot });
+    this.updateEditActionState();
     playBeep("click");
+  }
+
+  recordAnnotationUpdate(annot, before, after, page = this.currentPage) {
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    this.undoStack.push({ type: "update", page, annot, before, after });
+    this.updateEditActionState();
+  }
+
+  distanceToSegment(px, py, ax, ay, bx, by) {
+    const dx = bx - ax;
+    const dy = by - ay;
+    if (dx === 0 && dy === 0) return Math.hypot(px - ax, py - ay);
+    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  }
+
+  annotationContainsPoint(item, x, y) {
+    if (item.type === "text") {
+      return x >= item.x && x <= item.x + (item.width || 180) && y >= item.y && y <= item.y + (item.height || 45);
+    }
+    if (item.type === "highlight" || item.type === "highlight_block") {
+      const [x0, y0, x1, y1] = item.rect || [];
+      return x >= Math.min(x0, x1) && x <= Math.max(x0, x1) && y >= Math.min(y0, y1) && y <= Math.max(y0, y1);
+    }
+    if (item.type === "ink" || item.type === "highlight_pen") {
+      const tolerance = Math.max(6, Number(item.width || 4) / 2 + 4);
+      return (item.strokes || []).some((stroke) => stroke.some((point, index) => {
+        if (index === 0) return stroke.length === 1 && Math.hypot(x - point[0], y - point[1]) <= tolerance;
+        const previous = stroke[index - 1];
+        return this.distanceToSegment(x, y, previous[0], previous[1], point[0], point[1]) <= tolerance;
+      }));
+    }
+    return false;
+  }
+
+  eraseAnnotationAt(x, y) {
+    const list = this.annotations.get(this.currentPage) || [];
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      if (this.annotationContainsPoint(list[index], x, y)) {
+        this.deleteAnnotation(list[index]);
+        return true;
+      }
+    }
+    return false;
   }
 
   undoAnnotation() {
@@ -2727,20 +2828,37 @@ class SuperPdfController {
       return;
     }
     const last = this.undoStack.pop();
-    const list = this.annotations.get(last.page) || [];
-    const idx = list.indexOf(last.annot);
-    if (idx !== -1) {
-      list.splice(idx, 1);
+    if (last.type === "rotation") {
+      if (last.before === null) this.pendingRotations.delete(last.page);
+      else this.pendingRotations.set(last.page, last.before);
+      if (last.page === this.currentPage) void this.renderPreservingReaderScroll(true);
+    } else if (last.type === "delete") {
+      const list = this.annotations.get(last.page) || [];
+      list.splice(Math.min(last.index, list.length), 0, last.annot);
+      this.annotations.set(last.page, list);
+    } else if (last.type === "update") {
+      Object.assign(last.annot, last.before);
+    } else if (last.type === "clear") {
+      this.annotations.set(last.page, last.annotations);
+    } else {
+      const list = this.annotations.get(last.page) || [];
+      const idx = list.indexOf(last.annot);
+      if (idx !== -1) list.splice(idx, 1);
       this.annotations.set(last.page, list);
     }
     playBeep("click");
     this.redrawAnnotations();
+    this.updateEditActionState();
   }
 
   clearPageAnnotations() {
+    const previous = [...(this.annotations.get(this.currentPage) || [])];
+    if (previous.length === 0) return;
+    this.undoStack.push({ type: "clear", page: this.currentPage, annotations: previous });
     this.annotations.set(this.currentPage, []);
     playBeep("click");
     this.redrawAnnotations();
+    this.updateEditActionState();
     showToast("Anotações da página removidas.", "info");
   }
 
@@ -2855,6 +2973,41 @@ class SuperPdfController {
       contentEl.addEventListener("pointerdown", (e) => e.stopPropagation());
       contentEl.addEventListener("click", (e) => e.stopPropagation());
 
+      const dragHandle = document.createElement("span");
+      dragHandle.className = "card-drag-handle";
+      dragHandle.innerText = "⋮⋮";
+      dragHandle.title = "Mover card";
+      dragHandle.contentEditable = "false";
+      dragHandle.addEventListener("pointerdown", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const startClientX = e.clientX;
+        const startClientY = e.clientY;
+        const before = { x: item.x, y: item.y };
+        const scale = this.calculateDisplayScale() || 1;
+        const maxX = Math.max(0, this.pageWidth - (item.width || card.offsetWidth / scale));
+        const maxY = Math.max(0, this.pageHeight - (item.height || card.offsetHeight / scale));
+        dragHandle.setPointerCapture?.(e.pointerId);
+
+        const move = (moveEvent) => {
+          item.x = Math.max(0, Math.min(maxX, before.x + (moveEvent.clientX - startClientX) / scale));
+          item.y = Math.max(0, Math.min(maxY, before.y + (moveEvent.clientY - startClientY) / scale));
+          const position = this.pdfToScreen(item.x, item.y);
+          card.style.left = `${position.x}px`;
+          card.style.top = `${position.y}px`;
+        };
+        const finish = () => {
+          dragHandle.removeEventListener("pointermove", move);
+          dragHandle.removeEventListener("pointerup", finish);
+          dragHandle.removeEventListener("pointercancel", finish);
+          this.recordAnnotationUpdate(item, before, { x: item.x, y: item.y });
+        };
+        dragHandle.addEventListener("pointermove", move);
+        dragHandle.addEventListener("pointerup", finish);
+        dragHandle.addEventListener("pointercancel", finish);
+      });
+      card.appendChild(dragHandle);
+
       // Botão de deletar flutuante
       const delBtn = document.createElement("span");
       delBtn.className = "text-item-delete-btn";
@@ -2868,6 +3021,12 @@ class SuperPdfController {
       });
       card.appendChild(delBtn);
 
+      contentEl.addEventListener("focus", () => {
+        contentEl.dataset.initialText = item.text || "";
+        contentEl.dataset.initialWidth = String(item.width || 180);
+        contentEl.dataset.initialHeight = String(item.height || 45);
+      });
+
       contentEl.addEventListener("input", () => {
         item.text = contentEl.innerText;
         const scale = this.calculateDisplayScale();
@@ -2878,6 +3037,11 @@ class SuperPdfController {
       });
 
       contentEl.addEventListener("blur", () => {
+        const before = {
+          text: contentEl.dataset.initialText ?? item.text ?? "",
+          width: Number(contentEl.dataset.initialWidth || item.width || 180),
+          height: Number(contentEl.dataset.initialHeight || item.height || 45),
+        };
         const clean = contentEl.innerText.trim();
         item.text = contentEl.innerText;
         const scale = this.calculateDisplayScale();
@@ -2886,13 +3050,17 @@ class SuperPdfController {
           item.height = card.offsetHeight / scale;
         }
         if (!clean) {
-          this.deleteAnnotation(item);
+          const addIndex = this.undoStack.map((action) => action.type === "add" && action.annot === item).lastIndexOf(true);
+          if (addIndex >= 0) this.undoStack.splice(addIndex, 1);
+          this.deleteAnnotation(item, this.currentPage, false);
+        } else {
+          this.recordAnnotationUpdate(item, before, { text: item.text, width: item.width, height: item.height });
         }
       });
 
       contentEl.addEventListener("keydown", (e) => {
-        // Ctrl + Enter ou Esc: Finaliza a edição, desfoque e fixa o card
-        if ((e.ctrlKey && e.key === "Enter") || e.key === "Escape") {
+        // Enter fixa o card; Shift+Enter preserva a quebra de linha.
+        if ((e.key === "Enter" && !e.shiftKey) || e.key === "Escape") {
           e.preventDefault();
           contentEl.blur();
           if (window.getSelection) {
@@ -2949,31 +3117,61 @@ class SuperPdfController {
     if (result && result.new_file) addProcessedFiles([result.new_file]);
   }
 
-  async rotatePage(degrees, asCopy = false) {
-    if (!this.currentFilePath) return;
-    playBeep("click");
-    const outputFileId = asCopy ? await this.chooseCopyDestination("rotacionado") : null;
-    if (asCopy && !outputFileId) return;
-    const res = await window.pywebview.api.rotate_pdf_page(
-      this.currentFileId,
-      this.currentPage,
-      degrees,
-      this.currentPassword || null,
-      outputFileId,
-    );
-    if (res.ok) {
-      showToast(res.message, "success");
-      playBeep("success");
-      await this.renderCurrentPage(true);
-    } else {
-      if (res.needs_password) {
-        this.pendingPasswordFile = this.currentFilePath;
-        this.pendingPasswordFileId = this.currentFileId;
-        this.openUnlockModal();
-      } else {
-        showToast(`Erro ao rotacionar: ${res.error}`, "error");
-      }
+  captureReaderScroll() {
+    const stage = document.getElementById("pdfStageContainer");
+    const sidebar = document.getElementById("pdfThumbnailsSidebar");
+    return {
+      stage,
+      sidebar,
+      stageTop: stage?.scrollTop || 0,
+      stageLeft: stage?.scrollLeft || 0,
+      sidebarTop: sidebar?.scrollTop || 0,
+    };
+  }
+
+  restoreReaderScroll(snapshot) {
+    if (!snapshot) return;
+    if (snapshot.stage) {
+      snapshot.stage.scrollTop = snapshot.stageTop;
+      snapshot.stage.scrollLeft = snapshot.stageLeft;
     }
+    if (snapshot.sidebar) snapshot.sidebar.scrollTop = snapshot.sidebarTop;
+  }
+
+  async renderPreservingReaderScroll(forceReload = true) {
+    const snapshot = this.captureReaderScroll();
+    await this.renderCurrentPage(forceReload);
+    this.restoreReaderScroll(snapshot);
+  }
+
+  async rotatePage(degrees) {
+    if (!this.currentFilePath) return;
+    const normalized = Number(degrees);
+    if (!Number.isInteger(normalized) || normalized % 90 !== 0) return;
+    playBeep("click");
+    const existing = this.pendingRotations.get(this.currentPage);
+    const before = existing ? { ...existing } : null;
+    const base = existing ? existing.base : this.pageRotation;
+    const target = ((existing ? existing.target : base) + normalized + 360) % 360;
+    if (target === base) this.pendingRotations.delete(this.currentPage);
+    else this.pendingRotations.set(this.currentPage, { base, target });
+    const after = this.pendingRotations.get(this.currentPage);
+    this.undoStack.push({ type: "rotation", page: this.currentPage, before, after: after ? { ...after } : null });
+    this.updateEditActionState();
+    await this.renderPreservingReaderScroll(true);
+  }
+
+  clearPendingEdits() {
+    this.annotations.clear();
+    this.pendingRotations.clear();
+    this.undoStack = [];
+    if (this.activeDocumentState) {
+      this.activeDocumentState.annotations = this.annotations;
+      this.activeDocumentState.pendingRotations = this.pendingRotations;
+      this.activeDocumentState.undoStack = this.undoStack;
+      this.activeDocumentState.canRevertLastSave = this.canRevertLastSave;
+    }
+    this.updateEditActionState();
   }
 
   async saveAnnotations(asCopy = false) {
@@ -2991,8 +3189,13 @@ class SuperPdfController {
       allAnnots.push(...list);
     });
 
-    if (allAnnots.length === 0) {
-      showToast("Nenhuma nova anotação para gravar.", "info");
+    const rotations = [...this.pendingRotations.entries()].map(([page, rotation]) => ({
+      page_number: page,
+      degrees: (rotation.target - rotation.base + 360) % 360,
+    }));
+
+    if (allAnnots.length === 0 && rotations.length === 0) {
+      showToast("Nenhuma alteração pendente para gravar.", "info");
       return true;
     }
 
@@ -3001,6 +3204,7 @@ class SuperPdfController {
     const res = await window.pywebview.api.save_pdf_annotations({
       file_id: this.currentFileId,
       annotations: allAnnots,
+      rotations,
       password: this.currentPassword || null,
       output_file_id: outputFileId,
     });
@@ -3008,15 +3212,15 @@ class SuperPdfController {
     if (res.ok) {
       playBeep("success");
       this.registerCopiedFile(res);
-      showToast(res.message, "success");
-      appendLog("OK", `${this.currentFileName}: ${res.saved_count} anotação(ões) gravada(s) nativamente no PDF.`);
-      this.annotations.clear();
-      this.undoStack = [];
-      if (this.activeDocumentState) {
-        this.activeDocumentState.annotations = this.annotations;
-        this.activeDocumentState.undoStack = this.undoStack;
+      const indexFailed = res.index_status && !res.index_status.ok;
+      showToast(indexFailed ? `${res.message} O índice não pôde ser atualizado.` : res.message, indexFailed ? "warning" : "success");
+      appendLog("OK", `${this.currentFileName}: ${res.saved_count} anotação(ões) e ${res.rotation_count || 0} rotação(ões) gravada(s).`);
+      if (!res.is_copy) {
+        this.canRevertLastSave = Boolean(res.backup_path);
+        this.lruCache.clear();
       }
-      if (!res.is_copy) await this.renderCurrentPage(true);
+      this.clearPendingEdits();
+      await this.renderCurrentPage(true);
       return true;
     } else {
       playBeep("error");
@@ -3029,6 +3233,22 @@ class SuperPdfController {
       }
       return false;
     }
+  }
+
+  async restoreLastSave() {
+    if (!this.currentFileId || !this.canRevertLastSave) return false;
+    playBeep("click");
+    const res = await window.pywebview.api.restore_pdf_backup(this.currentFileId, this.currentPassword || null);
+    if (!res.ok) {
+      showToast(`Erro ao reverter: ${res.error}`, "error");
+      return false;
+    }
+    this.canRevertLastSave = Boolean(res.backup_available);
+    this.clearPendingEdits();
+    this.lruCache.clear();
+    await this.renderCurrentPage(true);
+    showToast(res.message, "success");
+    return true;
   }
 
   async triggerSnippetExtraction(x0, y0, x1, y1) {
@@ -3167,7 +3387,7 @@ class SuperPdfController {
         if (this.activeDocumentState) this.activeDocumentState.password = userPw;
       }
       showToast(res.message, "success");
-      appendLog("OK", `${this.currentFileName}: Protegido com criptografia AES-256.`);
+      appendLog("OK", `${this.currentFileName}: cópia protegida criada.`);
     } else {
       playBeep("error");
       showToast(`Erro ao proteger PDF: ${res.error}`, "error");
@@ -3501,6 +3721,8 @@ class NeuralTtsController {
     this.audio = new Audio();
     this.currentText = "";
     this.currentVoice = "pt-BR-FranciscaNeural";
+    this.synthesizedVoice = null;
+    this.synthesisRequestId = 0;
     this.currentSpeed = 1.0;
     this.audioSegments = [];
     this.audioSegmentIndex = 0;
@@ -3541,13 +3763,16 @@ class NeuralTtsController {
     this.audio.addEventListener("error", (e) => this.onAudioError(e));
   }
 
-  async playText(text) {
+  async playText(text, options = {}) {
     const raw = (text || "").trim();
     if (!raw) {
       showToast("Nenhum texto disponível para leitura em áudio.", "info");
       return;
     }
 
+    const requestedVoice = this.currentVoice;
+    const requestId = ++this.synthesisRequestId;
+    const autoplay = options.autoplay !== false;
     this.currentText = raw;
     appSelection.hideMenu();
     this.showPlayer();
@@ -3555,17 +3780,18 @@ class NeuralTtsController {
 
     if (this.statusEl) {
       const preview = raw.length > 50 ? raw.substring(0, 48) + "..." : raw;
-      this.statusEl.innerText = `Gerando áudio neural: "${preview}"`;
+      this.statusEl.innerText = `Gerando áudio: "${preview}"`;
     }
 
     try {
       const res = await window.pywebview.api.synthesize_speech(
         this.currentText,
-        this.currentVoice,
+        requestedVoice,
         "+0%",
         "+0Hz"
       );
 
+      if (requestId !== this.synthesisRequestId || requestedVoice !== this.currentVoice) return;
       this.setLoading(false);
 
       if (!res.ok) {
@@ -3574,24 +3800,32 @@ class NeuralTtsController {
         playBeep("error");
         return;
       }
+      if (res.voice && res.voice !== requestedVoice) {
+        showToast("O serviço retornou uma voz diferente da selecionada. Gere o áudio novamente.", "error");
+        if (this.statusEl) this.statusEl.innerText = "A voz selecionada não pôde ser confirmada";
+        return;
+      }
 
       this.audioSegments = Array.isArray(res.audio_segments) && res.audio_segments.length
         ? res.audio_segments
         : [res.audio_base64];
       this.audioSegmentIndex = 0;
+      this.synthesizedVoice = res.voice || requestedVoice;
       this.audio.src = this.audioSegments[0];
       this.audio.playbackRate = this.currentSpeed;
-      await this.audio.play();
+      if (autoplay) await this.audio.play();
+      if (requestId !== this.synthesisRequestId || requestedVoice !== this.currentVoice) return;
 
-      const voiceName = this.voiceSelect ? this.voiceSelect.options[this.voiceSelect.selectedIndex].text : this.currentVoice;
+      const voiceName = this.voiceSelect ? this.voiceSelect.options[this.voiceSelect.selectedIndex].text : requestedVoice;
       if (this.statusEl) {
-        this.statusEl.innerText = `Lendo com voz ${voiceName}`;
+        this.statusEl.innerText = autoplay ? `Lendo com voz ${voiceName}` : `Áudio pronto com voz ${voiceName}`;
       }
       playBeep("success");
     } catch (err) {
+      if (requestId !== this.synthesisRequestId) return;
       this.setLoading(false);
       console.error("Erro no TTS:", err);
-      showToast("Erro ao processar áudio neural.", "error");
+      showToast("Erro ao processar o áudio.", "error");
     }
   }
 
@@ -3724,11 +3958,20 @@ class NeuralTtsController {
   }
 
   setVoice(voiceId) {
+    if (!voiceId || voiceId === this.currentVoice) return;
+    const resumePlayback = this.isPlaying;
     this.currentVoice = voiceId;
+    this.synthesisRequestId += 1;
+    this.audio.pause();
+    this.audio.removeAttribute("src");
+    this.audio.load();
+    this.audioSegments = [];
+    this.audioSegmentIndex = 0;
+    this.synthesizedVoice = null;
+    this.setPlayState(false);
     playBeep("click");
-    // Se estiver com áudio ativo ou carregado, re-sintetiza com a nova voz
-    if (this.currentText && !this.audio.paused) {
-      this.playText(this.currentText);
+    if (this.currentText) {
+      this.playText(this.currentText, { autoplay: resumePlayback });
     }
   }
 
@@ -3739,12 +3982,14 @@ class NeuralTtsController {
   }
 
   stopAndHide() {
+    this.synthesisRequestId += 1;
     if (this.audio) {
       this.audio.pause();
       this.audio.currentTime = 0;
     }
     this.audioSegments = [];
     this.audioSegmentIndex = 0;
+    this.synthesizedVoice = null;
     this.setPlayState(false);
     this.setLoading(false);
     if (this.playerEl) {
@@ -3868,7 +4113,7 @@ class TranslatorController {
 }
 
 // ==========================================================================
-// Global Search Controller (Acervo Pessoal & Busca Textual Instantânea FTS5)
+// Controlador de busca local no acervo
 // ==========================================================================
 class GlobalSearchController {
   constructor() {
@@ -4524,27 +4769,28 @@ class ManualManager {
   getRawMarkdownContent() {
     return `# NexoJuris v1.3.2 - Manual de Instruções
 
-## Capítulo 1: Introdução, Arquitetura Local e Privacidade
-Conversão, indexação SQLite, OCR e renderização de PDF ocorrem localmente no computador.
-Dica: Os arquivos PDF e as imagens não são enviados à nuvem. Tradução e voz são opcionais, exigem internet e enviam somente o texto selecionado ao serviço externo correspondente.
+## Capítulo 1: Visão geral e privacidade
+O NexoJuris reúne conversão, leitura, edição, busca e áudio de documentos. As operações centrais acontecem no computador, sem enviar os arquivos a serviços externos.
+PDFs e imagens usados na conversão, no reconhecimento de texto e na leitura permanecem no computador. Tradução e voz são opcionais, exigem internet e enviam somente o texto escolhido ao serviço externo correspondente.
 
-## Capítulo 2: Motor de Conversão (Jurisprudência vs Curso, Híbrido)
-Processador híbrido inteligente que detecta texto vetorial nativo e aciona OCR local apenas em imagens ou páginas digitalizadas.
-O aplicativo sinaliza possíveis omissões, inversões de leitura e caracteres inválidos. Toda página processada por OCR exige conferência visual com o PDF original.
-- Perfil Jurisprudência: Estruturação ideal para STF/STJ.
-- Perfil Material de Curso: Limpeza de ruídos e títulos espúrios de OCR.
+## Capítulo 2: Conversão e divisão do Markdown
+A conversão lê cada página e usa reconhecimento de texto quando o conteúdo estiver em imagem. Imagens, títulos e ordem do documento são preservados sempre que a fonte permitir; páginas digitalizadas devem ser conferidas visualmente.
+- Estrutura complexa: indicada para documentos com várias camadas de títulos e subtítulos.
+- Estrutura simples: indicada para tópicos diretos e numeração sequencial.
+- Divisão em partes: cerca de 60.000 caracteres é o valor recomendado. Caracteres incluem letras, números, espaços e pontuação. O modo recomendado mantém conteúdos relacionados juntos; o outro modo prioriza partes próximas ao tamanho escolhido.
 
-## Capítulo 3: Visualizador de Markdown e Integração com Windows
-O arquivo Markdown gerado pode ser lido imediatamente com realce de sintaxe na aba correspondente. A integração com o Windows permite clicar com o botão direito no arquivo PDF no Explorer e escolher "Enviar para -> NexoJuris".
+## Capítulo 3: Visualizador de Markdown e integração com Windows
+O Markdown gerado pode ser lido imediatamente com formatação e imagens locais. No Windows, também é possível enviar um PDF diretamente ao NexoJuris pelo menu de contexto.
 
-## Capítulo 4: Super Leitor, Snippet/OCR, Voz e Tradutor
-Visualize PDFs grandes em alta resolução. Adicione notas, canetas e marca-textos salvas nativamente no arquivo. O OCR de recorte é local; tradução e síntese de voz usam, respectivamente, Google Translator e Microsoft Edge TTS e exigem internet.
+## Capítulo 4: Leitor, edição, voz e tradução
+O leitor permite recortar áreas, reconhecer texto localmente, anotar e inserir cards. Salve uma cópia ou aplique no original; antes de substituir o original, o aplicativo cria uma cópia de segurança.
+Escolha voz feminina ou masculina. Ao trocar a voz, o áudio é gerado novamente, inclusive se estiver pausado ou concluído. Tradução e voz exigem internet e enviam somente o texto escolhido ao serviço externo correspondente.
 
-## Capítulo 5: Acervo Pessoal (Busca Textual SQLite FTS5)
-Banco de dados indexado localmente. Pesquisa textual instantânea usando algoritmo BM25 com destaque do termo procurado em todos os documentos convertidos ou inspecionados.
+## Capítulo 5: Acervo pessoal e busca
+Documentos abertos ou convertidos podem integrar o índice local. A busca retorna trechos correspondentes e destaca os termos encontrados.
 
-## Capítulo 6: Criptografia AES-256, Senhas e Licenciamento
-Proteção e desproteção de PDFs locais com criptografia AES-256 comercial. O licenciamento é vinculado ao hardware (Node-locking) 100% offline.`;
+## Capítulo 6: Proteção, senhas e licenciamento
+O aplicativo pode abrir PDFs protegidos mediante senha e criar novas cópias protegidas. A senha permanece apenas durante a sessão necessária. O licenciamento é validado localmente e vinculado ao computador autorizado; uma troca relevante de equipamento pode exigir nova ativação.`;
   }
 }
 

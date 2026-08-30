@@ -39,6 +39,7 @@ function extractFunction(source, name) {
 
 const root = path.resolve(__dirname, "..");
 const source = fs.readFileSync(path.join(root, "web", "app.js"), "utf8");
+const htmlSource = fs.readFileSync(path.join(root, "web", "index.html"), "utf8");
 assert.equal((source.match(/async function togglePause\(/g) || []).length, 1);
 assert.equal((source.match(/async function requestStop\(/g) || []).length, 1);
 assert.equal((source.match(/function updateControlsState\(/g) || []).length, 1);
@@ -50,6 +51,16 @@ assert.match(pointerMoveSource, /pdfTransientCanvas/);
 assert.doesNotMatch(pointerMoveSource, /redrawAnnotations/);
 assert.match(source, /IntersectionObserver/);
 assert.doesNotMatch(source, /pageData\.image_base64/);
+const thumbnailStart = source.indexOf("  updateActiveThumbnail() {");
+const thumbnailEnd = source.indexOf("  async renderCurrentPage", thumbnailStart);
+assert.doesNotMatch(source.slice(thumbnailStart, thumbnailEnd), /scrollIntoView/);
+assert.match(source, /card-drag-handle/);
+assert.match(source, /e\.key === "Enter" && !e\.shiftKey/);
+assert.match(source, /eraseAnnotationAt\(x, y\)/);
+assert.match(source, /pendingRotations/);
+assert.match(source, /restore_pdf_backup/);
+assert.ok(htmlSource.indexOf("btnToolSaveCopy") < htmlSource.indexOf("btnToolApplyOriginal"));
+assert.match(htmlSource, /id="tool-eraser"/);
 const dom = new JSDOM("<!doctype html><body></body>", { url: "file:///web/index.html" });
 dom.window.marked = marked;
 dom.window.DOMPurify = createDOMPurify(dom.window);

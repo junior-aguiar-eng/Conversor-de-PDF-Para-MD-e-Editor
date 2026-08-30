@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 import unittest
@@ -203,6 +204,17 @@ class TestPhase5LicensingTermsAndEditing(unittest.TestCase):
         self.assertEqual(backup[0].rotation, 0)
         backup.close()
 
+        with patch("web_api.LibraryDatabase", return_value=self.db):
+            api = BridgeApi()
+            file_id = api._register_pdf(source_path, "test")["file_id"]
+            with patch.object(api, "_safe_index_pdf", return_value={"ok": True, "completed": True}):
+                restored = api.restore_pdf_backup(file_id, "senha123")
+            self.assertTrue(restored["ok"], restored.get("error"))
+            restored_doc = fitz.open(str(source_path))
+            self.assertGreater(restored_doc.authenticate("senha123"), 0)
+            self.assertEqual(restored_doc[0].rotation, 0)
+            restored_doc.close()
+
     def test_native_save_dialog_grants_destination_and_cancellation_grants_nothing(self) -> None:
         source_path = self.root / "dialogo.pdf"
         document = fitz.open()
@@ -225,6 +237,61 @@ class TestPhase5LicensingTermsAndEditing(unittest.TestCase):
             result = api.rotate_pdf_page(file_id, 0, 90, output_file_id=granted["output_file_id"])
             self.assertTrue(result["ok"])
             self.assertTrue(destination.is_file())
+
+    def test_unified_edit_transaction_copy_original_and_atomic_restore(self) -> None:
+        source_path = self.root / "transacao.pdf"
+        document = fitz.open()
+        document.new_page(width=400, height=600).insert_text((40, 40), "Estado original")
+        document.save(str(source_path))
+        document.close()
+        original_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+
+        with patch("web_api.LibraryDatabase", return_value=self.db):
+            api = BridgeApi()
+            file_id = api._register_pdf(source_path, "test")["file_id"]
+            copy_path = self.root / "transacao-copia.pdf"
+            copy_id = api._register_pdf_destination(copy_path, "test")["output_file_id"]
+            edits = {
+                "file_id": file_id,
+                "rotations": [{"page_number": 0, "degrees": 90}],
+                "annotations": [
+                    {
+                        "type": "highlight_block",
+                        "page_number": 0,
+                        "rect": [20, 20, 120, 60],
+                        "color": "#fde047",
+                    }
+                ],
+            }
+
+            copy_result = api.save_pdf_annotations({**edits, "output_file_id": copy_id})
+            self.assertTrue(copy_result["ok"], copy_result.get("error"))
+            self.assertEqual(copy_result["rotation_count"], 1)
+            self.assertEqual(copy_result["saved_count"], 1)
+            self.assertTrue(copy_result["index_status"]["ok"])
+            self.assertEqual(hashlib.sha256(source_path.read_bytes()).hexdigest(), original_hash)
+            with fitz.open(str(copy_path)) as copied:
+                self.assertEqual(copied[0].rotation, 90)
+
+            with patch.object(api, "_safe_index_pdf", return_value={"ok": True, "completed": True}):
+                original_result = api.save_pdf_annotations(edits)
+                self.assertTrue(original_result["ok"], original_result.get("error"))
+                self.assertTrue(original_result["index_status"]["ok"])
+                self.assertEqual(hashlib.sha256(_pdf_backup_path(source_path).read_bytes()).hexdigest(), original_hash)
+                self.assertNotEqual(hashlib.sha256(source_path.read_bytes()).hexdigest(), original_hash)
+
+                restored = api.restore_pdf_backup(file_id)
+                self.assertTrue(restored["ok"], restored.get("error"))
+                self.assertTrue(restored["index_status"]["ok"])
+                self.assertEqual(hashlib.sha256(source_path.read_bytes()).hexdigest(), original_hash)
+                self.assertFalse(_pdf_backup_path(source_path).exists())
+
+            preview = api.render_page_hq(file_id, 0, 72, rotation=90)
+            self.assertTrue(preview["ok"], preview.get("error"))
+            self.assertEqual(preview["rotation"], 90)
+            with fitz.open(str(source_path)) as unchanged:
+                self.assertEqual(unchanged[0].rotation, 0)
+            self.assertTrue(api.shutdown_for_close())
 
 
 if __name__ == "__main__":

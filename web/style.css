@@ -338,6 +338,9 @@ code, pre, .font-mono {
 .cursor-text-tool {
   cursor: text !important;
 }
+.cursor-eraser {
+  cursor: cell !important;
+}
 .cursor-snippet {
   cursor: crosshair !important;
 }
@@ -385,6 +388,42 @@ code, pre, .font-mono {
   line-height: 1.45;
   box-sizing: border-box;
   cursor: text;
+}
+
+.pdf-text-card .card-drag-handle {
+  position: absolute;
+  top: -10px;
+  left: 8px;
+  min-width: 30px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0369a1;
+  color: #ffffff;
+  font-size: 10px;
+  letter-spacing: -2px;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 40;
+}
+
+.pdf-text-card:hover .card-drag-handle,
+.pdf-text-card:focus-within .card-drag-handle {
+  opacity: 1;
+}
+
+.pdf-text-card .card-drag-handle:active {
+  cursor: grabbing;
+}
+
+.text-annotation-layer.eraser-active .pdf-text-card {
+  pointer-events: none;
 }
 
 /* Placeholder para card vazio */
@@ -670,5 +709,4 @@ code, pre, .font-mono {
 #manualContentArea {
   scroll-behavior: smooth;
 }
-
 

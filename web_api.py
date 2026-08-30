@@ -1574,6 +1574,7 @@ class BridgeApi:
                 "session_state": session,
                 "bookmarks": bookmarks,
                 "pages": initial_pages,
+                "backup_available": _pdf_backup_path(path).is_file(),
             }
             return info
         except Exception as error:
@@ -1621,7 +1622,14 @@ class BridgeApi:
         finally:
             _safe_close(doc)
 
-    def render_page_hq(self, file_id: str, page_number: int = 0, dpi: int = 150, password: str | None = None) -> dict[str, Any]:
+    def render_page_hq(
+        self,
+        file_id: str,
+        page_number: int = 0,
+        dpi: int = 150,
+        password: str | None = None,
+        rotation: int | None = None,
+    ) -> dict[str, Any]:
         """Renderiza uma página sob demanda e indexa incrementalmente no FTS5 (Fase 4)."""
         try:
             page_number = int(page_number)
@@ -1642,6 +1650,11 @@ class BridgeApi:
                 return {"ok": False, "error": f"Página {page_number} fora do intervalo."}
 
             page = doc[page_number]
+            if rotation is not None:
+                rotation = int(rotation)
+                if rotation not in {0, 90, 180, 270}:
+                    raise ValueError("Rotação de visualização inválida.")
+                page.set_rotation(rotation)
             _validate_pixel_budget(page.rect, dpi)
             pix = page.get_pixmap(dpi=dpi)
             img_b64 = base64.b64encode(pix.tobytes("png")).decode("utf-8")
@@ -1948,6 +1961,7 @@ class BridgeApi:
         file_id = payload.get("file_id", "")
         password = payload.get("password")
         annotations = payload.get("annotations", [])
+        rotations = payload.get("rotations", [])
         output_file_id = payload.get("output_file_id")
 
         try:
@@ -1964,6 +1978,27 @@ class BridgeApi:
 
         path = Path(file_path).resolve()
         try:
+            if not isinstance(rotations, list) or len(rotations) > len(doc):
+                raise ValueError("Lista de rotações inválida.")
+            validated_rotations: list[tuple[int, int]] = []
+            seen_rotation_pages: set[int] = set()
+            for item in rotations:
+                if not isinstance(item, dict):
+                    raise ValueError("Rotação inválida.")
+                page_num = int(item.get("page_number", -1))
+                degrees = int(item.get("degrees", 0))
+                if page_num in seen_rotation_pages or not (0 <= page_num < len(doc)):
+                    raise ValueError("Página de rotação inválida ou repetida.")
+                if degrees not in {0, 90, 180, 270}:
+                    raise ValueError("A rotação deve usar incrementos de 90 graus.")
+                seen_rotation_pages.add(page_num)
+                if degrees:
+                    validated_rotations.append((page_num, degrees))
+
+            for page_num, degrees in validated_rotations:
+                page = doc[page_num]
+                page.set_rotation((page.rotation + degrees) % 360)
+
             annotations = _validate_annotation_payload(annotations, doc)
             applied_count = 0
 
@@ -2116,10 +2151,12 @@ class BridgeApi:
             res = {
                 "ok": True,
                 "saved_count": applied_count,
+                "rotation_count": len(validated_rotations),
                 "message": (
-                    f"{applied_count} anotação(ões) salva(s). Backup anterior: {backup_path.name}."
+                    f"Alterações salvas: {applied_count} anotação(ões) e {len(validated_rotations)} rotação(ões). "
+                    f"Backup anterior: {backup_path.name}."
                     if backup_path
-                    else f"{applied_count} anotação(ões) salva(s) com sucesso no PDF."
+                    else f"Alterações salvas: {applied_count} anotação(ões) e {len(validated_rotations)} rotação(ões)."
                 ),
                 "target_path": str(target_path),
                 "is_copy": target_path != path,
@@ -2129,11 +2166,62 @@ class BridgeApi:
                 new_pdf = self._register_pdf(target_path, "copy")
                 res["new_file_id"] = new_pdf["file_id"]
                 res["new_file"] = new_pdf
+            res["index_status"] = self._safe_index_pdf(str(target_path), password)
             return res
         except Exception as error:
             return {"ok": False, "error": f"Erro ao salvar anotações: {error}"}
         finally:
             _safe_close(doc)
+
+    def restore_pdf_backup(self, file_id: str, password: str | None = None) -> dict[str, Any]:
+        """Restaura atomicamente o backup imediatamente anterior e o consome após a promoção."""
+        try:
+            file_path = self._resolve_pdf(file_id, "write")
+        except ResourceAccessError as error:
+            return {"ok": False, "error": str(error)}
+
+        cancel_result = self.cancel_indexing(file_id)
+        if not cancel_result.get("ok"):
+            return cancel_result
+
+        path = Path(file_path).resolve()
+        backup_path = _pdf_backup_path(path)
+        if not backup_path.is_file():
+            return {"ok": False, "error": "Nenhum backup disponível para este PDF."}
+
+        restore_temp = path.with_name(f".{path.stem}.{uuid.uuid4().hex}.restore.tmp.pdf")
+        try:
+            with fitz.open(str(backup_path)) as backup_doc:
+                expected_page_count = backup_doc.page_count
+                if not backup_doc.is_pdf:
+                    raise RuntimeError("O backup não é um PDF válido.")
+            shutil.copy2(backup_path, restore_temp)
+            _flush_file(restore_temp)
+            _validate_saved_pdf(restore_temp, expected_page_count)
+            os.replace(restore_temp, path)
+            backup_available = True
+            try:
+                backup_path.unlink(missing_ok=True)
+                backup_available = False
+            except OSError as cleanup_error:
+                logger.warning(f"PDF restaurado, mas o backup não pôde ser consumido: {cleanup_error}")
+            index_status = self._safe_index_pdf(str(path), password)
+            index_message = (
+                "O índice também foi atualizado."
+                if index_status.get("ok")
+                else "O PDF foi restaurado, mas o índice não pôde ser atualizado."
+            )
+            return {
+                "ok": True,
+                "message": f"A última gravação foi revertida. {index_message}",
+                "restored_path": str(path),
+                "backup_available": backup_available,
+                "index_status": index_status,
+            }
+        except Exception as error:
+            return {"ok": False, "error": f"Erro ao restaurar backup: {error}"}
+        finally:
+            restore_temp.unlink(missing_ok=True)
 
     def extract_snippet(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Extrai texto e imagem recortada em alta resolução de uma região retangular do PDF."""
@@ -2514,15 +2602,18 @@ class BridgeApi:
         except Exception as error:
             return {"ok": False, "error": str(error)}
 
-    def _safe_index_pdf(self, file_path: str, password: str | None = None) -> None:
-        """Executa indexação segura do PDF no banco em background."""
+    def _safe_index_pdf(self, file_path: str, password: str | None = None) -> dict[str, Any]:
+        """Reindexa o PDF após edição e retorna uma pós-condição verificável."""
         doc: fitz.Document | None = None
         try:
             doc, error, needs_pw = self._open_doc_with_auth(file_path, password)
             if doc and not error and not needs_pw:
                 self._library.index_pdf_document(file_path, doc)
+                return {"ok": True, "completed": True}
+            return {"ok": False, "error": error or "PDF protegido; índice não atualizado."}
         except Exception as err:
-            logger.debug(f"Falha na auto-indexação do PDF {file_path}: {err}")
+            logger.warning(f"Falha na reindexação do PDF {file_path}: {err}")
+            return {"ok": False, "error": str(err)}
         finally:
             _safe_close(doc)
 

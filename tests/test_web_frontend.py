@@ -14,7 +14,7 @@ class WebFrontendRegressionTests(unittest.TestCase):
     def test_successful_annotation_save_clears_pending_queue_before_render(self) -> None:
         app_js = self._read_project_file("web", "app.js")
         method_start = app_js.index("  async saveAnnotations(asCopy = false) {")
-        method_end = app_js.index("\n  async triggerSnippetExtraction", method_start)
+        method_end = app_js.index("\n  async restoreLastSave", method_start)
         method = app_js[method_start:method_end]
 
         success_start = method.index("    if (res.ok) {")
@@ -23,9 +23,14 @@ class WebFrontendRegressionTests(unittest.TestCase):
         failure_start = method.index("    } else {", render_position)
         failure_branch = method[failure_start:]
 
-        self.assertIn("this.annotations.clear();", success_before_render)
-        self.assertIn("this.undoStack = [];", success_before_render)
-        self.assertNotIn("this.annotations.clear();", failure_branch)
+        self.assertIn("this.clearPendingEdits();", success_before_render)
+        clear_method_start = app_js.index("  clearPendingEdits() {")
+        clear_method_end = app_js.index("\n  async saveAnnotations", clear_method_start)
+        clear_method = app_js[clear_method_start:clear_method_end]
+        self.assertIn("this.annotations.clear();", clear_method)
+        self.assertIn("this.pendingRotations.clear();", clear_method)
+        self.assertIn("this.undoStack = [];", clear_method)
+        self.assertNotIn("this.clearPendingEdits();", failure_branch)
 
     def test_every_literal_switch_target_has_a_real_view(self) -> None:
         app_js = self._read_project_file("web", "app.js")
@@ -53,13 +58,51 @@ class WebFrontendRegressionTests(unittest.TestCase):
         index_html = self._read_project_file("web", "index.html")
         app_js = self._read_project_file("web", "app.js")
 
-        for content in (index_html, app_js):
-            self.assertIn("Google Translator", content)
-            self.assertIn("Microsoft Edge TTS", content)
-
         self.assertNotIn("Todo o ecossistema roda de forma 100% offline", index_html)
         self.assertNotIn("traduza o texto selecionado em tempo real com processamento local", index_html)
+        self.assertIn("serviço externo correspondente", index_html)
+        self.assertIn("somente o texto escolhido", index_html)
         self.assertIn("exigem internet", app_js)
+
+    def test_phase4_labels_preserve_internal_markdown_contract(self) -> None:
+        index_html = self._read_project_file("web", "index.html")
+        app_js = self._read_project_file("web", "app.js")
+
+        self.assertIn("Dividir o Markdown em partes", index_html)
+        self.assertIn('option value="semantic"', index_html)
+        self.assertIn('option value="strict"', index_html)
+        self.assertIn("selectProfile('jurisprudencia')", index_html)
+        self.assertIn("selectProfile('curso')", index_html)
+        self.assertIn("heading_profile: state.selectedProfile", app_js)
+        self.assertIn("split_mode: state.splitMode", app_js)
+        self.assertNotIn("appVersionBadge", index_html)
+        self.assertNotIn("appVersionBadge", app_js)
+
+        visible_labels = index_html.casefold()
+        for legacy_label in (
+            "jurídic",
+            "jurisprudência",
+            "material de curso",
+            "doutrina",
+            "tribunal",
+            "sqlite fts5",
+            "bm25",
+            "onnx",
+            "tesseract",
+            "google translator",
+            "microsoft edge",
+        ):
+            self.assertNotIn(legacy_label, visible_labels)
+
+        for chapter in (
+            "Visão geral e privacidade",
+            "Conversão e divisão do Markdown",
+            "Leitor, edição, voz e tradução",
+            "Acervo pessoal e busca",
+            "Proteção, senhas e licenciamento",
+        ):
+            self.assertIn(chapter, index_html)
+            self.assertIn(chapter, app_js)
 
     def test_phase1_frontend_integrity_executes_in_javascript(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

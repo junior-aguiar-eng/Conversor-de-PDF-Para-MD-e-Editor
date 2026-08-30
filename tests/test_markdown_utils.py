@@ -415,6 +415,19 @@ class MarkdownUtilsTests(unittest.TestCase):
         self.assertNotIn("## **Frase de corpo capturada por engano:**", content)
         self.assertIn("## 1. Seção real", content)
 
+    def test_phase4_visual_names_do_not_change_profile_markdown(self) -> None:
+        complex_source = "## DIREITO CIVIL\n\n# Responsabilidade do Estado\n\n## Lei n. 8.112/1990"
+        simple_source = "## 1. Tema principal\n\n## 1.1. Subtema\n\nTexto."
+
+        self.assertEqual(
+            normalize_heading_levels(complex_source),
+            "# DIREITO CIVIL\n\n## Responsabilidade do Estado\n\n### Lei n. 8.112/1990",
+        )
+        self.assertEqual(
+            normalize_course_heading_levels(simple_source),
+            "## 1. Tema principal\n\n### 1.1. Subtema\n\nTexto.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
