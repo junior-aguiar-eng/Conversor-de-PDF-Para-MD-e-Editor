@@ -29,7 +29,8 @@ let applicationInitializationPromise = null;
 let declarativeEventsInitialized = false;
 
 const ALLOWED_DECLARATIVE_ACTIONS = new Set([
-  "appLicense.copyMachineId", "appLicense.submitActivation",
+  "appLicense.closeModal", "appLicense.copyMachineId", "appLicense.importLicense", "appLicense.openModal",
+  "appLicense.submitActivation", "appLicense.verifyNow",
   "appLibrary.relocateDocument", "appLibrary.removeDocument",
   "appManual.close", "appManual.exportDiagnostics", "appManual.filterContent", "appManual.open", "appManual.printManual",
   "appManual.scrollToChapter", "appManual.toggleViewMode",
@@ -4413,6 +4414,8 @@ class LicenseManager {
   constructor() {
     this.isActivated = false;
     this.machineId = "";
+    this.info = null;
+    this.presentation = null;
   }
 
   async checkActivation() {
@@ -4420,14 +4423,12 @@ class LicenseManager {
     try {
       const res = await window.pywebview.api.get_license_info();
       if (res) {
+        this.info = res;
         this.isActivated = !!res.is_activated;
         this.machineId = res.machine_id || "";
-
-        const midInput = document.getElementById("activationMachineId");
-        if (midInput) midInput.value = this.machineId;
-
+        this.renderStatus(res);
         const modal = document.getElementById("activationModal");
-        if (!this.isActivated) {
+        if (this.presentation.openOnLaunch) {
           if (modal) modal.classList.remove("hidden");
         } else {
           if (modal) modal.classList.add("hidden");
@@ -4439,20 +4440,150 @@ class LicenseManager {
     }
   }
 
+  renderStatus(info) {
+    this.presentation = window.NexoLicenseUI.presentation(info);
+    const view = this.presentation;
+    const midInput = document.getElementById("activationMachineId");
+    if (midInput) midInput.value = this.machineId;
+
+    const values = {
+      licenseStatusLabel: view.badge,
+      licenseStateHeadline: view.headline,
+      licenseStateBadge: view.badge,
+      licenseStateMessage: view.message,
+      licenseExpiresAt: view.expiration,
+      licenseDaysRemaining: view.daysRemaining,
+      licenseOfflineRemaining: view.offlineRemaining,
+      licenseLastOnline: view.lastOnlineValidation,
+    };
+    Object.entries(values).forEach(([id, value]) => {
+      const element = document.getElementById(id);
+      if (element) element.textContent = value;
+    });
+
+    const tones = {
+      success: {
+        dot: "bg-emerald-500",
+        button: "bg-emerald-50 text-emerald-800 border-emerald-200",
+        panel: "bg-emerald-50 border-emerald-200",
+        badge: "bg-emerald-100 text-emerald-800",
+      },
+      caution: {
+        dot: "bg-amber-500",
+        button: "bg-amber-50 text-amber-800 border-amber-200",
+        panel: "bg-amber-50 border-amber-200",
+        badge: "bg-amber-100 text-amber-900",
+      },
+      info: {
+        dot: "bg-sky-500",
+        button: "bg-sky-50 text-sky-800 border-sky-200",
+        panel: "bg-sky-50 border-sky-200",
+        badge: "bg-sky-100 text-sky-900",
+      },
+      danger: {
+        dot: "bg-rose-500",
+        button: "bg-rose-50 text-rose-800 border-rose-200",
+        panel: "bg-rose-50 border-rose-200",
+        badge: "bg-rose-100 text-rose-900",
+      },
+    };
+    const tone = tones[view.tone] || tones.danger;
+    const statusButton = document.getElementById("licenseStatusButton");
+    if (statusButton) statusButton.className = `px-3 py-1 rounded-full border font-bold text-[10px] sm:text-xs transition flex items-center gap-1.5 shadow-sm ${tone.button}`;
+    const dot = document.getElementById("licenseStatusDot");
+    if (dot) dot.className = `w-2 h-2 rounded-full ${tone.dot}`;
+    const panel = document.getElementById("licenseStatePanel");
+    if (panel) panel.className = `rounded-2xl border p-4 space-y-3 ${tone.panel}`;
+    const badge = document.getElementById("licenseStateBadge");
+    if (badge) badge.className = `px-2.5 py-1 rounded-full text-[10px] font-extrabold ${tone.badge}`;
+
+    const closeButton = document.getElementById("btnCloseLicense");
+    if (closeButton) {
+      closeButton.classList.toggle("hidden", view.blocking);
+      closeButton.classList.toggle("flex", !view.blocking);
+    }
+  }
+
   openModal() {
     const modal = document.getElementById("activationModal");
     if (modal) modal.classList.remove("hidden");
     const midInput = document.getElementById("activationMachineId");
     if (midInput && this.machineId) midInput.value = this.machineId;
     const keyInput = document.getElementById("inputActivationKey");
-    if (keyInput) setTimeout(() => keyInput.focus(), 60);
+    const focusTarget = this.isActivated ? document.getElementById("btnVerifyLicense") : keyInput;
+    if (focusTarget) setTimeout(() => focusTarget.focus(), 60);
   }
 
-  copyMachineId() {
+  closeModal() {
+    if (!this.isActivated) return;
+    const modal = document.getElementById("activationModal");
+    if (modal) modal.classList.add("hidden");
+  }
+
+  async copyMachineId() {
     if (!this.machineId) return;
-    navigator.clipboard.writeText(this.machineId);
-    playBeep("success");
-    showToast("Código da Máquina copiado para a área de transferência!", "success");
+    try {
+      await navigator.clipboard.writeText(this.machineId);
+      playBeep("success");
+      showToast("Código da máquina copiado.", "success");
+    } catch (error) {
+      const midInput = document.getElementById("activationMachineId");
+      if (midInput) {
+        midInput.focus();
+        midInput.select?.();
+      }
+      showToast("Não foi possível copiar automaticamente. O código foi selecionado.", "info");
+    }
+  }
+
+  showAlert(message, type = "info") {
+    const alertBox = document.getElementById("activationAlertBox");
+    if (!alertBox) return;
+    const styles = type === "error"
+      ? "bg-rose-50 text-rose-800 border-rose-200"
+      : (type === "success" ? "bg-emerald-50 text-emerald-800 border-emerald-200" : "bg-sky-50 text-sky-800 border-sky-200");
+    alertBox.className = `p-3 rounded-2xl text-xs font-semibold border animate-fadeIn ${styles}`;
+    alertBox.textContent = message;
+    alertBox.classList.remove("hidden");
+  }
+
+  async verifyNow() {
+    const button = document.getElementById("btnVerifyLicense");
+    if (button) button.disabled = true;
+    try {
+      const result = await window.pywebview.api.verify_license_now();
+      this.info = result;
+      this.isActivated = !!result.can_use_protected_features;
+      this.machineId = result.machine_id || this.machineId;
+      this.renderStatus(result);
+      this.showAlert(result.message || "Verificação concluída.", result.ok ? "success" : "info");
+    } catch (error) {
+      this.showAlert(`Falha ao verificar a licença: ${error}`, "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async importLicense() {
+    const button = document.getElementById("btnImportLicense");
+    if (button) button.disabled = true;
+    try {
+      const result = await window.pywebview.api.import_license_file();
+      if (result.cancelled) return;
+      if (!result.ok) {
+        playBeep("error");
+        this.showAlert(result.error || "Não foi possível importar a licença.", "error");
+        return;
+      }
+      playBeep("success");
+      this.showAlert(result.message || "Licença importada com sucesso.", "success");
+      await this.checkActivation();
+    } catch (error) {
+      playBeep("error");
+      this.showAlert(`Falha ao importar a licença: ${error}`, "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   async submitActivation() {
@@ -4479,18 +4610,13 @@ class LicenseManager {
     try {
       const res = await window.pywebview.api.activate_software(key);
       if (res.ok) {
-        this.isActivated = true;
         playBeep("success");
-        if (alertBox) {
-          alertBox.className = "p-3 rounded-2xl text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 animate-fadeIn";
-          alertBox.innerText = res.message || "NexoJuris ativado com sucesso! Acesso completo liberado.";
-          alertBox.classList.remove("hidden");
-        }
+        this.showAlert(res.message || "NexoJuris ativado com sucesso.", "success");
+        await this.checkActivation();
         setTimeout(() => {
           const modal = document.getElementById("activationModal");
-          if (modal) modal.classList.add("hidden");
-          showToast("NexoJuris Ativado com Sucesso!", "success");
-          setTimeout(() => checkWelcomeGuide(), 150);
+          if (modal && this.isActivated && !this.presentation.openOnLaunch) modal.classList.add("hidden");
+          showToast("Licença ativada com sucesso.", "success");
         }, 1200);
       } else {
         playBeep("error");

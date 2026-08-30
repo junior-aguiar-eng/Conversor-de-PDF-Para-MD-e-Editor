@@ -83,6 +83,7 @@ from library_db import LibraryDatabase
 from license_core import LicenseAccessError, LicenseState
 from licensing import (
     LicenseRequiredError,
+    activate_act4_license,
     get_license_status,
     require_software_activation,
 )
@@ -853,6 +854,55 @@ class BridgeApi:
         if result["ok"]:
             self._emit("toast", {"type": "success", "message": result["message"]})
         return result
+
+    def import_license_file(self) -> dict[str, Any]:
+        """Seleciona e importa uma licença ACT4 sem expor o caminho ao renderer."""
+        if not self._window:
+            return {"ok": False, "cancelled": True, "error": "Janela do aplicativo indisponível."}
+        import webview
+
+        try:
+            result = self._window.create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=("Licença NexoJuris (*.nxjlic)",),
+            )
+            if not result:
+                return {"ok": False, "cancelled": True}
+            license_path = Path(result[0]).resolve()
+            if license_path.suffix.lower() != ".nxjlic" or not license_path.is_file():
+                return {"ok": False, "error": "Selecione um arquivo de licença .nxjlic válido."}
+            if license_path.stat().st_size > 65_536:
+                return {"ok": False, "error": "O arquivo de licença excede o limite de 64 KB."}
+            response = activate_act4_license(license_path.read_bytes())
+            if response.get("ok"):
+                self._emit("toast", {"type": "success", "message": response["message"]})
+            return response
+        except OSError as error:
+            logger.warning("Falha ao importar licença ACT4: %s", error)
+            return {"ok": False, "error": "Não foi possível ler o arquivo de licença selecionado."}
+        except Exception:
+            logger.exception("Falha inesperada ao importar licença ACT4")
+            return {"ok": False, "error": "Falha inesperada ao importar a licença selecionada."}
+
+    def verify_license_now(self) -> dict[str, Any]:
+        """Refaz a verificação local; a consulta remota será acoplada pelo serviço online."""
+        status = get_license_status()
+        if status.state == LicenseState.ONLINE_CHECK_REQUIRED:
+            message = (
+                "A licença local foi verificada, mas é necessário conectar-se à internet "
+                "para renovar o prazo de uso offline."
+            )
+        elif status.can_use_protected_features:
+            message = "Licença verificada neste computador."
+        else:
+            message = status.message
+        return {
+            **status.to_mapping(),
+            "ok": status.can_use_protected_features,
+            "online_attempted": False,
+            "message": message,
+        }
 
     def validate_environment(self) -> dict[str, Any]:
         """Verifica se o ambiente possui as dependências necessárias."""

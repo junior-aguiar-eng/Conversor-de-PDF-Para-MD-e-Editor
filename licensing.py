@@ -443,6 +443,7 @@ def get_license_status(
         at=assessment.effective_time,
         online_status=online_status,
         offline_until=offline_until,
+        last_online_validation=assessment.last_trusted_server_at,
         clock_tampered=assessment.clock_tampered,
     )
 

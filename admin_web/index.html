@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>NexoJuris Licenças Admin</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">NEXOJURIS</p>
+      <h1>Licenças Admin</h1>
+      <p class="subtitle">Administração local, rastreável e orientada por busca.</p>
+    </div>
+    <button id="newLicenseButton" class="primary">Nova licença</button>
+  </header>
+
+  <main>
+    <section class="search-hero" aria-labelledby="searchTitle">
+      <h2 id="searchTitle">Encontre uma licença</h2>
+      <form id="searchForm" role="search">
+        <label class="sr-only" for="searchInput">Buscar por cliente, licença, máquina ou referência</label>
+        <input id="searchInput" type="search" autocomplete="off" placeholder="Cliente, licença, e-mail, CPF/CNPJ, máquina ou filtro…">
+        <button type="submit" class="primary">Buscar</button>
+      </form>
+      <div class="quick-filters" aria-label="Filtros rápidos">
+        <button data-filter="status:expirada">Expiradas</button>
+        <button data-filter="status:revogada">Revogadas</button>
+        <button data-filter="status:suspensa">Suspensas</button>
+        <button data-filter="status:aguardando">Aguardando conexão</button>
+        <button data-filter="expira:7d">Expiram em 7 dias</button>
+        <button data-filter="offline:7d">Offline em 7 dias</button>
+      </div>
+      <p class="search-help">Filtros: <code>cliente:"João Silva"</code> <code>maquina:NXJ2-39A1</code> <code>expira:7d</code></p>
+    </section>
+
+    <section id="dashboard" aria-labelledby="dashboardTitle">
+      <div class="section-heading">
+        <div><p class="eyebrow">VISÃO OPERACIONAL</p><h2 id="dashboardTitle">Situação atual</h2></div>
+        <button id="refreshDashboard" class="secondary">Atualizar</button>
+      </div>
+      <div id="dashboardGrid" class="dashboard-grid" aria-live="polite"></div>
+      <div class="activity-panel">
+        <h3>Atividades recentes</h3>
+        <ol id="recentActivities" class="activity-list"></ol>
+      </div>
+    </section>
+
+    <section id="resultsSection" class="hidden" aria-labelledby="resultsTitle">
+      <div class="section-heading">
+        <div><p class="eyebrow">RESULTADOS</p><h2 id="resultsTitle">Licenças encontradas</h2></div>
+        <span id="resultCount" class="count-badge"></span>
+      </div>
+      <div id="searchError" class="alert error hidden" role="alert"></div>
+      <div id="resultList" class="result-list" aria-live="polite"></div>
+      <nav id="pagination" class="pagination" aria-label="Paginação dos resultados"></nav>
+    </section>
+  </main>
+
+  <div id="detailModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+    <article class="modal-card detail-card">
+      <button class="modal-close" data-close="detailModal" aria-label="Fechar detalhe">×</button>
+      <div id="detailContent"></div>
+    </article>
+  </div>
+
+  <div id="newLicenseModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="newLicenseTitle">
+    <article class="modal-card">
+      <button class="modal-close" data-close="newLicenseModal" aria-label="Fechar formulário">×</button>
+      <p class="eyebrow">EMISSÃO</p>
+      <h2 id="newLicenseTitle">Nova licença</h2>
+      <form id="newLicenseForm" class="form-grid">
+        <label class="span-2">Nome do cliente<input name="name" required maxlength="160"></label>
+        <label>E-mail<input name="email" type="email" maxlength="254"></label>
+        <label>Telefone<input name="phone" maxlength="40"></label>
+        <label>CPF/CNPJ<input name="tax_id" maxlength="24"></label>
+        <label>Referência comercial<input name="commercial_reference" maxlength="80"></label>
+        <label>Prazo<select name="term_months"><option value="3">3 meses</option><option value="6">6 meses</option><option value="12">12 meses</option></select></label>
+        <label>Validação<select id="validationMode" name="validation_mode"><option value="offline">Totalmente offline</option><option value="hybrid">Híbrida</option></select></label>
+        <label>Prazo offline (dias)<input id="offlineDays" name="max_offline_days" type="number" min="0" max="30" value="0" disabled></label>
+        <label>Código da máquina<input name="machine_id" placeholder="NXJ2-0000-0000-0000-0000" maxlength="24"></label>
+        <fieldset class="span-2 feature-fieldset">
+          <legend>Funcionalidades</legend>
+          <label><input type="checkbox" name="features" value="converter" checked> Conversor</label>
+          <label><input type="checkbox" name="features" value="ocr" checked> OCR</label>
+          <label><input type="checkbox" name="features" value="reader" checked> Leitor</label>
+        </fieldset>
+        <div id="newLicenseError" class="alert error hidden span-2" role="alert"></div>
+        <button class="primary span-2" type="submit">Criar cliente e emitir licença</button>
+      </form>
+    </article>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

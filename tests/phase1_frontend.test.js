@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const licenseUi = require("../web/license-ui.js");
 
 function makeClassList() {
   const values = new Set();
@@ -85,6 +86,7 @@ const windowObject = {
   addEventListener: (name, callback) => windowListeners.set(name, callback),
   getSelection: () => ({ removeAllRanges() {}, addRange() {} }),
   AudioContext: null,
+  NexoLicenseUI: licenseUi,
 };
 
 const context = {

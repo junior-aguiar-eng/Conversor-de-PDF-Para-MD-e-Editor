@@ -38,6 +38,9 @@ class LicenseStatus:
     expires_at: str | None = None
     days_remaining: int | None = None
     offline_until: str | None = None
+    offline_seconds_remaining: int | None = None
+    last_online_validation: str | None = None
+    validation_mode: str | None = None
     features: tuple[str, ...] = ()
 
     @property
@@ -57,6 +60,9 @@ class LicenseStatus:
             "expires_at": self.expires_at,
             "days_remaining": self.days_remaining,
             "offline_until": self.offline_until,
+            "offline_seconds_remaining": self.offline_seconds_remaining,
+            "last_online_validation": self.last_online_validation,
+            "validation_mode": self.validation_mode,
             "features": list(self.features),
             "message": self.message,
         }
@@ -80,6 +86,7 @@ def legacy_valid_status(machine_id: str) -> LicenseStatus:
         machine_id=machine_id,
         message="Licença legada válida.",
         license_format="legacy",
+        validation_mode="offline",
         features=("converter", "ocr", "reader"),
     )
 
@@ -91,19 +98,31 @@ def evaluate_act4(
     at: datetime,
     online_status: str = "active",
     offline_until: datetime | None = None,
+    last_online_validation: datetime | None = None,
     clock_tampered: bool = False,
 ) -> LicenseStatus:
     """Avalia o direito já autenticado sem executar efeitos colaterais."""
     if at.tzinfo is None or at.utcoffset() is None:
         raise ValueError("at deve possuir fuso horário.")
     instant = at.astimezone(UTC)
+    normalized_offline_until = offline_until.astimezone(UTC) if offline_until else None
+    normalized_last_validation = last_online_validation.astimezone(UTC) if last_online_validation else None
     base = {
         "machine_id": machine_id,
         "license_id": payload.license_id,
         "license_format": "act4",
         "expires_at": payload.expires_at,
         "features": payload.features,
-        "offline_until": offline_until.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ") if offline_until else None,
+        "validation_mode": payload.validation_mode,
+        "offline_until": normalized_offline_until.strftime("%Y-%m-%dT%H:%M:%SZ") if normalized_offline_until else None,
+        "offline_seconds_remaining": (
+            max(0, math.ceil((normalized_offline_until - instant).total_seconds()))
+            if normalized_offline_until
+            else None
+        ),
+        "last_online_validation": (
+            normalized_last_validation.strftime("%Y-%m-%dT%H:%M:%SZ") if normalized_last_validation else None
+        ),
     }
 
     if machine_id.strip().upper() != payload.machine_id:

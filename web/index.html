@@ -37,6 +37,10 @@
         <div class="space-y-2">
           <div class="flex flex-wrap items-center justify-end gap-4">
             <div class="flex items-center gap-2">
+              <button id="licenseStatusButton" type="button" data-action="appLicense.openModal()" aria-label="Abrir informações da licença" class="px-3 py-1 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 font-bold text-[10px] sm:text-xs transition flex items-center gap-1.5 shadow-sm">
+                <span id="licenseStatusDot" class="w-2 h-2 rounded-full bg-slate-400" aria-hidden="true"></span>
+                <span id="licenseStatusLabel">Verificando licença</span>
+              </button>
               <button data-action="appManual.open()" class="px-3 py-1 rounded-full bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 font-bold text-[10px] sm:text-xs transition flex items-center gap-1.5 shadow-sm">
                 <svg class="w-3.5 h-3.5 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
                 <span>Manual Completo <kbd class="hidden sm:inline font-mono bg-sky-100 text-sky-800 px-1 rounded text-[9px]">F1</kbd></span>
@@ -1212,32 +1216,51 @@
   </div>
 
   <!-- MODAL: Ativação do Software (Hardware Node-Locking) -->
-  <div id="activationModal" class="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-center justify-center p-4 hidden select-none">
-    <div class="glass-panel bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl border border-sky-100 space-y-5 animate-fadeIn relative">
+  <div id="activationModal" class="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-center justify-center p-4 hidden select-none" role="dialog" aria-modal="true" aria-labelledby="licenseDialogTitle" aria-describedby="licenseStateMessage">
+    <div class="glass-panel bg-white rounded-3xl max-w-2xl w-full max-h-[92vh] overflow-y-auto p-6 sm:p-8 shadow-2xl border border-sky-100 space-y-5 animate-fadeIn relative">
+      <button id="btnCloseLicense" type="button" data-action="appLicense.closeModal()" aria-label="Fechar informações da licença" class="hidden absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 items-center justify-center transition">×</button>
       
       <!-- Top Brand & Lock Icon Header -->
       <div class="text-center space-y-2">
         <div class="w-14 h-14 mx-auto rounded-3xl bg-gradient-to-br from-amber-500 to-amber-600 text-white flex items-center justify-center shadow-lg shadow-amber-500/30">
           <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
         </div>
-        <h2 class="text-lg font-extrabold text-slate-900 tracking-tight">Ativação da Licença NexoJuris</h2>
+        <h2 id="licenseDialogTitle" class="text-lg font-extrabold text-slate-900 tracking-tight">Licença NexoJuris</h2>
         <p class="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
-          Para liberar o acesso comercial offline neste computador, informe sua Chave de Ativação vinculada ao hardware.
+          Consulte o direito de uso neste computador e importe uma licença quando necessário.
         </p>
       </div>
+
+      <section id="licenseStatePanel" class="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3" aria-live="polite" aria-atomic="true">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <p class="text-[10px] uppercase tracking-wider font-bold text-slate-500">Estado da licença</p>
+            <h3 id="licenseStateHeadline" class="text-sm font-extrabold text-slate-900">Verificando licença</h3>
+          </div>
+          <span id="licenseStateBadge" class="px-2.5 py-1 rounded-full bg-slate-200 text-slate-700 text-[10px] font-extrabold">Aguarde</span>
+        </div>
+        <p id="licenseStateMessage" class="text-xs leading-relaxed text-slate-600">Avaliando o direito de uso local.</p>
+        <dl class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+          <div class="rounded-xl bg-white border border-slate-200 p-2.5"><dt class="font-bold text-slate-500">Expiração comercial</dt><dd id="licenseExpiresAt" class="mt-0.5 font-semibold text-slate-800">—</dd></div>
+          <div class="rounded-xl bg-white border border-slate-200 p-2.5"><dt class="font-bold text-slate-500">Dias restantes</dt><dd id="licenseDaysRemaining" class="mt-0.5 font-semibold text-slate-800">—</dd></div>
+          <div class="rounded-xl bg-white border border-slate-200 p-2.5"><dt class="font-bold text-slate-500">Uso offline restante</dt><dd id="licenseOfflineRemaining" class="mt-0.5 font-semibold text-slate-800">—</dd></div>
+          <div class="rounded-xl bg-white border border-slate-200 p-2.5"><dt class="font-bold text-slate-500">Última validação online</dt><dd id="licenseLastOnline" class="mt-0.5 font-semibold text-slate-800">—</dd></div>
+        </dl>
+        <button id="btnVerifyLicense" type="button" data-action="appLicense.verifyNow()" class="w-full sm:w-auto px-3.5 py-2 rounded-xl bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 font-bold text-xs transition">Verificar licença agora</button>
+      </section>
 
       <!-- Machine ID Field with Copy Button -->
       <div class="space-y-1.5">
         <label class="block text-xs font-bold text-slate-700">Código da Máquina (Machine ID)</label>
         <div class="flex items-center gap-2">
           <input type="text" id="activationMachineId" readonly class="flex-1 p-2.5 rounded-2xl font-mono text-xs font-bold text-sky-900 bg-sky-50/80 border border-sky-200 focus:outline-none select-all" value="Carregando..." />
-          <button data-action="appLicense.copyMachineId()" class="px-3.5 py-2.5 rounded-2xl bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 font-bold text-xs transition flex items-center gap-1.5 shadow-sm">
+          <button type="button" data-action="appLicense.copyMachineId()" class="px-3.5 py-2.5 rounded-2xl bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 font-bold text-xs transition flex items-center gap-1.5 shadow-sm">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"></path></svg>
             <span>Copiar</span>
           </button>
         </div>
         <p class="text-[11px] text-slate-400">
-          Envie o Código da Máquina ao suporte ou administrador para receber sua chave de ativação vitalícia.
+          Envie o código ao suporte ou administrador para receber uma licença de 3, 6 ou 12 meses vinculada a este computador.
         </p>
       </div>
 
@@ -1248,11 +1271,11 @@
       </div>
 
       <!-- Status / Alert Message Container -->
-      <div id="activationAlertBox" class="p-3 rounded-2xl text-xs font-semibold hidden animate-fadeIn"></div>
+      <div id="activationAlertBox" role="status" aria-live="polite" class="p-3 rounded-2xl text-xs font-semibold hidden animate-fadeIn"></div>
 
       <!-- Submit Activation Button -->
       <div class="pt-2">
-        <button data-action="appLicense.submitActivation()" id="btnSubmitActivation" class="w-full py-3 rounded-2xl font-bold text-xs bg-gradient-to-r from-sky-600 to-blue-700 hover:from-sky-500 hover:to-blue-600 text-white shadow-lg shadow-sky-500/25 transition flex items-center justify-center gap-2">
+        <button type="button" data-action="appLicense.submitActivation()" id="btnSubmitActivation" class="w-full py-3 rounded-2xl font-bold text-xs bg-gradient-to-r from-sky-600 to-blue-700 hover:from-sky-500 hover:to-blue-600 text-white shadow-lg shadow-sky-500/25 transition flex items-center justify-center gap-2">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>
           <span>Ativar NexoJuris Agora</span>
         </button>
@@ -1553,6 +1576,10 @@
         <h2 class="text-base font-extrabold text-slate-900">Anotações pendentes</h2>
         <p class="text-xs leading-relaxed text-slate-600">Escolha o que fazer com as anotações antes de abrir outro documento. Nada será apagado silenciosamente.</p>
       </div>
+
+      <button id="btnImportLicense" type="button" data-action="appLicense.importLicense()" class="w-full py-3 rounded-2xl font-bold text-xs bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition flex items-center justify-center gap-2">
+        <span>Importar arquivo de licença (.nxjlic)</span>
+      </button>
       <div class="rounded-2xl bg-slate-50 border border-slate-200 p-3 space-y-2 text-[11px]">
         <div><span class="font-bold text-slate-700">Documento atual:</span> <span id="documentSwitchCurrentPath" class="font-mono break-all text-slate-500"></span></div>
         <div><span class="font-bold text-slate-700">Próximo documento:</span> <span id="documentSwitchNextPath" class="font-mono break-all text-slate-500"></span></div>
@@ -1569,6 +1596,7 @@
 
   <script src="vendor/marked.umd.js"></script>
   <script src="vendor/purify.min.js"></script>
+  <script src="license-ui.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -1,7 +1,8 @@
-"""Emissor administrativo de licenças Ed25519 do NexoJuris.
+"""Emissor de contingência para licenças legadas Ed25519 do NexoJuris.
 
 USO EXCLUSIVO DO ADMINISTRADOR / DISTRIBUIDOR.
 NÃO DISTRIBUIR ESTE ARQUIVO NEM A CHAVE PRIVADA COM O EXECUTÁVEL DO CLIENTE.
+O fluxo administrativo principal reside no pacote ``admin_licensing``.
 """
 
 from __future__ import annotations
