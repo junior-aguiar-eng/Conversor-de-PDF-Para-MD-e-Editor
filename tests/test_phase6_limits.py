@@ -172,7 +172,10 @@ class Phase6DefensiveLimitsTests(unittest.TestCase):
         self.assertIn(str(MAX_TTS_CHARACTERS), too_large["error"])
 
     def test_worker_override_never_exceeds_defensive_ceiling(self) -> None:
-        with patch("web_api.os.cpu_count", return_value=64):
+        with (
+            patch("web_api.os.cpu_count", return_value=64),
+            patch("web_api.available_memory_bytes", return_value=None),
+        ):
             self.assertEqual(self.api._resolve_worker_count(100, 999), MAX_PARALLEL_WORKERS)
         with patch("web_api.require_software_activation", return_value="NXJ-TEST"):
             result = self.api.start_conversion(

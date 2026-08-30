@@ -257,7 +257,10 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(api._resolve_worker_count(1), 1)
         self.assertEqual(api._resolve_worker_count(0), 1)
 
-        with patch("web_api.os.cpu_count", return_value=8):
+        with (
+            patch("web_api.os.cpu_count", return_value=8),
+            patch("web_api.available_memory_bytes", return_value=None),
+        ):
             self.assertEqual(api._resolve_worker_count(10), 4)
             self.assertEqual(api._resolve_worker_count(2), 2)
 
