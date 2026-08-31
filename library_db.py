@@ -29,6 +29,12 @@ logger = logging.getLogger(__name__)
 _DB_LOCK = threading.RLock()
 _BACKUP_INTERVAL_SECONDS = 24 * 60 * 60
 _MAX_BACKUPS = 5
+_SQLITE_CORRUPTION_CODES = frozenset({sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB})
+
+
+def _is_confirmed_corruption(error: sqlite3.Error) -> bool:
+    error_code = getattr(error, "sqlite_errorcode", None)
+    return isinstance(error_code, int) and (error_code & 0xFF) in _SQLITE_CORRUPTION_CODES
 
 
 class LibraryDatabase:
@@ -91,14 +97,18 @@ class LibraryDatabase:
 
     @staticmethod
     def _integrity_ok(path: Path) -> bool:
-        if not path.is_file():
+        if not path.exists():
             return False
+        if not path.is_file():
+            raise OSError(f"o caminho do banco não é um arquivo: {path}")
         try:
             with closing(sqlite3.connect(str(path), timeout=5.0)) as conn:
                 result = conn.execute("PRAGMA integrity_check").fetchone()
             return result is not None and str(result[0]).lower() == "ok"
-        except sqlite3.Error:
-            return False
+        except sqlite3.Error as error:
+            if _is_confirmed_corruption(error):
+                return False
+            raise
 
     @staticmethod
     def _copy_database(source: Path, destination: Path) -> None:
@@ -134,9 +144,9 @@ class LibraryDatabase:
 
     def _restore_latest_valid_backup(self) -> Path | None:
         for backup in self._backup_candidates():
-            if not self._integrity_ok(backup):
-                continue
             try:
+                if not self._integrity_ok(backup):
+                    continue
                 self._copy_database(backup, self.db_path)
                 return backup
             except (OSError, sqlite3.Error) as error:

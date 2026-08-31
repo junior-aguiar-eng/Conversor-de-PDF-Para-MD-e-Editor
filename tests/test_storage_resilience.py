@@ -84,6 +84,26 @@ class StorageResilienceTests(unittest.TestCase):
             self.assertTrue(Path(rebuilt.recovery_status["quarantined_path"]).is_file())
             self.assertEqual(rebuilt.get_recent_documents(), [])
 
+    def test_access_error_does_not_quarantine_a_healthy_database(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "acervo.db"
+            LibraryDatabase(db_path)
+            original = db_path.read_bytes()
+
+            for error in (
+                sqlite3.OperationalError("database is locked"),
+                sqlite3.OperationalError("unable to open database file"),
+            ):
+                with self.subTest(error=str(error)):
+                    with (
+                        patch("library_db.sqlite3.connect", side_effect=error),
+                        self.assertRaisesRegex(sqlite3.OperationalError, str(error)),
+                    ):
+                        LibraryDatabase(db_path)
+
+                    self.assertEqual(db_path.read_bytes(), original)
+                    self.assertEqual(list(db_path.parent.glob("acervo.corrupt-*.db")), [])
+
     def test_backup_rotation_keeps_only_five_valid_copies(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             database = LibraryDatabase(Path(temp_dir) / "acervo.db")
