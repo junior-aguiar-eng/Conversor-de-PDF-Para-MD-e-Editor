@@ -49,6 +49,14 @@ O CI possui um job em `windows-2025` que recompila o artefato e executa `scripts
 
 Depois, `.\criar_atalho.ps1` cria um atalho com ícone na Área de Trabalho.
 
+## Administração local de licenças
+
+O painel offline é iniciado por `.\abrir_admin_licencas.ps1`. O launcher solicita
+a senha administrativa sem gravá-la, abre `license_admin_app.py` no ambiente
+`local` e mantém o banco em `%LOCALAPPDATA%\NexoJuris\LicencasAdmin`. Os ambientes
+`test` e `production` continuam isolados; produção permanece condicionada ao
+chaveiro criptografado próprio.
+
 ## Conversão rápida ("Enviar para")
 
 Depois de gerar a release, execute `.\criar_atalho_envio_rapido.ps1` para adicionar "NexoJuris - Converter para Markdown" ao menu **Enviar para** do Windows Explorer (clique com o botão direito num ou mais PDFs). Esse modo converte direto para a pasta `PDFs Convertidos` da release e mostra um resumo em popup — sem abrir a janela principal.

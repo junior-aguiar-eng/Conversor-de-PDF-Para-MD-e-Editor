@@ -74,8 +74,8 @@ class AdminDatabase:
     ) -> None:
         self.path = Path(path).expanduser().resolve()
         self.busy_timeout_ms = busy_timeout_ms
-        if environment not in {None, "test", "production"}:
-            raise ValueError("O ambiente administrativo deve ser test ou production.")
+        if environment not in {None, "local", "test", "production"}:
+            raise ValueError("O ambiente administrativo deve ser local, test ou production.")
         self.environment = environment
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()

@@ -7,7 +7,8 @@ import unittest
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -127,10 +128,17 @@ class Phase9ClientMigrationTests(unittest.TestCase):
         self.act4_private = Ed25519PrivateKey.generate()
         self.machine_id = "NXJ2-AAAA-BBBB-CCCC-DDDD"
         self.act3_key = generate_activation_key(self.machine_id, self.legacy_private, key_version=3)
+        temporal_guard = MagicMock()
+        temporal_guard.observe.side_effect = lambda instant: SimpleNamespace(
+            effective_time=instant,
+            clock_tampered=False,
+            last_trusted_server_at=None,
+        )
         self.patchers = (
             patch.object(licensing, "_LICENSE_DB_PATH", self.database_path),
             patch.object(licensing, "_LICENSE_BACKUP_PATH", self.backup_path),
             patch.object(licensing, "_LICENSE_TIME_STATE_PATH", self.time_path),
+            patch.object(licensing, "_temporal_guard", return_value=temporal_guard),
             patch.object(licensing, "_LICENSE_PUBLIC_KEY_B64", public_b64(self.legacy_private)),
             patch.object(licensing, "_ACT4_PUBLIC_KEYS_B64", {"license-main-2026-01": public_b64(self.act4_private)}),
             patch.object(licensing, "get_machine_fingerprint_v1", return_value=self.machine_id),

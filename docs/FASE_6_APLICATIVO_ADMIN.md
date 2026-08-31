@@ -5,6 +5,8 @@ Status: concluída em 30/08/2026.
 ## Entregas
 
 - aplicativo PyWebView independente, iniciado por `license_admin_app.py`;
+- perfil operacional offline `local`, separado de `test` e de `production`,
+  acessível pelo launcher `abrir_admin_licencas.ps1`;
 - interface local em `admin_web`, sem recursos externos nem handlers inline;
 - tela inicial search-first, sem carregamento automático de tabela geral;
 - painel com atividades recentes, licenças expirando, aguardando conexão, suspensas e revogadas;

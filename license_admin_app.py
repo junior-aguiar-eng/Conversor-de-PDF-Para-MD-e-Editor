@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--database", type=Path, default=DEFAULT_ADMIN_ROOT / "licencas-admin.db")
     parser.add_argument("--private-key", type=Path, default=ROOT / ".secrets" / "nexojuris_ed25519_private.pem")
     parser.add_argument("--key-id", default="license-main-2026-01")
-    parser.add_argument("--environment", choices=("test", "production"), required=True)
+    parser.add_argument("--environment", choices=("local", "test", "production"), required=True)
     parser.add_argument("--key-store", type=Path)
     parser.add_argument("--admin-password-env", default="NEXOJURIS_ADMIN_PASSWORD")
     return parser.parse_args()

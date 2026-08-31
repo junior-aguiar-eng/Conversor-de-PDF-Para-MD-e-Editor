@@ -208,6 +208,16 @@ class Phase10AdminSecurityTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "pertence ao ambiente test"):
             AdminDatabase(self.database.path, environment="production")
 
+    def test_banco_local_e_vinculado_sem_relaxar_producao(self) -> None:
+        local_database = AdminDatabase(self.root / "local-admin.db", environment="local")
+        with local_database.read() as connection:
+            environment = connection.execute(
+                "SELECT setting_value FROM operational_settings WHERE setting_key = 'environment'"
+            ).fetchone()[0]
+        self.assertEqual(environment, "local")
+        with self.assertRaisesRegex(RuntimeError, "pertence ao ambiente local"):
+            AdminDatabase(local_database.path, environment="production")
+
 
 if __name__ == "__main__":
     unittest.main()
