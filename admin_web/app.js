@@ -5,6 +5,7 @@ const ui = {
   page: 1,
   pageSize: 25,
   selectedLicense: null,
+  pendingOperations: new Set(),
 };
 
 const STATUS = {
@@ -66,6 +67,28 @@ function toast(message) {
   element.textContent = message;
   element.classList.remove("hidden");
   window.setTimeout(() => element.classList.add("hidden"), 3200);
+}
+
+function setActionButtonsPending(pending) {
+  document.querySelectorAll("[data-admin-action]").forEach(button => {
+    button.disabled = pending;
+  });
+}
+
+function beginFormSubmission(form) {
+  if (form.dataset.submitting === "true") return false;
+  form.dataset.submitting = "true";
+  form.querySelectorAll('button[type="submit"], input[type="submit"]').forEach(button => {
+    button.disabled = true;
+  });
+  return true;
+}
+
+function endFormSubmission(form) {
+  delete form.dataset.submitting;
+  form.querySelectorAll('button[type="submit"], input[type="submit"]').forEach(button => {
+    button.disabled = false;
+  });
 }
 
 async function bridge(method, ...args) {
@@ -182,6 +205,10 @@ function actionButton(action) {
 async function performAction(action) {
   const licenseId = ui.selectedLicense?.license_id;
   if (!licenseId) return;
+  const operationKey = `license:${licenseId}`;
+  if (ui.pendingOperations.has(operationKey)) return;
+  ui.pendingOperations.add(operationKey);
+  setActionButtonsPending(true);
   try {
     if (action === "renew") {
       const months = window.prompt("Prazo da renovação em meses: 3, 6 ou 12", "12");
@@ -242,16 +269,20 @@ async function performAction(action) {
     if (ui.query) await runSearch(ui.query, ui.page);
   } catch (error) {
     toast(error.message);
+  } finally {
+    ui.pendingOperations.delete(operationKey);
+    if (ui.selectedLicense?.license_id === licenseId) setActionButtonsPending(false);
   }
 }
 
 async function submitNewLicense(event) {
   event.preventDefault();
   const form = event.currentTarget;
-  const data = new FormData(form);
+  if (!beginFormSubmission(form)) return;
   const errorBox = document.getElementById("newLicenseError");
   errorBox.classList.add("hidden");
   try {
+    const data = new FormData(form);
     const issued = await bridge("create_customer_license", {
       name: data.get("name"), email: data.get("email"), phone: data.get("phone"),
       tax_id: data.get("tax_id"), commercial_reference: data.get("commercial_reference"),
@@ -271,16 +302,19 @@ async function submitNewLicense(event) {
   } catch (error) {
     errorBox.textContent = error.message;
     errorBox.classList.remove("hidden");
+  } finally {
+    endFormSubmission(form);
   }
 }
 
 async function submitMigration(event) {
   event.preventDefault();
   const form = event.currentTarget;
-  const data = new FormData(form);
+  if (!beginFormSubmission(form)) return;
   const errorBox = document.getElementById("migrationError");
   errorBox.classList.add("hidden");
   try {
+    const data = new FormData(form);
     const migrated = await bridge("migrate_legacy_license", {
       name: data.get("name"),
       email: data.get("email"),
@@ -306,6 +340,8 @@ async function submitMigration(event) {
   } catch (error) {
     errorBox.textContent = error.message;
     errorBox.classList.remove("hidden");
+  } finally {
+    endFormSubmission(form);
   }
 }
 

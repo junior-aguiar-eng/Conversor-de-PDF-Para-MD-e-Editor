@@ -48,3 +48,10 @@ test("emissão e migração administrativas são exclusivamente offline", () => 
   assert.equal((script.match(/max_offline_days: 0/g) || []).length, 2);
   assert.doesNotMatch(script, /event\.target\.value === "hybrid"/);
 });
+
+test("formulários administrativos ignoram submissão duplicada", () => {
+  assert.match(script, /if \(!beginFormSubmission\(form\)\) return/);
+  assert.equal((script.match(/if \(!beginFormSubmission\(form\)\) return/g) || []).length, 2);
+  assert.equal((script.match(/endFormSubmission\(form\)/g) || []).length, 3);
+  assert.match(script, /form\.dataset\.submitting === "true"/);
+});

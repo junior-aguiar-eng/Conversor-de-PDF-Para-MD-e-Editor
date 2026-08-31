@@ -20,6 +20,14 @@ test("renovação offline oferece exportação imediata", () => {
   assert.match(script, /bridge\("export_license", licenseId, password\)/);
 });
 
+test("ações repetidas ficam bloqueadas enquanto a primeira está em andamento", () => {
+  assert.match(script, /if \(ui\.pendingOperations\.has\(operationKey\)\) return/);
+  assert.match(script, /ui\.pendingOperations\.add\(operationKey\)/);
+  assert.match(script, /ui\.pendingOperations\.delete\(operationKey\)/);
+  assert.match(script, /setActionButtonsPending\(true\)/);
+  assert.match(script, /setActionButtonsPending\(false\)/);
+});
+
 test("reativação, revogação e troca permanecem disponíveis", () => {
   assert.match(script, /bridge\("reactivate_license", licenseId, reason\)/);
   assert.match(script, /REVOGAR:\$\{licenseId\}/);
