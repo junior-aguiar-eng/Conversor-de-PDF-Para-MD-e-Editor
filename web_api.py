@@ -480,7 +480,12 @@ def _save_doc_safely(doc: fitz.Document, file_path: Path, **save_kwargs: Any) ->
 class BridgeApi:
     """API exposta para o JavaScript via window.pywebview.api."""
 
-    def __init__(self, conversion_journal_path: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        conversion_journal_path: Path | str | None = None,
+        *,
+        library_database_path: Path | str | None = None,
+    ) -> None:
         self._window: Any = None
         self.cancel_requested = threading.Event()
         self.resume_processing = threading.Event()
@@ -509,7 +514,11 @@ class BridgeApi:
         self._services_shutdown = False
         self._pdf_passwords: dict[str, str] = {}
         try:
-            self._library = LibraryDatabase()
+            self._library = (
+                LibraryDatabase()
+                if library_database_path is None
+                else LibraryDatabase(library_database_path)
+            )
             self._library_status = dict(self._library.recovery_status)
             self._library_status["persistent"] = True
         except (OSError, sqlite3.Error) as error:

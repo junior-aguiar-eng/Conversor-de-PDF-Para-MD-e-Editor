@@ -23,7 +23,7 @@ class OcrEngineTests(unittest.TestCase):
         test_db_path = Path(self.storage_dir.name) / "ocr_api_acervo.db"
         library_patcher = patch(
             "web_api.LibraryDatabase",
-            side_effect=lambda: LibraryDatabase(test_db_path),
+            side_effect=lambda db_path=None: LibraryDatabase(db_path or test_db_path),
         )
         library_patcher.start()
         self.addCleanup(library_patcher.stop)
@@ -101,8 +101,8 @@ class OcrEngineTests(unittest.TestCase):
                 self.assertIn("Relatório Médico Escaneado", content)
 
     def test_extract_snippet_triggers_ocr_on_scanned_area(self) -> None:
-        api = BridgeApi()
         with tempfile.TemporaryDirectory() as tmp_dir:
+            api = BridgeApi(library_database_path=Path(tmp_dir) / "acervo.db")
             pdf_path = Path(tmp_dir) / "scan_snippet.pdf"
             doc = fitz.open()
             doc.new_page(width=595, height=842)

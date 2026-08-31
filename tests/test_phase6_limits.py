@@ -26,7 +26,10 @@ class Phase6DefensiveLimitsTests(unittest.TestCase):
         self.addCleanup(self.temp_dir.cleanup)
         self.root = Path(self.temp_dir.name)
         self.pdf_path = self._make_pdf("limites.pdf")
-        self.api = BridgeApi(conversion_journal_path=self.root / "conversion-journal.json")
+        self.api = BridgeApi(
+            conversion_journal_path=self.root / "conversion-journal.json",
+            library_database_path=self.root / "acervo.db",
+        )
         self.file_id = self.api._register_pdf(self.pdf_path, "test")["file_id"]
 
     def _make_pdf(self, name: str, width: float = 595, height: float = 842) -> Path:

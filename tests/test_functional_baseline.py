@@ -267,7 +267,7 @@ main().catch((error) => {{ console.error(error); process.exit(1); }});
             document.save(source)
             document.close()
 
-            api = BridgeApi()
+            api = BridgeApi(library_database_path=Path(tmp_dir) / "acervo.db")
             file_id = api._register_pdf(source, "test")["file_id"]
             result = api.save_pdf_annotations(
                 {

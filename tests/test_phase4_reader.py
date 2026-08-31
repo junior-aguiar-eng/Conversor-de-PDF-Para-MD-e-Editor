@@ -37,9 +37,7 @@ class TestPhase4ReaderAndIndexing(unittest.TestCase):
         return path
 
     def _api(self, db_name: str) -> BridgeApi:
-        api = BridgeApi()
-        api._library = LibraryDatabase(self.root / db_name)
-        return api
+        return BridgeApi(library_database_path=self.root / db_name)
 
     def test_fast_pdf_info_opening(self) -> None:
         api = self._api("fast.db")
