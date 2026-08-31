@@ -230,6 +230,44 @@ class Phase6AdminSearchTests(unittest.TestCase):
         detail = self.service.license_detail(valid["license_id"])
         self.assertEqual(detail["active_device"]["machine_id"], "NXJ2-AAAA-BBBB-CCCC-DDDD")
 
+    def test_admin_local_recusa_emissao_hibrida_em_todas_as_entradas(self) -> None:
+        bridge = AdminLicenseBridge(self.service)
+        with self.database.read() as connection:
+            before = connection.execute("SELECT COUNT(*) FROM customers").fetchone()[0]
+            licenses_before = connection.execute("SELECT COUNT(*) FROM licenses").fetchone()[0]
+        combined = bridge.create_customer_license(
+            {
+                "name": "Cliente híbrido indevido",
+                "term_months": 3,
+                "features": ["converter"],
+                "validation_mode": "hybrid",
+                "max_offline_days": 7,
+            }
+        )
+        direct = bridge.issue_license(
+            {
+                "customer_id": "CUS-SYN-000000",
+                "term_months": 3,
+                "features": ["converter"],
+                "validation_mode": "hybrid",
+                "max_offline_days": 7,
+            }
+        )
+        migration = bridge.migrate_legacy_license(
+            {
+                "validation_mode": "hybrid",
+                "max_offline_days": 7,
+            }
+        )
+        with self.database.read() as connection:
+            after = connection.execute("SELECT COUNT(*) FROM customers").fetchone()[0]
+            licenses_after = connection.execute("SELECT COUNT(*) FROM licenses").fetchone()[0]
+        for result in (combined, direct, migration):
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error"], "O Admin local emite somente licenças offline.")
+        self.assertEqual(before, after)
+        self.assertEqual(licenses_before, licenses_after)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -39,3 +39,12 @@ test("interface é local, acessível e sem handlers inline", () => {
   assert.doesNotMatch(html, /\son[a-z]+\s*=/i);
   assert.doesNotMatch(html, /https?:\/\//i);
 });
+
+test("emissão e migração administrativas são exclusivamente offline", () => {
+  assert.doesNotMatch(html, /value="hybrid"/);
+  assert.doesNotMatch(html, /Prazo offline \(dias\)/);
+  assert.equal((html.match(/Totalmente offline/g) || []).length, 2);
+  assert.equal((script.match(/validation_mode: "offline"/g) || []).length, 2);
+  assert.equal((script.match(/max_offline_days: 0/g) || []).length, 2);
+  assert.doesNotMatch(script, /event\.target\.value === "hybrid"/);
+});

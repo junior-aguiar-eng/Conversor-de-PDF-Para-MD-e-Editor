@@ -256,14 +256,13 @@ async function submitNewLicense(event) {
       name: data.get("name"), email: data.get("email"), phone: data.get("phone"),
       tax_id: data.get("tax_id"), commercial_reference: data.get("commercial_reference"),
       term_months: Number(data.get("term_months")),
-      validation_mode: data.get("validation_mode"),
-      max_offline_days: Number(data.get("max_offline_days")),
+      validation_mode: "offline",
+      max_offline_days: 0,
       machine_id: data.get("machine_id"),
       commercial_reference: data.get("commercial_reference"),
       features: data.getAll("features"),
     });
     form.reset();
-    document.getElementById("offlineDays").disabled = true;
     document.getElementById("newLicenseModal").classList.add("hidden");
     toast(`Licença emitida: ${issued.license_id}`);
     await loadDashboard();
@@ -290,12 +289,11 @@ async function submitMigration(event) {
       activation_key: data.get("activation_key"),
       confirmation: data.get("confirmation"),
       term_months: Number(data.get("term_months")),
-      validation_mode: data.get("validation_mode"),
-      max_offline_days: Number(data.get("max_offline_days")),
+      validation_mode: "offline",
+      max_offline_days: 0,
       features: data.getAll("features"),
     });
     form.reset();
-    document.getElementById("migrationOfflineDays").disabled = true;
     document.getElementById("migrationModal").classList.add("hidden");
     toast(`Migração registrada: ${migrated.license_id}. A licença antiga não foi desativada.`);
     if (window.confirm("Exportar agora o arquivo ACT4 para o cliente?")) {
@@ -327,16 +325,6 @@ function bindEvents() {
   });
   document.getElementById("newLicenseForm").addEventListener("submit", submitNewLicense);
   document.getElementById("migrationForm").addEventListener("submit", submitMigration);
-  document.getElementById("validationMode").addEventListener("change", event => {
-    const input = document.getElementById("offlineDays");
-    input.disabled = event.target.value !== "hybrid";
-    input.value = event.target.value === "hybrid" ? "7" : "0";
-  });
-  document.getElementById("migrationValidationMode").addEventListener("change", event => {
-    const input = document.getElementById("migrationOfflineDays");
-    input.disabled = event.target.value !== "hybrid";
-    input.value = event.target.value === "hybrid" ? "7" : "0";
-  });
   document.addEventListener("click", event => {
     const close = event.target.closest("[data-close]");
     if (close) document.getElementById(close.dataset.close).classList.add("hidden");

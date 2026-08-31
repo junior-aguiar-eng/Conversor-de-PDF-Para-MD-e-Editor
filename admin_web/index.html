@@ -81,8 +81,7 @@
         <label>CPF/CNPJ<input name="tax_id" maxlength="24"></label>
         <label>Referência comercial<input name="commercial_reference" maxlength="80"></label>
         <label>Prazo<select name="term_months"><option value="3">3 meses</option><option value="6">6 meses</option><option value="12">12 meses</option></select></label>
-        <label>Validação<select id="validationMode" name="validation_mode"><option value="offline">Totalmente offline</option><option value="hybrid">Híbrida</option></select></label>
-        <label>Prazo offline (dias)<input id="offlineDays" name="max_offline_days" type="number" min="0" max="30" value="0" disabled></label>
+        <label>Validação<input value="Totalmente offline" readonly aria-readonly="true"></label>
         <label>Código da máquina<input name="machine_id" placeholder="NXJ2-0000-0000-0000-0000" maxlength="24"></label>
         <fieldset class="span-2 feature-fieldset">
           <legend>Funcionalidades</legend>
@@ -111,8 +110,7 @@
         <label class="span-2">Código da máquina<input name="machine_id" required placeholder="NXJ2-0000-0000-0000-0000" maxlength="24"></label>
         <label class="span-2">Licença ACT2/ACT3<textarea name="activation_key" required rows="3" maxlength="160"></textarea></label>
         <label>Prazo ACT4<select name="term_months"><option value="3">3 meses</option><option value="6">6 meses</option><option value="12">12 meses</option></select></label>
-        <label>Validação<select id="migrationValidationMode" name="validation_mode"><option value="offline">Totalmente offline</option><option value="hybrid">Híbrida</option></select></label>
-        <label>Prazo offline (dias)<input id="migrationOfflineDays" name="max_offline_days" type="number" min="0" max="30" value="0" disabled></label>
+        <label>Validação ACT4<input value="Totalmente offline" readonly aria-readonly="true"></label>
         <label class="span-2">Confirmação<input name="confirmation" required placeholder="MIGRAR:NXJ2-0000-0000-0000-0000"></label>
         <fieldset class="span-2 feature-fieldset">
           <legend>Funcionalidades ACT4</legend>

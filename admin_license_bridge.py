@@ -17,6 +17,14 @@ from admin_licensing import (
 logger = logging.getLogger(__name__)
 
 
+def _offline_validation(payload: dict[str, Any]) -> tuple[str, int]:
+    validation_mode = str(payload.get("validation_mode", "offline"))
+    max_offline_days = int(payload.get("max_offline_days", 0))
+    if validation_mode != "offline" or max_offline_days != 0:
+        raise ValueError("O Admin local emite somente licenças offline.")
+    return validation_mode, max_offline_days
+
+
 class AdminLicenseBridge:
     def __init__(
         self,
@@ -60,12 +68,13 @@ class AdminLicenseBridge:
 
     def issue_license(self, payload: dict[str, Any]) -> dict[str, Any]:
         def operation() -> dict[str, Any]:
+            validation_mode, max_offline_days = _offline_validation(payload)
             license_id = self.service.issue_license(
                 str(payload.get("customer_id", "")),
                 term_months=int(payload.get("term_months", 0)),
                 features=tuple(payload.get("features") or ("converter", "ocr", "reader")),
-                validation_mode=str(payload.get("validation_mode", "offline")),
-                max_offline_days=int(payload.get("max_offline_days", 0)),
+                validation_mode=validation_mode,
+                max_offline_days=max_offline_days,
                 customer_reference=payload.get("customer_reference"),
                 commercial_reference=payload.get("commercial_reference"),
                 machine_id=payload.get("machine_id"),
@@ -80,17 +89,12 @@ class AdminLicenseBridge:
         def operation() -> dict[str, Any]:
             term_months = int(payload.get("term_months", 0))
             features = tuple(payload.get("features") or ())
-            validation_mode = str(payload.get("validation_mode", "offline"))
-            max_offline_days = int(payload.get("max_offline_days", 0))
+            validation_mode, max_offline_days = _offline_validation(payload)
             machine_id = str(payload.get("machine_id", "")).strip()
             if term_months not in {3, 6, 12}:
                 raise ValueError("O prazo deve ser de 3, 6 ou 12 meses.")
             if not features or not set(features).issubset({"converter", "ocr", "reader"}):
                 raise ValueError("Selecione ao menos uma funcionalidade válida.")
-            if validation_mode == "offline" and max_offline_days != 0:
-                raise ValueError("Licenças offline não usam prazo de lease.")
-            if validation_mode == "hybrid" and not 1 <= max_offline_days <= 30:
-                raise ValueError("O prazo offline híbrido deve ficar entre 1 e 30 dias.")
             if machine_id:
                 import re
 
@@ -126,8 +130,7 @@ class AdminLicenseBridge:
             confirmation = str(payload.get("confirmation", ""))
             term_months = int(payload.get("term_months", 0))
             features = tuple(payload.get("features") or ())
-            validation_mode = str(payload.get("validation_mode", "offline"))
-            max_offline_days = int(payload.get("max_offline_days", 0))
+            validation_mode, max_offline_days = _offline_validation(payload)
             self.service.validate_legacy_migration(
                 machine_id,
                 activation_key,
@@ -137,10 +140,6 @@ class AdminLicenseBridge:
                 raise ValueError("O prazo deve ser de 3, 6 ou 12 meses.")
             if not features or not set(features).issubset({"converter", "ocr", "reader"}):
                 raise ValueError("Selecione ao menos uma funcionalidade válida.")
-            if validation_mode == "offline" and max_offline_days != 0:
-                raise ValueError("Licenças offline não usam prazo de lease.")
-            if validation_mode == "hybrid" and not 1 <= max_offline_days <= 30:
-                raise ValueError("O prazo offline híbrido deve ficar entre 1 e 30 dias.")
             customer_id = self.service.create_customer(
                 str(payload.get("name", "")),
                 email=payload.get("email"),
