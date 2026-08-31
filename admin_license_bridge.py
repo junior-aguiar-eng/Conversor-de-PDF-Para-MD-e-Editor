@@ -131,25 +131,12 @@ class AdminLicenseBridge:
             term_months = int(payload.get("term_months", 0))
             features = tuple(payload.get("features") or ())
             validation_mode, max_offline_days = _offline_validation(payload)
-            self.service.validate_legacy_migration(
-                machine_id,
-                activation_key,
-                confirmation=confirmation,
-            )
             if term_months not in {3, 6, 12}:
                 raise ValueError("O prazo deve ser de 3, 6 ou 12 meses.")
             if not features or not set(features).issubset({"converter", "ocr", "reader"}):
                 raise ValueError("Selecione ao menos uma funcionalidade válida.")
-            customer_id = self.service.create_customer(
+            migration_id, customer_id, license_id = self.service.create_customer_and_migrate_legacy_license(
                 str(payload.get("name", "")),
-                email=payload.get("email"),
-                phone=payload.get("phone"),
-                tax_id=payload.get("tax_id"),
-                commercial_reference=payload.get("commercial_reference"),
-                admin_user_id=self.admin_user_id,
-            )
-            migration_id, license_id = self.service.migrate_legacy_license(
-                customer_id,
                 machine_id=machine_id,
                 activation_key=activation_key,
                 confirmation=confirmation,
@@ -157,6 +144,9 @@ class AdminLicenseBridge:
                 features=features,
                 validation_mode=validation_mode,
                 max_offline_days=max_offline_days,
+                email=payload.get("email"),
+                phone=payload.get("phone"),
+                tax_id=payload.get("tax_id"),
                 commercial_reference=payload.get("commercial_reference"),
                 admin_user_id=self.admin_user_id,
             )

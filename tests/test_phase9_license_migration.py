@@ -115,6 +115,37 @@ class Phase9AdminMigrationTests(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertIn(f"MIGRAR:{self.machine_id}", result["error"])
 
+    def test_bridge_repetido_nao_cria_cliente_ou_licenca_orfa(self) -> None:
+        bridge = AdminLicenseBridge(self.service, admin_user_id=self.admin_id)
+        payload = {
+            "name": "Cliente migrado pelo bridge",
+            "machine_id": self.machine_id,
+            "activation_key": self.act3_key,
+            "confirmation": f"MIGRAR:{self.machine_id}",
+            "term_months": 3,
+            "validation_mode": "offline",
+            "max_offline_days": 0,
+            "features": ["converter"],
+        }
+        first = bridge.migrate_legacy_license(payload)
+        self.assertTrue(first["ok"])
+        with self.database.read() as connection:
+            before = tuple(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("customers", "licenses", "legacy_license_migrations")
+            )
+
+        second = bridge.migrate_legacy_license({**payload, "name": "Cliente órfão"})
+
+        with self.database.read() as connection:
+            after = tuple(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("customers", "licenses", "legacy_license_migrations")
+            )
+        self.assertFalse(second["ok"])
+        self.assertIn("já possui uma migração", second["error"])
+        self.assertEqual(before, after)
+
 
 class Phase9ClientMigrationTests(unittest.TestCase):
     def setUp(self) -> None:

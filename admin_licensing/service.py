@@ -238,33 +238,17 @@ class AdminLicenseService:
         commercial_reference: str | None = None,
         admin_user_id: str | None = None,
     ) -> str:
-        normalized_name = _normalize_name(name)
-        if not normalized_name:
-            raise ValueError("O nome do cliente é obrigatório.")
-        customer_id = _id("CUS")
         with self.database.transaction() as connection:
             self._require_admin(connection, admin_user_id)
-            connection.execute(
-                """
-                INSERT INTO customers(
-                    customer_id, name, normalized_name, email, phone, tax_id,
-                    commercial_reference, created_at, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    customer_id,
-                    name.strip(),
-                    normalized_name,
-                    _optional_text(email),
-                    _optional_text(phone),
-                    _optional_text(tax_id, upper=True),
-                    _optional_text(commercial_reference),
-                    utc_now_text(),
-                    admin_user_id,
-                ),
+            return self._create_customer_in_transaction(
+                connection,
+                name,
+                email=email,
+                phone=phone,
+                tax_id=tax_id,
+                commercial_reference=commercial_reference,
+                admin_user_id=admin_user_id,
             )
-            self._audit(connection, "customer.created", "customer", customer_id, admin_user_id)
-        return customer_id
 
     def issue_license(
         self,
@@ -281,6 +265,39 @@ class AdminLicenseService:
         activation_secret: str | None = None,
         admin_user_id: str | None = None,
     ) -> str:
+        prepared = self._prepare_license_issue(
+            term_months=term_months,
+            features=features,
+            validation_mode=validation_mode,
+            max_offline_days=max_offline_days,
+            starts_at=starts_at,
+            customer_reference=customer_reference,
+            commercial_reference=commercial_reference,
+            machine_id=machine_id,
+            activation_secret=activation_secret,
+        )
+        with self.database.transaction() as connection:
+            self._require_admin(connection, admin_user_id)
+            return self._issue_license_in_transaction(
+                connection,
+                customer_id,
+                prepared,
+                admin_user_id=admin_user_id,
+            )
+
+    def _prepare_license_issue(
+        self,
+        *,
+        term_months: int,
+        features: Iterable[str],
+        validation_mode: str,
+        max_offline_days: int,
+        starts_at: datetime | None = None,
+        customer_reference: str | None = None,
+        commercial_reference: str | None = None,
+        machine_id: str | None = None,
+        activation_secret: str | None = None,
+    ) -> dict[str, Any]:
         if term_months not in _TERMS:
             raise ValueError("O prazo deve ser de 3, 6 ou 12 meses.")
         normalized_features = tuple(sorted(set(features)))
@@ -305,77 +322,20 @@ class AdminLicenseService:
         if issued > starts:
             starts = issued
         expires = _add_months(starts, term_months)
-        active_key_id = self._active_key_id()
-        with self.database.transaction() as connection:
-            self._require_admin(connection, admin_user_id)
-            if not connection.execute("SELECT 1 FROM customers WHERE customer_id = ?", (customer_id,)).fetchone():
-                raise RecordNotFoundError("Cliente não encontrado.")
-            year = issued.year
-            prefix = f"LIC-{year}-"
-            row = connection.execute(
-                "SELECT COALESCE(MAX(CAST(substr(license_id, 10) AS INTEGER)), 0) FROM licenses WHERE license_id LIKE ?",
-                (f"{prefix}%",),
-            ).fetchone()
-            license_id = f"{prefix}{int(row[0]) + 1:06d}"
-            reference = (customer_reference or f"CUST-{uuid.uuid4().hex[:12]}").strip().upper()
-            connection.execute(
-                """
-                INSERT INTO licenses(
-                    license_id, customer_id, key_id, status, issued_at, not_before,
-                    expires_at, term_months, validation_mode, max_offline_days,
-                    customer_reference, commercial_reference, created_by
-                    , activation_secret_hash
-                ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    license_id,
-                    customer_id,
-                    active_key_id,
-                    _timestamp(issued),
-                    _timestamp(starts),
-                    _timestamp(expires),
-                    term_months,
-                    validation_mode,
-                    max_offline_days,
-                    reference,
-                    _optional_text(commercial_reference),
-                    admin_user_id,
-                    activation_secret_hash,
-                ),
-            )
-            connection.executemany(
-                "INSERT INTO license_features(license_id, feature) VALUES (?, ?)",
-                ((license_id, feature) for feature in normalized_features),
-            )
-            device_id = None
-            if normalized_machine:
-                device_id = _id("DEV")
-                connection.execute(
-                    """
-                    INSERT INTO licensed_devices(device_id, license_id, machine_id, bound_at, active, created_by)
-                    VALUES (?, ?, ?, ?, 1, ?)
-                    """,
-                    (device_id, license_id, normalized_machine, utc_now_text(), admin_user_id),
-                )
-            self._refresh_search(connection, license_id)
-            self._audit(
-                connection,
-                "license.issued",
-                "license",
-                license_id,
-                admin_user_id,
-                {"customer_id": customer_id, "term_months": term_months, "validation_mode": validation_mode},
-            )
-            if device_id:
-                self._audit(
-                    connection,
-                    "device.bound",
-                    "license",
-                    license_id,
-                    admin_user_id,
-                    {"device_id": device_id, "machine_id": normalized_machine},
-                )
-        return license_id
+        return {
+            "term_months": term_months,
+            "features": normalized_features,
+            "validation_mode": validation_mode,
+            "max_offline_days": max_offline_days,
+            "machine_id": normalized_machine,
+            "activation_secret_hash": activation_secret_hash,
+            "issued": issued,
+            "starts": starts,
+            "expires": expires,
+            "key_id": self._active_key_id(),
+            "customer_reference": (customer_reference or f"CUST-{uuid.uuid4().hex[:12]}").strip().upper(),
+            "commercial_reference": _optional_text(commercial_reference),
+        }
 
     def validate_legacy_migration(
         self,
@@ -420,51 +380,259 @@ class AdminLicenseService:
             confirmation=confirmation,
         )
         legacy_key_hash = hashlib.sha256(normalized_key.encode("ascii")).hexdigest()
-        with self.database.read() as connection:
-            if connection.execute(
-                "SELECT 1 FROM legacy_license_migrations WHERE legacy_key_hash = ?",
-                (legacy_key_hash,),
-            ).fetchone():
-                raise InvalidTransitionError("Esta licença legada já possui uma migração registrada.")
-        license_id = self.issue_license(
-            customer_id,
+        prepared = self._prepare_license_issue(
             term_months=term_months,
             features=features,
             validation_mode=validation_mode,
             max_offline_days=max_offline_days,
             machine_id=normalized_machine,
             commercial_reference=commercial_reference,
-            admin_user_id=admin_user_id,
         )
-        migration_id = _id("MIG")
         with self.database.transaction() as connection:
+            self._require_admin(connection, admin_user_id)
+            self._require_legacy_migration_available(connection, legacy_key_hash)
+            license_id = self._issue_license_in_transaction(
+                connection,
+                customer_id,
+                prepared,
+                admin_user_id=admin_user_id,
+            )
+            migration_id = self._record_legacy_migration_in_transaction(
+                connection,
+                version=version,
+                legacy_key_hash=legacy_key_hash,
+                machine_id=normalized_machine,
+                customer_id=customer_id,
+                license_id=license_id,
+                admin_user_id=admin_user_id,
+            )
+        return migration_id, license_id
+
+    def create_customer_and_migrate_legacy_license(
+        self,
+        name: str,
+        *,
+        machine_id: str,
+        activation_key: str,
+        confirmation: str,
+        term_months: int,
+        features: Iterable[str] = ("converter", "ocr", "reader"),
+        validation_mode: str = "offline",
+        max_offline_days: int = 0,
+        email: str | None = None,
+        phone: str | None = None,
+        tax_id: str | None = None,
+        commercial_reference: str | None = None,
+        admin_user_id: str | None = None,
+    ) -> tuple[str, str, str]:
+        normalized_machine = machine_id.strip().upper()
+        normalized_key = activation_key.strip().upper()
+        version = self.validate_legacy_migration(
+            normalized_machine,
+            normalized_key,
+            confirmation=confirmation,
+        )
+        legacy_key_hash = hashlib.sha256(normalized_key.encode("ascii")).hexdigest()
+        prepared = self._prepare_license_issue(
+            term_months=term_months,
+            features=features,
+            validation_mode=validation_mode,
+            max_offline_days=max_offline_days,
+            machine_id=normalized_machine,
+            commercial_reference=commercial_reference,
+        )
+        with self.database.transaction() as connection:
+            self._require_admin(connection, admin_user_id)
+            self._require_legacy_migration_available(connection, legacy_key_hash)
+            customer_id = self._create_customer_in_transaction(
+                connection,
+                name,
+                email=email,
+                phone=phone,
+                tax_id=tax_id,
+                commercial_reference=commercial_reference,
+                admin_user_id=admin_user_id,
+            )
+            license_id = self._issue_license_in_transaction(
+                connection,
+                customer_id,
+                prepared,
+                admin_user_id=admin_user_id,
+            )
+            migration_id = self._record_legacy_migration_in_transaction(
+                connection,
+                version=version,
+                legacy_key_hash=legacy_key_hash,
+                machine_id=normalized_machine,
+                customer_id=customer_id,
+                license_id=license_id,
+                admin_user_id=admin_user_id,
+            )
+        return migration_id, customer_id, license_id
+
+    def _create_customer_in_transaction(
+        self,
+        connection: Any,
+        name: str,
+        *,
+        email: str | None,
+        phone: str | None,
+        tax_id: str | None,
+        commercial_reference: str | None,
+        admin_user_id: str | None,
+    ) -> str:
+        normalized_name = _normalize_name(name)
+        if not normalized_name:
+            raise ValueError("O nome do cliente é obrigatório.")
+        customer_id = _id("CUS")
+        connection.execute(
+            """
+            INSERT INTO customers(
+                customer_id, name, normalized_name, email, phone, tax_id,
+                commercial_reference, created_at, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                customer_id,
+                name.strip(),
+                normalized_name,
+                _optional_text(email),
+                _optional_text(phone),
+                _optional_text(tax_id, upper=True),
+                _optional_text(commercial_reference),
+                utc_now_text(),
+                admin_user_id,
+            ),
+        )
+        self._audit(connection, "customer.created", "customer", customer_id, admin_user_id)
+        return customer_id
+
+    def _issue_license_in_transaction(
+        self,
+        connection: Any,
+        customer_id: str,
+        prepared: dict[str, Any],
+        *,
+        admin_user_id: str | None,
+    ) -> str:
+        if not connection.execute("SELECT 1 FROM customers WHERE customer_id = ?", (customer_id,)).fetchone():
+            raise RecordNotFoundError("Cliente não encontrado.")
+        prefix = f"LIC-{prepared['issued'].year}-"
+        row = connection.execute(
+            "SELECT COALESCE(MAX(CAST(substr(license_id, 10) AS INTEGER)), 0) FROM licenses WHERE license_id LIKE ?",
+            (f"{prefix}%",),
+        ).fetchone()
+        license_id = f"{prefix}{int(row[0]) + 1:06d}"
+        connection.execute(
+            """
+            INSERT INTO licenses(
+                license_id, customer_id, key_id, status, issued_at, not_before,
+                expires_at, term_months, validation_mode, max_offline_days,
+                customer_reference, commercial_reference, created_by,
+                activation_secret_hash
+            ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                license_id,
+                customer_id,
+                prepared["key_id"],
+                _timestamp(prepared["issued"]),
+                _timestamp(prepared["starts"]),
+                _timestamp(prepared["expires"]),
+                prepared["term_months"],
+                prepared["validation_mode"],
+                prepared["max_offline_days"],
+                prepared["customer_reference"],
+                prepared["commercial_reference"],
+                admin_user_id,
+                prepared["activation_secret_hash"],
+            ),
+        )
+        connection.executemany(
+            "INSERT INTO license_features(license_id, feature) VALUES (?, ?)",
+            ((license_id, feature) for feature in prepared["features"]),
+        )
+        device_id = None
+        if prepared["machine_id"]:
+            device_id = _id("DEV")
             connection.execute(
                 """
-                INSERT INTO legacy_license_migrations(
-                    migration_id, legacy_version, legacy_key_hash, machine_id,
-                    customer_id, license_id, acknowledged_at, admin_user_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO licensed_devices(device_id, license_id, machine_id, bound_at, active, created_by)
+                VALUES (?, ?, ?, ?, 1, ?)
                 """,
-                (
-                    migration_id,
-                    version.value,
-                    legacy_key_hash,
-                    normalized_machine,
-                    customer_id,
-                    license_id,
-                    utc_now_text(),
-                    admin_user_id,
-                ),
+                (device_id, license_id, prepared["machine_id"], utc_now_text(), admin_user_id),
             )
+        self._refresh_search(connection, license_id)
+        self._audit(
+            connection,
+            "license.issued",
+            "license",
+            license_id,
+            admin_user_id,
+            {
+                "customer_id": customer_id,
+                "term_months": prepared["term_months"],
+                "validation_mode": prepared["validation_mode"],
+            },
+        )
+        if device_id:
             self._audit(
                 connection,
-                "license.migrated_from_legacy",
+                "device.bound",
                 "license",
                 license_id,
                 admin_user_id,
-                {"migration_id": migration_id, "legacy_version": version.value, "machine_id": normalized_machine},
+                {"device_id": device_id, "machine_id": prepared["machine_id"]},
             )
-        return migration_id, license_id
+        return license_id
+
+    @staticmethod
+    def _require_legacy_migration_available(connection: Any, legacy_key_hash: str) -> None:
+        if connection.execute(
+            "SELECT 1 FROM legacy_license_migrations WHERE legacy_key_hash = ?",
+            (legacy_key_hash,),
+        ).fetchone():
+            raise InvalidTransitionError("Esta licença legada já possui uma migração registrada.")
+
+    def _record_legacy_migration_in_transaction(
+        self,
+        connection: Any,
+        *,
+        version: LegacyLicenseVersion,
+        legacy_key_hash: str,
+        machine_id: str,
+        customer_id: str,
+        license_id: str,
+        admin_user_id: str | None,
+    ) -> str:
+        migration_id = _id("MIG")
+        connection.execute(
+            """
+            INSERT INTO legacy_license_migrations(
+                migration_id, legacy_version, legacy_key_hash, machine_id,
+                customer_id, license_id, acknowledged_at, admin_user_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                migration_id,
+                version.value,
+                legacy_key_hash,
+                machine_id,
+                customer_id,
+                license_id,
+                utc_now_text(),
+                admin_user_id,
+            ),
+        )
+        self._audit(
+            connection,
+            "license.migrated_from_legacy",
+            "license",
+            license_id,
+            admin_user_id,
+            {"migration_id": migration_id, "legacy_version": version.value, "machine_id": machine_id},
+        )
+        return migration_id
 
     def bind_device(self, license_id: str, machine_id: str, *, admin_user_id: str | None = None) -> str:
         normalized_machine = machine_id.strip().upper()
@@ -637,6 +805,8 @@ class AdminLicenseService:
             row = self._license_row(connection, license_id)
             if row["status"] != "active":
                 raise InvalidTransitionError("Somente licenças ativas podem ser exportadas.")
+            if _parse_timestamp(row["expires_at"]) <= _utc():
+                raise InvalidTransitionError("Licenças expiradas não podem ser exportadas.")
             device = connection.execute(
                 "SELECT * FROM licensed_devices WHERE license_id = ? AND active = 1", (license_id,)
             ).fetchone()

@@ -150,6 +150,35 @@ class Phase5AdminLicensingTests(unittest.TestCase):
         with self.assertRaises(InvalidTransitionError):
             self.service.reactivate_license(license_id, "tentativa", admin_user_id=self.admin_id)
 
+    def test_licenca_expirada_nao_e_exportada_nem_auditada(self) -> None:
+        license_id = self.issue()
+        self.service.bind_device(
+            license_id,
+            "NXJ2-1111-2222-3333-4444",
+            admin_user_id=self.admin_id,
+        )
+        with self.database.transaction() as connection:
+            connection.execute(
+                "UPDATE licenses SET expires_at = '2020-01-01T00:00:00Z' WHERE license_id = ?",
+                (license_id,),
+            )
+        destination = self.root / "expirada.nxjlic"
+
+        with self.assertRaisesRegex(InvalidTransitionError, "expiradas"):
+            self.service.export_license(license_id, destination, admin_user_id=self.admin_id)
+
+        self.assertFalse(destination.exists())
+        with self.database.read() as connection:
+            exports = connection.execute(
+                "SELECT COUNT(*) FROM offline_exports WHERE license_id = ?",
+                (license_id,),
+            ).fetchone()[0]
+        self.assertEqual(exports, 0)
+        self.assertNotIn(
+            "license.exported",
+            [event["action"] for event in self.service.history("license", license_id)],
+        )
+
     def test_identificadores_e_historicos_sao_imutaveis_e_append_only(self) -> None:
         license_id = self.issue()
         self.service.suspend_license(license_id, "teste", admin_user_id=self.admin_id)
