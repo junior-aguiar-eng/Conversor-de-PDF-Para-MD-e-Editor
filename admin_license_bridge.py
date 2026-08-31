@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import base64
 import logging
+import os
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from cryptography.hazmat.primitives import serialization
 
 from admin_licensing import (
     ActiveEncryptedKeyProvider,
@@ -13,6 +18,7 @@ from admin_licensing import (
     EncryptedPrivateKeyProvider,
     EncryptedSigningKeyStore,
 )
+from license_key_config import LICENSE_PUBLIC_KEYS_B64
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +48,61 @@ class AdminLicenseBridge:
 
     def set_window(self, window: Any) -> None:
         self._window = window
+
+    def private_key_status(self) -> dict[str, Any]:
+        configured = bool(self.private_key_path and self.private_key_path.is_file())
+        return {
+            "ok": True,
+            "configured": configured,
+            "file_name": self.private_key_path.name if configured and self.private_key_path else None,
+        }
+
+    def configure_private_key(self, password: str) -> dict[str, Any]:
+        """Seleciona, valida e instala o PEM criptografado no perfil administrativo."""
+        if not self._window:
+            return {"ok": False, "error": "Janela administrativa indisponível."}
+        if self.private_key_path is None:
+            return {"ok": False, "error": "O destino gerenciado da chave privada não foi configurado."}
+        import webview
+
+        result = self._window.create_file_dialog(
+            webview.OPEN_DIALOG,
+            allow_multiple=False,
+            file_types=("Chave privada criptografada (*.pem)",),
+        )
+        if not result:
+            return {"ok": False, "cancelled": True, "error": "Seleção cancelada."}
+        selected_value = result[0] if isinstance(result, (tuple, list)) else result
+        selected = Path(selected_value).expanduser().resolve()
+
+        def operation() -> dict[str, Any]:
+            if not selected.is_file() or selected.stat().st_size > 65_536:
+                raise ValueError("Selecione uma chave privada PEM válida de até 64 KB.")
+            private_key = EncryptedPrivateKeyProvider(selected, lambda: password)()
+            public_bytes = private_key.public_key().public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            )
+            expected = LICENSE_PUBLIC_KEYS_B64.get(self.service.key_id)
+            actual = base64.b64encode(public_bytes).decode("ascii")
+            if not expected or actual != expected:
+                raise ValueError("A chave selecionada não corresponde à chave pública incorporada ao Conversor.")
+
+            target = self.private_key_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+            )
+            os.close(descriptor)
+            temporary = Path(temporary_name)
+            try:
+                temporary.write_bytes(selected.read_bytes())
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+            return {"configured": True, "file_name": target.name}
+
+        return self._safe(operation)
 
     def dashboard(self) -> dict[str, Any]:
         return self._safe(lambda: self.service.dashboard())
@@ -221,6 +282,8 @@ class AdminLicenseBridge:
     def export_license(self, license_id: str, private_key_password: str = "") -> dict[str, Any]:
         if not self._window:
             return {"ok": False, "error": "Janela administrativa indisponível."}
+        if self.signing_key_store is None and (self.private_key_path is None or not self.private_key_path.is_file()):
+            return {"ok": False, "error": "Configure a chave privada criptografada antes de exportar licenças."}
         import webview
 
         result = self._window.create_file_dialog(

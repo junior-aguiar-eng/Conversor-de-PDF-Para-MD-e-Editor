@@ -57,21 +57,24 @@ Depois, `.\criar_atalho.ps1` cria um atalho com ícone na Área de Trabalho.
 O painel offline é distribuído por instalador privado separado. O launcher
 `.\abrir_admin_licencas.ps1` prioriza o executável autocontido e mantém o modo de
 desenvolvimento como fallback. A chave privada criptografada não integra o
-instalador: deve ficar em
-`%LOCALAPPDATA%\NexoJuris\LicencasAdmin\nexojuris_ed25519_private.pem` ou no caminho
-indicado por `NEXOJURIS_ADMIN_PRIVATE_KEY`. O banco permanece no mesmo perfil.
+instalador: na primeira execução, use **Configurar chave privada** para selecionar
+o PEM criptografado. O Admin valida a senha e a correspondência com a chave
+pública do Conversor antes de copiá-lo para
+`%LOCALAPPDATA%\NexoJuris\LicencasAdmin\nexojuris_ed25519_private.pem`. Também é
+possível indicar o caminho por `NEXOJURIS_ADMIN_PRIVATE_KEY`. O banco permanece
+no mesmo perfil.
 
 ## Conversão rápida ("Enviar para")
 
 Depois de gerar a release, execute `.\criar_atalho_envio_rapido.ps1` para adicionar "NexoJuris - Converter para Markdown" ao menu **Enviar para** do Windows Explorer (clique com o botão direito num ou mais PDFs). Esse modo converte direto para a pasta `PDFs Convertidos` da release e mostra um resumo em popup — sem abrir a janela principal.
 
-- **Licenciamento e Impressão Digital Evolved**: Ativações do software utilizam fingerprints e chaves Ed25519 versionadas. Licenças legadas v1 (`NXJ-` / `ACT2-01-`) permanecem 100% suportadas e operacionais, enquanto novas ativações utilizam o fingerprint estável v2 (`NXJ2-` / `ACT3-01-`). Instalações ativas são migradas transparentemente sem invalidar chaves prévias. O emissor administrativo `admin_keygen.py` gera e analisa ambas as versões.
+- **Licenciamento ACT4**: O cliente libera Conversor, Leitor e OCR somente após importar um arquivo `.nxjlic` ACT4 válido para o fingerprint `NXJ2`. Chaves ACT2/ACT3 permanecem verificáveis apenas pelo fluxo explícito de migração do Admin e não liberam o cliente.
 - **Aceite de Termos Versionado**: O aceite dos Termos de Uso é armazenado com a versão vigente (`CURRENT_TERMS_VERSION = "1.0"`). Alterações materiais na versão dos termos exigem reaceite formal do usuário.
 - **Modalidades de Salvamento de Edição**: Funções de edição de PDF (rotação de páginas, gravação de anotações e post-its nativos, e aplicação/remoção de proteção AES-256) oferecem duas opções de destino:
   - **Salvar no original**: Gera e valida uma nova cópia, mantém ao lado do documento um backup recuperável com o sufixo `.nexojuris-backup.pdf` e só então substitui o original atomicamente. Assinaturas digitais devem ser revalidadas após qualquer alteração.
   - **Salvar como cópia**: Grava as edições em um novo PDF escolhido por diálogo nativo, autorizado por identificador opaco, e o registra automaticamente no acervo de recursos do aplicativo.
 - **Limites Defensivos e Serviços Online**: Renderização, recortes e edições possuem orçamentos backend superiores aos controles da UI. Tradução e TTS longos são processados em blocos, sem truncamento silencioso, com prazo global, até três tentativas com backoff e circuit breaker independente por serviço. O estado operacional é exposto à interface; como os provedores externos não oferecem garantia contratual ao aplicativo, esses recursos permanecem inadequados para uso com prazo crítico.
-- **Build e Compatibilidade Administrativa**: O build possui implementação única com comandos históricos preservados. Chaves administrativas PEM podem ser criptografadas opcionalmente, sem invalidar PEMs ou licenças existentes.
+- **Build e Compatibilidade Administrativa**: O build possui implementação única com comandos históricos preservados. A exportação administrativa aceita somente chave privada PEM criptografada e compatível com a chave pública incorporada ao cliente.
 
 ## Observações
 

@@ -121,7 +121,7 @@ class LicensingUnitTests(IsolatedLicensingTestCase):
         self.assertFalse(verify_license_key(self.machine_id, key.replace("ACT2-01-", "ACT2-01--", 1)))
         self.assertFalse(verify_license_key(self.machine_id, key.replace("-", "--", 1)))
 
-    def test_activation_lifecycle_uses_only_temporary_storage(self) -> None:
+    def test_client_rejects_legacy_activation_and_remains_blocked(self) -> None:
         deactivate_software()
         self.assertEqual(is_software_activated(), (False, self.machine_id))
         self.assertFalse(activate_software("ACT2-01-INVALID")["ok"])
@@ -129,9 +129,10 @@ class LicensingUnitTests(IsolatedLicensingTestCase):
             require_software_activation()
 
         good_key = self.issue_key()
-        self.assertTrue(activate_software(good_key)["ok"])
-        self.assertEqual(is_software_activated(), (True, self.machine_id))
-        self.assertEqual(require_software_activation(), self.machine_id)
+        result = activate_software(good_key)
+        self.assertFalse(result["ok"])
+        self.assertIn("ACT4", result["error"])
+        self.assertEqual(is_software_activated(), (False, self.machine_id))
 
     def test_quick_convert_rejects_unlicensed_machine_before_converter(self) -> None:
         with (
@@ -186,8 +187,9 @@ class WebApiLicensingBridgeTests(IsolatedLicensingTestCase):
         self.assertEqual(info["machine_id"], self.machine_id)
 
         act_res = self.api.activate_software(self.issue_key())
-        self.assertTrue(act_res["ok"])
-        self.assertTrue(self.api.get_license_info()["is_activated"])
+        self.assertFalse(act_res["ok"])
+        self.assertIn("ACT4", act_res["error"])
+        self.assertFalse(self.api.get_license_info()["is_activated"])
 
     def test_bridge_rejects_conversion_before_side_effects_without_license(self) -> None:
         output_dir = Path(self.tmp_dir.name) / "must-not-exist"
@@ -203,14 +205,16 @@ class WebApiLicensingBridgeTests(IsolatedLicensingTestCase):
         self.assertFalse(self.api.is_converting)
         thread_class.assert_not_called()
 
-    def test_bridge_starts_conversion_after_valid_activation(self) -> None:
-        self.assertTrue(self.api.activate_software(self.issue_key())["ok"])
+    def test_bridge_starts_conversion_after_valid_act4_authorization(self) -> None:
         output_dir = Path(self.tmp_dir.name) / "licensed-output"
         source = Path(self.tmp_dir.name) / "documento.pdf"
         source.write_bytes(b"%PDF-1.4\n%%EOF")
         file_id = self.api._register_pdf(source, "test")["file_id"]
         directory_id = self.api._register_directory(output_dir, "test")["directory_id"]
-        with patch("web_api.threading.Thread") as thread_class:
+        with (
+            patch("web_api.require_software_activation", return_value=self.machine_id),
+            patch("web_api.threading.Thread") as thread_class,
+        ):
             result = self.api.start_conversion(
                 {"files": [{"file_id": file_id}], "output_directory_id": directory_id}
             )

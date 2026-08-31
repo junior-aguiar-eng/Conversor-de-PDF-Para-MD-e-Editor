@@ -36,6 +36,9 @@ class AuthorizedResourceRegistryTests(unittest.TestCase):
 
 class BridgeAuthorizationTests(unittest.TestCase):
     def setUp(self) -> None:
+        activation_patcher = patch("web_api.require_software_activation", return_value="NXJ-TEST")
+        activation_patcher.start()
+        self.addCleanup(activation_patcher.stop)
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         database = LibraryDatabase(Path(self.temp_dir.name) / "authorization.db")

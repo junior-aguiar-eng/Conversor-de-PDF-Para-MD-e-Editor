@@ -25,7 +25,7 @@ if ($env:NEXOJURIS_ADMIN_PRIVATE_KEY) {
 } elseif (Test-Path -LiteralPath $developmentPrivateKey -PathType Leaf) {
     $privateKey = $developmentPrivateKey
 } else {
-    throw "Instale a chave privada criptografada em $installedPrivateKey."
+    $privateKey = $installedPrivateKey
 }
 
 $securePassword = Read-Host "Senha administrativa" -AsSecureString

@@ -70,7 +70,7 @@
       state,
       badge: copy[0],
       headline: copy[1],
-      message: copy[2],
+      message: (info && info.message) || copy[2],
       warningLevel: level,
       tone,
       blocking: !info || !info.can_use_protected_features,

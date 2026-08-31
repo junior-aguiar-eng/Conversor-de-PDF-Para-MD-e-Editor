@@ -40,7 +40,6 @@ from license_core import (
     evaluate_act4,
     invalid_status,
     legacy_license_payload,
-    legacy_valid_status,
     unlicensed_status,
     verify_legacy_activation_key,
     verify_license,
@@ -48,6 +47,7 @@ from license_core import (
 from license_core import (
     require_feature as require_status_feature,
 )
+from license_key_config import LICENSE_MAIN_KEY_ID, LICENSE_PUBLIC_KEYS_B64
 from trusted_time import TemporalGuard, TemporalStateError
 
 logger = logging.getLogger(__name__)
@@ -55,8 +55,8 @@ logger = logging.getLogger(__name__)
 _LICENSE_DB_PATH = library_database_path()
 _LICENSE_BACKUP_PATH = license_backup_path()
 _LICENSE_TIME_STATE_PATH = license_time_state_path()
-_LICENSE_PUBLIC_KEY_B64 = "80WGyZ+9TwHmcKDPpjOncNZVVYgFHgNBl59aBK5Hpug="
-_ACT4_PUBLIC_KEYS_B64 = {"license-main-2026-01": _LICENSE_PUBLIC_KEY_B64}
+_LICENSE_PUBLIC_KEY_B64 = LICENSE_PUBLIC_KEYS_B64[LICENSE_MAIN_KEY_ID]
+_ACT4_PUBLIC_KEYS_B64 = dict(LICENSE_PUBLIC_KEYS_B64)
 
 
 class LicenseRequiredError(PermissionError):
@@ -487,19 +487,18 @@ def get_license_status(
 ) -> LicenseStatus:
     """Avalia centralmente licenças legadas e ACT4 sem efeitos protegidos."""
     v2_id = get_machine_fingerprint(2)
-    v1_id = get_machine_fingerprint(1)
     record = _get_stored_record()
 
     if record is None:
         return unlicensed_status(v2_id)
 
     if record.license_format == "legacy":
-        stored_mid, stored_key = record.machine_id, record.activation_key
-        if verify_license_key(stored_mid, stored_key) and stored_mid in (v2_id, v1_id):
-            return legacy_valid_status(v2_id)
-        if verify_license_key(v2_id, stored_key) or verify_license_key(v1_id, stored_key):
-            return legacy_valid_status(v2_id)
-        return invalid_status(v2_id, "A licença legada armazenada é inválida para este computador.")
+        return LicenseStatus(
+            state=LicenseState.INVALID,
+            machine_id=v2_id,
+            message="A licença ACT2/ACT3 precisa ser substituída por um arquivo ACT4.",
+            license_format="legacy",
+        )
 
     if record.license_format != "act4" or record.license_document is None:
         return invalid_status(v2_id, "O formato da licença armazenada é inválido.")
@@ -683,9 +682,8 @@ def activate_act4_license(document: bytes | str, *, now: datetime | None = None)
 
 
 def activate_software(activation_key: str) -> dict[str, Any]:
-    """Ativa um token ACT2/ACT3 ou importa um documento ACT4."""
+    """Mantém a entrada legada somente para orientar a migração para ACT4."""
     v2_id = get_machine_fingerprint_v2()
-    v1_id = get_machine_fingerprint_v1()
     if isinstance(activation_key, str) and activation_key.lstrip().startswith("{"):
         return activate_act4_license(activation_key)
     clean_key = (activation_key or "").strip().upper()
@@ -697,30 +695,9 @@ def activate_software(activation_key: str) -> dict[str, Any]:
             "machine_id": v2_id,
         }
 
-    target_id = None
-    if verify_license_key(v2_id, clean_key):
-        target_id = v2_id
-    elif verify_license_key(v1_id, clean_key):
-        target_id = v1_id
-
-    if target_id is None:
-        return {
-            "ok": False,
-            "error": "Chave de ativação inválida para este computador. Verifique o código e tente novamente.",
-            "machine_id": v2_id,
-        }
-
-    success = _save_license(target_id, clean_key)
-    if not success:
-        return {
-            "ok": False,
-            "error": "Não foi possível gravar a ativação no disco. Verifique as permissões de gravação.",
-            "machine_id": v2_id,
-        }
-
     return {
-        "ok": True,
-        "message": "NexoJuris ativado com sucesso! Acesso completo liberado.",
+        "ok": False,
+        "error": "Chaves ACT2/ACT3 não ativam esta versão. Importe o arquivo de licença ACT4 (.nxjlic).",
         "machine_id": v2_id,
     }
 

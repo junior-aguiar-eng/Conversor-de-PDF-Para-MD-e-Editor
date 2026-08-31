@@ -195,13 +195,14 @@ class Phase9ClientMigrationTests(unittest.TestCase):
         )
         return issue_license(payload, self.act4_private)
 
-    def test_atualizacao_preserva_act3_sem_exigir_servico_online(self) -> None:
-        self.assertTrue(licensing.activate_software(self.act3_key)["ok"])
+    def test_atualizacao_preserva_act3_apenas_para_migracao_e_bloqueia_uso(self) -> None:
+        self.assertTrue(licensing._save_license(self.machine_id, self.act3_key))
         with patch.object(licensing, "_configured_online_client", side_effect=AssertionError("consulta indevida")):
             status = licensing.get_license_status(now=datetime(2026, 9, 1, tzinfo=UTC))
-        self.assertEqual(status.state, LicenseState.VALID)
+        self.assertEqual(status.state, LicenseState.INVALID)
+        self.assertFalse(status.can_use_protected_features)
         self.assertEqual(status.license_format, "legacy")
-        self.assertEqual(status.validation_mode, "offline")
+        self.assertIn("ACT4", status.message)
         with closing(licensing.sqlite3.connect(self.database_path)) as connection:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(system_license)")}
             row = connection.execute(
@@ -211,7 +212,7 @@ class Phase9ClientMigrationTests(unittest.TestCase):
         self.assertEqual(row, (self.act3_key, "legacy"))
 
     def test_ativacao_act4_falha_sem_perder_act3_e_rollback_e_controlado(self) -> None:
-        self.assertTrue(licensing.activate_software(self.act3_key)["ok"])
+        self.assertTrue(licensing._save_license(self.machine_id, self.act3_key))
         document = self.act4_document()
         tampered = document.replace(b'"validation_mode":"offline"', b'"validation_mode":"hybrid"')
         self.assertFalse(licensing.activate_act4_license(tampered)["ok"])
@@ -225,6 +226,7 @@ class Phase9ClientMigrationTests(unittest.TestCase):
         self.assertTrue(restored["ok"])
         self.assertEqual(restored["license_format"], "legacy")
         self.assertEqual(licensing.get_license_status().license_format, "legacy")
+        self.assertFalse(licensing.get_license_status().can_use_protected_features)
         with closing(licensing.sqlite3.connect(self.database_path)) as connection:
             history = connection.execute(
                 "SELECT license_format, restored_at FROM system_license_history"

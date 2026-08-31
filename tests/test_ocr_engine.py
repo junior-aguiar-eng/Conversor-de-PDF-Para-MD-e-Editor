@@ -20,6 +20,9 @@ class OcrEngineTests(unittest.TestCase):
         activation_patcher = patch("ocr_engine.require_software_activation", return_value="NXJ-TEST")
         activation_patcher.start()
         self.addCleanup(activation_patcher.stop)
+        web_activation_patcher = patch("web_api.require_software_activation", return_value="NXJ-TEST")
+        web_activation_patcher.start()
+        self.addCleanup(web_activation_patcher.stop)
         test_db_path = Path(self.storage_dir.name) / "ocr_api_acervo.db"
         library_patcher = patch(
             "web_api.LibraryDatabase",

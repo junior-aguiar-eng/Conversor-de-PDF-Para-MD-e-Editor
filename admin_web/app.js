@@ -121,6 +121,35 @@ async function loadDashboard() {
   }
 }
 
+async function loadPrivateKeyStatus() {
+  const status = document.getElementById("privateKeyStatus");
+  try {
+    const result = await bridge("private_key_status");
+    status.textContent = result.configured ? "Chave configurada" : "Chave não configurada";
+    status.classList.toggle("ready", result.configured);
+    status.classList.toggle("missing", !result.configured);
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.add("missing");
+  }
+}
+
+async function configurePrivateKey() {
+  const password = window.prompt("Senha da chave privada criptografada:");
+  if (password === null) return;
+  const button = document.getElementById("configurePrivateKeyButton");
+  button.disabled = true;
+  try {
+    const result = await bridge("configure_private_key", password);
+    toast(`Chave configurada: ${result.file_name}.`);
+    await loadPrivateKeyStatus();
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function runSearch(query = ui.query, page = 1) {
   const normalized = String(query || "").trim();
   if (!normalized) {
@@ -351,6 +380,7 @@ function bindEvents() {
     void runSearch(document.getElementById("searchInput").value, 1);
   });
   document.getElementById("refreshDashboard").addEventListener("click", () => void loadDashboard());
+  document.getElementById("configurePrivateKeyButton").addEventListener("click", () => void configurePrivateKey());
   document.getElementById("newLicenseButton").addEventListener("click", () => {
     document.getElementById("newLicenseModal").classList.remove("hidden");
     document.querySelector('#newLicenseForm input[name="name"]').focus();
@@ -384,6 +414,7 @@ function bindEvents() {
 
 async function initialize() {
   bindEvents();
+  await loadPrivateKeyStatus();
   await loadDashboard();
   document.getElementById("searchInput").focus();
 }

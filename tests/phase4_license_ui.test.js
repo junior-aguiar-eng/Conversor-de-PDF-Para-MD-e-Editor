@@ -1,6 +1,8 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 const { presentation, warningLevel } = require("../web/license-ui.js");
 
@@ -63,4 +65,13 @@ test("modo totalmente offline não depende de rede", () => {
   const view = presentation(license("valid"));
   assert.equal(view.offlineRemaining, "Não exigida (modo offline)");
   assert.doesNotMatch(source, /\bfetch\s*\(|XMLHttpRequest|WebSocket/);
+});
+
+test("cliente oferece somente importação ACT4 e não entrada legada", () => {
+  const html = fs.readFileSync(path.resolve(__dirname, "../web/index.html"), "utf8");
+  const app = fs.readFileSync(path.resolve(__dirname, "../web/app.js"), "utf8");
+  assert.match(html, /Importar arquivo de licença \(\.nxjlic\)/);
+  assert.doesNotMatch(html, /inputActivationKey|btnSubmitActivation/);
+  assert.doesNotMatch(app, /submitActivation\(\)/);
+  assert.match(app, /if \(!this\.isActivated \|\| this\.presentation\?\.blocking\) return/);
 });

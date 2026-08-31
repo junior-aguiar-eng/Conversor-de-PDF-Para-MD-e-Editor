@@ -19,6 +19,11 @@ from web_api import BridgeApi
 
 
 class FunctionalPreservationBaselineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        activation_patcher = patch("web_api.require_software_activation", return_value="NXJ-TEST")
+        activation_patcher.start()
+        self.addCleanup(activation_patcher.stop)
+
     @staticmethod
     def _extract_javascript_function(source: str, name: str) -> str:
         start = source.index(f"function {name}(")

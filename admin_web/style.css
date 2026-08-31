@@ -22,6 +22,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
 .topbar { padding: 28px clamp(24px, 5vw, 72px); display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(11, 93, 59, .12); background: rgba(255, 255, 255, .78); backdrop-filter: blur(18px); position: sticky; top: 0; z-index: 20; }
 .topbar-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.key-status { padding: 7px 10px; border-radius: 999px; font-size: 11px; font-weight: 800; }
+.key-status.ready { color: #0b6440; background: #e1f4e9; }
+.key-status.missing { color: #8d2632; background: #fff0f1; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: 5px; font-family: Georgia, serif; font-size: clamp(25px, 3vw, 38px); }
 h2 { margin-bottom: 8px; font-size: 22px; }

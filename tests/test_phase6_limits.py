@@ -22,6 +22,12 @@ from web_api import MAX_PARALLEL_WORKERS, BridgeApi, _validate_annotation_payloa
 
 class Phase6DefensiveLimitsTests(unittest.TestCase):
     def setUp(self) -> None:
+        activation_patcher = patch("web_api.require_software_activation", return_value="NXJ-TEST")
+        activation_patcher.start()
+        self.addCleanup(activation_patcher.stop)
+        ocr_activation_patcher = patch("ocr_engine.require_software_activation", return_value="NXJ-TEST")
+        ocr_activation_patcher.start()
+        self.addCleanup(ocr_activation_patcher.stop)
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.root = Path(self.temp_dir.name)

@@ -527,7 +527,18 @@ async function run() {
   let environmentChecks = 0;
   windowObject.pywebview.api = {
     get_terms_acceptance_status: async () => { termsChecks += 1; return { accepted: true }; },
-    get_license_info: async () => { licenseChecks += 1; return { is_activated: true, machine_id: "NXJ-TEST" }; },
+    get_license_info: async () => {
+      licenseChecks += 1;
+      return {
+        is_activated: true,
+        can_use_protected_features: true,
+        state: "valid",
+        machine_id: "NXJ-TEST",
+        license_format: "act4",
+        validation_mode: "offline",
+        features: ["converter", "ocr", "reader"],
+      };
+    },
     get_app_info: async () => { infoChecks += 1; return { default_output_dir: "C:/saida", default_chunk_limit: 60000 }; },
     validate_environment: async () => { environmentChecks += 1; return { ok: true }; },
   };

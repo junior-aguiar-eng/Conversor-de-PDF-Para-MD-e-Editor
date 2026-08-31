@@ -55,3 +55,10 @@ test("formulários administrativos ignoram submissão duplicada", () => {
   assert.equal((script.match(/endFormSubmission\(form\)/g) || []).length, 3);
   assert.match(script, /form\.dataset\.submitting === "true"/);
 });
+
+test("chave privada pode ser configurada pela interface administrativa", () => {
+  assert.match(html, /id="configurePrivateKeyButton"/);
+  assert.match(html, /id="privateKeyStatus"/);
+  assert.match(script, /bridge\("configure_private_key", password\)/);
+  assert.match(script, /bridge\("private_key_status"\)/);
+});

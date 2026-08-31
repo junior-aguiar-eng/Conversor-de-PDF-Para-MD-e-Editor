@@ -1,5 +1,5 @@
 #define MyAppName "NexoJuris Licenças Admin"
-#define MyAppVersion "1.4.4"
+#define MyAppVersion "1.4.5"
 #define MyAppPublisher "NexoJuris"
 #define MyAppExeName "NexoJuris Licenças Admin.exe"
 

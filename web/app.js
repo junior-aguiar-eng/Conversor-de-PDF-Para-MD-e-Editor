@@ -33,7 +33,7 @@ const LICENSE_CHECK_TIMEOUT_MS = 10_000;
 
 const ALLOWED_DECLARATIVE_ACTIONS = new Set([
   "appLicense.closeModal", "appLicense.copyMachineId", "appLicense.exitApplication", "appLicense.importLicense", "appLicense.openModal",
-  "appLicense.submitActivation", "appLicense.verifyNow",
+  "appLicense.verifyNow",
   "appLibrary.relocateDocument", "appLibrary.removeDocument",
   "appManual.close", "appManual.exportDiagnostics", "appManual.filterContent", "appManual.open", "appManual.printManual",
   "appManual.scrollToChapter", "appManual.toggleViewMode",
@@ -4572,13 +4572,14 @@ class LicenseManager {
     if (modal) modal.classList.remove("hidden");
     const midInput = document.getElementById("activationMachineId");
     if (midInput && this.machineId) midInput.value = this.machineId;
-    const keyInput = document.getElementById("inputActivationKey");
-    const focusTarget = this.isActivated ? document.getElementById("btnVerifyLicense") : keyInput;
+    const focusTarget = this.isActivated
+      ? document.getElementById("btnVerifyLicense")
+      : document.getElementById("btnImportLicense");
     if (focusTarget) setTimeout(() => focusTarget.focus(), 60);
   }
 
   closeModal() {
-    if (!this.isActivated) return;
+    if (!this.isActivated || this.presentation?.blocking) return;
     const modal = document.getElementById("activationModal");
     if (modal) modal.classList.add("hidden");
   }
@@ -4667,63 +4668,6 @@ class LicenseManager {
     }
   }
 
-  async submitActivation() {
-    const keyInput = document.getElementById("inputActivationKey");
-    const key = (keyInput ? keyInput.value : "").trim().toUpperCase();
-    const alertBox = document.getElementById("activationAlertBox");
-    const btn = document.getElementById("btnSubmitActivation");
-
-    if (!key) {
-      if (alertBox) {
-        alertBox.className = "p-3 rounded-2xl text-xs font-semibold bg-rose-50 text-rose-800 border border-rose-200 animate-fadeIn";
-        alertBox.innerText = "Por favor, digite ou cole a Chave de Ativação.";
-        alertBox.classList.remove("hidden");
-      }
-      playBeep("error");
-      return;
-    }
-
-    if (btn) {
-      btn.disabled = true;
-      btn.innerHTML = `<span class="inline-block animate-spin mr-2">⏳</span> Validando Chave...`;
-    }
-
-    try {
-      const res = await window.pywebview.api.activate_software(key);
-      if (res.ok) {
-        playBeep("success");
-        this.showAlert(res.message || "NexoJuris ativado com sucesso.", "success");
-        await this.checkActivation();
-        setTimeout(() => {
-          const modal = document.getElementById("activationModal");
-          if (modal && this.isActivated && !this.presentation.openOnLaunch) modal.classList.add("hidden");
-          showToast("Licença ativada com sucesso.", "success");
-        }, 1200);
-      } else {
-        playBeep("error");
-        if (alertBox) {
-          alertBox.className = "p-3 rounded-2xl text-xs font-semibold bg-rose-50 text-rose-800 border border-rose-200 animate-fadeIn";
-          alertBox.innerText = res.error || "Chave de ativação inválida para este computador.";
-          alertBox.classList.remove("hidden");
-        }
-      }
-    } catch (err) {
-      playBeep("error");
-      if (alertBox) {
-        alertBox.className = "p-3 rounded-2xl text-xs font-semibold bg-rose-50 text-rose-800 border border-rose-200 animate-fadeIn";
-        alertBox.innerText = `Erro na ativação: ${err}`;
-        alertBox.classList.remove("hidden");
-      }
-    } finally {
-      if (btn) {
-        btn.disabled = false;
-        btn.innerHTML = `
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>
-          <span>Ativar NexoJuris Agora</span>
-        `;
-      }
-    }
-  }
 }
 
 class TermsManager {
