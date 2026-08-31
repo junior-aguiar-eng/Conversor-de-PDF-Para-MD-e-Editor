@@ -6,6 +6,7 @@
   "use strict";
 
   const STATE_COPY = Object.freeze({
+    check_failed: ["Falha na verificação", "Verificação indisponível", "Não foi possível consultar a licença local. Tente novamente ou encerre o aplicativo."],
     unlicensed: ["Não ativada", "Ativação necessária", "Importe uma licença ou informe uma chave válida para este computador."],
     valid: ["Válida", "Licença válida", "As funções licenciadas estão disponíveis."],
     expiring: ["Expira em breve", "Licença próxima da expiração", "Renove a licença antes da data de expiração para evitar bloqueio das funções protegidas."],
@@ -49,7 +50,7 @@
 
   function warningLevel(info) {
     const state = info.state || "invalid";
-    if (["unlicensed", "expired", "revoked", "suspended", "clock_tampered", "machine_mismatch", "invalid"].includes(state)) return "critical";
+    if (["check_failed", "unlicensed", "expired", "revoked", "suspended", "clock_tampered", "machine_mismatch", "invalid"].includes(state)) return "critical";
     if (state === "online_check_required") return "offline";
     if (state !== "expiring") return "normal";
     const days = Number(info.days_remaining);

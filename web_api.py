@@ -859,6 +859,17 @@ class BridgeApi:
             **status.to_mapping(),
         }
 
+    def exit_application(self) -> dict[str, Any]:
+        """Encerra a janela sem permitir acesso à interface atrás do bloqueio de licença."""
+        if not self._window:
+            return {"ok": False, "error": "Janela do aplicativo indisponível."}
+        if self.has_active_work():
+            return {"ok": False, "error": "Existe uma operação em andamento; use o fechamento normal da janela."}
+        if not self.shutdown_for_close(timeout_seconds=5.0):
+            return {"ok": False, "error": "O aplicativo ainda está finalizando uma operação local."}
+        self._window.destroy()
+        return {"ok": True}
+
     def activate_software(self, key: str) -> dict[str, Any]:
         """Processa a chave de ativação fornecida pelo usuário e desbloqueia o software."""
         result = lic_activate_software(key)

@@ -122,7 +122,7 @@ globalThis.__phase1 = {
   escapeHtml, safeSearchSnippetHtml, renderFileList, appendLog, onBridgeReady,
   initializeAfterTerms, state, SuperPdfController, LRUMemoryCache, GlobalSearchController, appLicense,
   appLibrary, appSearch, appTts, progressController, parseDeclarativeArgument, playBeep,
-  resolveDeclarativeAction,
+  resolveDeclarativeAction, withTimeout,
 };`;
 vm.runInContext(source, context, { filename: appPath });
 
@@ -536,6 +536,30 @@ async function run() {
   assert.equal(licenseChecks, 1);
   assert.equal(infoChecks, 1);
   assert.equal(environmentChecks, 1);
+
+  const activationModal = document.getElementById("activationModal");
+  activationModal.classList.remove("hidden");
+  api.appLicense.isActivated = true;
+  api.appLicense.closeModal();
+  assert.equal(activationModal.classList.contains("hidden"), true);
+
+  activationModal.classList.remove("hidden");
+  api.appLicense.isActivated = false;
+  api.appLicense.closeModal();
+  assert.equal(activationModal.classList.contains("hidden"), false);
+
+  windowObject.pywebview.api = {
+    get_license_info: async () => { throw new Error("bridge indisponível"); },
+  };
+  api.appLicense.machineId = "";
+  activationModal.classList.add("hidden");
+  await api.appLicense.checkActivation();
+  assert.equal(api.appLicense.checkFailed, true);
+  assert.equal(document.getElementById("licenseStateHeadline").textContent, "Verificação indisponível");
+  assert.equal(document.getElementById("activationMachineId").value, "Indisponível");
+  assert.equal(activationModal.classList.contains("hidden"), false);
+  assert.equal(document.getElementById("btnCloseLicense").classList.contains("hidden"), true);
+  assert.equal(document.getElementById("btnExitLicense").classList.contains("hidden"), false);
 
   process.stdout.write("phase1_frontend_ok\n");
 }

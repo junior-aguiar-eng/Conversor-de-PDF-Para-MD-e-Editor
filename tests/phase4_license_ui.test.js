@@ -18,6 +18,7 @@ function license(state, daysRemaining = 120, extra = {}) {
 
 test("cada estado possui linguagem específica e bloqueio coerente", () => {
   const expected = {
+    check_failed: "Verificação indisponível",
     unlicensed: "Ativação necessária",
     valid: "Licença válida",
     expiring: "Licença próxima da expiração",

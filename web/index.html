@@ -1264,6 +1264,10 @@
         </p>
       </div>
 
+      <button id="btnImportLicense" type="button" data-action="appLicense.importLicense()" class="w-full py-3 rounded-2xl font-bold text-xs bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition flex items-center justify-center gap-2">
+        <span>Importar arquivo de licença (.nxjlic)</span>
+      </button>
+
       <!-- Activation Key Input -->
       <div class="space-y-1.5">
         <label class="block text-xs font-bold text-slate-700">Chave de Ativação (Activation Key) *</label>
@@ -1280,6 +1284,10 @@
           <span>Ativar NexoJuris Agora</span>
         </button>
       </div>
+
+      <button id="btnExitLicense" type="button" data-action="appLicense.exitApplication()" class="hidden w-full py-3 rounded-2xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs transition items-center justify-center gap-2">
+        <span>Encerrar aplicativo</span>
+      </button>
 
     </div>
   </div>
@@ -1577,9 +1585,6 @@
         <p class="text-xs leading-relaxed text-slate-600">Escolha o que fazer com as anotações antes de abrir outro documento. Nada será apagado silenciosamente.</p>
       </div>
 
-      <button id="btnImportLicense" type="button" data-action="appLicense.importLicense()" class="w-full py-3 rounded-2xl font-bold text-xs bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition flex items-center justify-center gap-2">
-        <span>Importar arquivo de licença (.nxjlic)</span>
-      </button>
       <div class="rounded-2xl bg-slate-50 border border-slate-200 p-3 space-y-2 text-[11px]">
         <div><span class="font-bold text-slate-700">Documento atual:</span> <span id="documentSwitchCurrentPath" class="font-mono break-all text-slate-500"></span></div>
         <div><span class="font-bold text-slate-700">Próximo documento:</span> <span id="documentSwitchNextPath" class="font-mono break-all text-slate-500"></span></div>

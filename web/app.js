@@ -27,9 +27,12 @@ const state = {
 let bridgeInitializationPromise = null;
 let applicationInitializationPromise = null;
 let declarativeEventsInitialized = false;
+const BRIDGE_READY_TIMEOUT_MS = 15_000;
+const BRIDGE_POLL_INTERVAL_MS = 100;
+const LICENSE_CHECK_TIMEOUT_MS = 10_000;
 
 const ALLOWED_DECLARATIVE_ACTIONS = new Set([
-  "appLicense.closeModal", "appLicense.copyMachineId", "appLicense.importLicense", "appLicense.openModal",
+  "appLicense.closeModal", "appLicense.copyMachineId", "appLicense.exitApplication", "appLicense.importLicense", "appLicense.openModal",
   "appLicense.submitActivation", "appLicense.verifyNow",
   "appLibrary.relocateDocument", "appLibrary.removeDocument",
   "appManual.close", "appManual.exportDiagnostics", "appManual.filterContent", "appManual.open", "appManual.printManual",
@@ -158,17 +161,43 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 function waitForPyWebViewReady() {
-  if (window.pywebview && window.pywebview.api) {
-    void onBridgeReady();
-  } else {
-    window.addEventListener("pywebviewready", onBridgeReady, { once: true });
-    // Fallback polling de segurança
-    setTimeout(() => {
-      if (window.pywebview && window.pywebview.api) {
-        void onBridgeReady();
-      }
-    }, 500);
-  }
+  const startedAt = Date.now();
+  let timer = null;
+  let finished = false;
+
+  const cleanup = () => {
+    if (timer !== null) clearTimeout(timer);
+    window.removeEventListener?.("pywebviewready", checkBridge);
+  };
+  const checkBridge = () => {
+    if (finished) return;
+    if (window.pywebview && window.pywebview.api) {
+      finished = true;
+      cleanup();
+      void onBridgeReady();
+      return;
+    }
+    if (Date.now() - startedAt >= BRIDGE_READY_TIMEOUT_MS) {
+      finished = true;
+      cleanup();
+      appLicense.renderCheckFailure("A comunicação com o aplicativo não foi iniciada. Tente novamente ou encerre o aplicativo.");
+      return;
+    }
+    timer = setTimeout(checkBridge, BRIDGE_POLL_INTERVAL_MS);
+  };
+
+  window.addEventListener("pywebviewready", checkBridge);
+  checkBridge();
+}
+
+function withTimeout(operation, timeoutMs, message) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([Promise.resolve(operation), timeout]).finally(() => {
+    if (timer !== null) clearTimeout(timer);
+  });
 }
 
 function onBridgeReady() {
@@ -187,6 +216,7 @@ function onBridgeReady() {
         }
       } catch (error) {
         console.error("Erro ao verificar termos/inicializar Bridge API:", error);
+        appLicense.renderCheckFailure("Não foi possível iniciar a verificação da licença. Tente novamente ou encerre o aplicativo.");
       }
     })();
   }
@@ -4416,28 +4446,56 @@ class LicenseManager {
     this.machineId = "";
     this.info = null;
     this.presentation = null;
+    this.checkFailed = false;
   }
 
   async checkActivation() {
-    if (!window.pywebview || !window.pywebview.api) return;
+    if (!window.pywebview || !window.pywebview.api) {
+      this.renderCheckFailure("A comunicação com o aplicativo não está disponível. Tente novamente ou encerre o aplicativo.");
+      return;
+    }
     try {
-      const res = await window.pywebview.api.get_license_info();
-      if (res) {
-        this.info = res;
-        this.isActivated = !!res.is_activated;
-        this.machineId = res.machine_id || "";
-        this.renderStatus(res);
-        const modal = document.getElementById("activationModal");
-        if (this.presentation.openOnLaunch) {
-          if (modal) modal.classList.remove("hidden");
-        } else {
-          if (modal) modal.classList.add("hidden");
-          setTimeout(() => checkWelcomeGuide(), 150);
-        }
+      const res = await withTimeout(
+        window.pywebview.api.get_license_info(),
+        LICENSE_CHECK_TIMEOUT_MS,
+        "A verificação da licença excedeu o tempo limite.",
+      );
+      if (!res || typeof res !== "object") {
+        throw new Error("A verificação da licença retornou uma resposta inválida.");
+      }
+      this.checkFailed = false;
+      this.info = res;
+      this.isActivated = !!res.is_activated;
+      this.machineId = res.machine_id || "";
+      this.renderStatus(res);
+      const modal = document.getElementById("activationModal");
+      if (this.presentation.openOnLaunch) {
+        if (modal) modal.classList.remove("hidden");
+      } else {
+        if (modal) modal.classList.add("hidden");
+        setTimeout(() => checkWelcomeGuide(), 150);
       }
     } catch (err) {
       console.error("Erro ao verificar ativação:", err);
+      this.renderCheckFailure("Não foi possível concluir a verificação da licença. Tente novamente ou encerre o aplicativo.");
     }
+  }
+
+  renderCheckFailure(message) {
+    this.checkFailed = true;
+    this.isActivated = false;
+    this.info = {
+      state: "check_failed",
+      can_use_protected_features: false,
+      machine_id: this.machineId,
+      message,
+    };
+    this.renderStatus(this.info);
+    const machineInput = document.getElementById("activationMachineId");
+    if (machineInput && !this.machineId) machineInput.value = "Indisponível";
+    const modal = document.getElementById("activationModal");
+    if (modal) modal.classList.remove("hidden");
+    this.showAlert(message, "error");
   }
 
   renderStatus(info) {
@@ -4502,6 +4560,11 @@ class LicenseManager {
       closeButton.classList.toggle("hidden", view.blocking);
       closeButton.classList.toggle("flex", !view.blocking);
     }
+    const exitButton = document.getElementById("btnExitLicense");
+    if (exitButton) {
+      exitButton.classList.toggle("hidden", !view.blocking);
+      exitButton.classList.toggle("flex", view.blocking);
+    }
   }
 
   openModal() {
@@ -4518,6 +4581,19 @@ class LicenseManager {
     if (!this.isActivated) return;
     const modal = document.getElementById("activationModal");
     if (modal) modal.classList.add("hidden");
+  }
+
+  async exitApplication() {
+    const button = document.getElementById("btnExitLicense");
+    if (button) button.disabled = true;
+    try {
+      const result = await window.pywebview.api.exit_application();
+      if (!result?.ok) this.showAlert(result?.error || "Não foi possível encerrar o aplicativo.", "error");
+    } catch (error) {
+      this.showAlert(`Não foi possível encerrar o aplicativo: ${error}`, "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   async copyMachineId() {
@@ -4551,7 +4627,12 @@ class LicenseManager {
     const button = document.getElementById("btnVerifyLicense");
     if (button) button.disabled = true;
     try {
-      const result = await window.pywebview.api.verify_license_now();
+      const result = await withTimeout(
+        window.pywebview.api.verify_license_now(),
+        LICENSE_CHECK_TIMEOUT_MS,
+        "A verificação da licença excedeu o tempo limite.",
+      );
+      this.checkFailed = false;
       this.info = result;
       this.isActivated = !!result.can_use_protected_features;
       this.machineId = result.machine_id || this.machineId;

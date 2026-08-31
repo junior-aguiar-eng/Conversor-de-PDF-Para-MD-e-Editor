@@ -60,6 +60,16 @@ class Phase4LicenseBridgeTests(unittest.TestCase):
         self.assertIn("prazo de uso offline", result["message"])
         self.assertEqual(result["days_remaining"], 80)
 
+    def test_encerramento_pelo_bloqueio_nao_libera_a_interface(self) -> None:
+        with (
+            patch.object(self.api, "has_active_work", return_value=False),
+            patch.object(self.api, "shutdown_for_close", return_value=True),
+        ):
+            result = self.api.exit_application()
+
+        self.assertTrue(result["ok"])
+        self.api._window.destroy.assert_called_once_with()
+
 
 class Phase4LicenseMarkupTests(unittest.TestCase):
     @classmethod
@@ -77,8 +87,21 @@ class Phase4LicenseMarkupTests(unittest.TestCase):
     def test_acoes_obrigatorias_estao_disponiveis_sem_recurso_externo(self) -> None:
         self.assertIn("Verificar licença agora", self.html)
         self.assertIn("Importar arquivo de licença (.nxjlic)", self.html)
+        self.assertIn("Encerrar aplicativo", self.html)
         self.assertIn("appLicense.copyMachineId()", self.html)
         self.assertLess(self.html.index('src="license-ui.js"'), self.html.index('src="app.js"'))
+
+    def test_importacao_pertence_ao_dialogo_de_licenca(self) -> None:
+        license_start = self.html.index('id="activationModal"')
+        license_end = self.html.index('id="welcomeModal"')
+        import_button = self.html.index('id="btnImportLicense"')
+        self.assertLess(license_start, import_button)
+        self.assertLess(import_button, license_end)
+
+    def test_bloqueio_oferece_encerramento_sem_liberar_interface(self) -> None:
+        self.assertIn('id="btnCloseLicense"', self.html)
+        self.assertIn('id="btnExitLicense"', self.html)
+        self.assertIn('data-action="appLicense.exitApplication()"', self.html)
 
 
 if __name__ == "__main__":
