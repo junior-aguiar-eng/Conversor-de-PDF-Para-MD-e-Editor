@@ -43,7 +43,10 @@ Para reconstruir o ambiente e remover dependências antigas, com o aplicativo fe
 
 Para criar a versão executável autônoma em pasta, execute `.\build_release.ps1`. Esse é o fluxo oficial: ele chama o wrapper compatível `build_app.py`, reutiliza a implementação única em `build_support.py` e executa o PyInstaller fixado pelo lock com `uv --frozen`. O comando funciona mesmo quando chamado a partir de outro diretório.
 
-O resultado fica em `release/dist/NexoJuris Conversor/`. O executável principal fica em `release/dist/NexoJuris Conversor/NexoJuris Conversor.exe`.
+O resultado contém duas distribuições separadas: o Conversor em
+`release/dist/NexoJuris Conversor/` e o Admin privado em
+`release/dist/NexoJuris Licenças Admin/`. Nenhuma chave privada é incorporada
+ao pacote administrativo.
 
 O CI possui um job em `windows-2025` que recompila o artefato e executa `scripts/windows_release_gate.ps1`. O gate roda o executável empacotado, valida runtime/WebView2 e `multiprocessing` com `spawn`, mantém a interface ativa por 60 segundos, verifica memória, bloqueio do executável em uso e arquivo NTFS somente leitura, e simula instalação limpa, atualização e desinstalação preservando os dados do perfil. O relatório JSON e a release aprovada são publicados como artefatos. A assinatura Authenticode é sempre inspecionada; para torná-la impeditiva, configure os secrets `WINDOWS_SIGNING_REQUIRED=true`, `WINDOWS_SIGNING_CERTIFICATE_BASE64` e `WINDOWS_SIGNING_CERTIFICATE_PASSWORD`. Esse gate cobre a distribuição PyInstaller atual; o futuro pacote MSIX/Microsoft Store deverá ter um gate próprio.
 
@@ -51,11 +54,12 @@ Depois, `.\criar_atalho.ps1` cria um atalho com ícone na Área de Trabalho.
 
 ## Administração local de licenças
 
-O painel offline é iniciado por `.\abrir_admin_licencas.ps1`. O launcher solicita
-a senha administrativa sem gravá-la, abre `license_admin_app.py` no ambiente
-`local` e mantém o banco em `%LOCALAPPDATA%\NexoJuris\LicencasAdmin`. Os ambientes
-`test` e `production` continuam isolados; produção permanece condicionada ao
-chaveiro criptografado próprio.
+O painel offline é distribuído por instalador privado separado. O launcher
+`.\abrir_admin_licencas.ps1` prioriza o executável autocontido e mantém o modo de
+desenvolvimento como fallback. A chave privada criptografada não integra o
+instalador: deve ficar em
+`%LOCALAPPDATA%\NexoJuris\LicencasAdmin\nexojuris_ed25519_private.pem` ou no caminho
+indicado por `NEXOJURIS_ADMIN_PRIVATE_KEY`. O banco permanece no mesmo perfil.
 
 ## Conversão rápida ("Enviar para")
 

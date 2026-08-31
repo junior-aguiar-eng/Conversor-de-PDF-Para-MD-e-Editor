@@ -25,7 +25,8 @@ function Invoke-Silent {
 }
 
 $resolvedInstaller = (Resolve-Path -LiteralPath $Installer).Path
-$tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+$localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+$tempBase = [IO.Path]::GetFullPath((Join-Path $localAppData "Temp")).TrimEnd('\')
 $testRoot = Join-Path $tempBase ("NexoJuris-InstallerGate-" + [guid]::NewGuid().ToString("N"))
 Assert-ChildPath -Path $testRoot -Root $tempBase
 $installRoot = Join-Path $testRoot "app"

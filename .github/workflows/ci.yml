@@ -95,6 +95,8 @@ jobs:
             if (-not $signTool) { throw "SignTool não encontrado no runner Windows." }
             & $signTool.FullName sign /fd SHA256 /f $pfx /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD "release\dist\NexoJuris Conversor\NexoJuris Conversor.exe"
             if ($LASTEXITCODE -ne 0) { throw "Assinatura Authenticode falhou." }
+            & $signTool.FullName sign /fd SHA256 /f $pfx /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD "release\dist\NexoJuris Licenças Admin\NexoJuris Licenças Admin.exe"
+            if ($LASTEXITCODE -ne 0) { throw "Assinatura Authenticode do Admin falhou." }
           } finally {
             Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
           }
@@ -125,5 +127,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: nexojuris-windows-release
-          path: release/dist/NexoJuris Conversor
+          path: |
+            release/dist/NexoJuris Conversor
+            release/dist/NexoJuris Licenças Admin
           if-no-files-found: error

@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $project = $PSScriptRoot
-Stop-Process -Name "NexoJuris Conversor", "Boni Conversor PDF Markdown" -Force -ErrorAction SilentlyContinue
+Stop-Process -Name "NexoJuris Conversor", "NexoJuris Licenças Admin", "Boni Conversor PDF Markdown" -Force -ErrorAction SilentlyContinue
 
 Push-Location $project
 try {

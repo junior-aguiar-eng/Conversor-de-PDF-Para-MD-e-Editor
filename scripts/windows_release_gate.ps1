@@ -39,7 +39,8 @@ if (-not (Test-Path -LiteralPath $sourceExecutable -PathType Leaf)) {
     throw "Executável não encontrado em $sourceExecutable"
 }
 
-$tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+$localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+$tempBase = [IO.Path]::GetFullPath((Join-Path $localAppData "Temp")).TrimEnd('\')
 $testRoot = Join-Path $tempBase ("NexoJuris-WindowsGate-" + [guid]::NewGuid().ToString("N"))
 Assert-ChildPath -Path $testRoot -Root $tempBase
 $installRoot = Join-Path $testRoot "installed"

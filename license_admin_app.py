@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import os
+import sqlite3
 from pathlib import Path
 
 from admin_license_bridge import AdminLicenseBridge
@@ -25,10 +27,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--database", type=Path, default=DEFAULT_ADMIN_ROOT / "licencas-admin.db")
     parser.add_argument("--private-key", type=Path, default=ROOT / ".secrets" / "nexojuris_ed25519_private.pem")
     parser.add_argument("--key-id", default="license-main-2026-01")
-    parser.add_argument("--environment", choices=("local", "test", "production"), required=True)
+    parser.add_argument("--environment", choices=("local", "test", "production"))
     parser.add_argument("--key-store", type=Path)
     parser.add_argument("--admin-password-env", default="NEXOJURIS_ADMIN_PASSWORD")
-    return parser.parse_args()
+    parser.add_argument("--release-probe", type=Path)
+    arguments = parser.parse_args()
+    if not arguments.release_probe and not arguments.environment:
+        parser.error("--environment é obrigatório fora do probe de release")
+    return arguments
 
 
 def _unavailable_key() -> None:
@@ -42,10 +48,33 @@ def _required_secret(variable: str) -> str:
     return value
 
 
+def _write_release_probe(target: Path) -> None:
+    import webview
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private_key = Ed25519PrivateKey.generate()
+    signature = private_key.sign(b"nexojuris-admin-probe")
+    private_key.public_key().verify(signature, b"nexojuris-admin-probe")
+    with sqlite3.connect(":memory:") as connection:
+        sqlite_ok = connection.execute("SELECT 1").fetchone() == (1,)
+    checks = {
+        "admin_web_assets": all((ROOT / "admin_web" / name).is_file() for name in ("index.html", "app.js", "style.css")),
+        "cryptography": True,
+        "private_key_not_bundled": not (ROOT / ".secrets").exists(),
+        "pywebview": callable(webview.create_window),
+        "sqlite": sqlite_ok,
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({"ok": all(checks.values()), "checks": checks}, indent=2), encoding="utf-8")
+
+
 def main() -> None:
     import webview
 
     arguments = parse_args()
+    if arguments.release_probe:
+        _write_release_probe(arguments.release_probe)
+        return
     database = AdminDatabase(arguments.database, environment=arguments.environment)
     with database.read() as connection:
         admin = connection.execute(

@@ -1,10 +1,10 @@
-#define MyAppName "NexoJuris Conversor"
+#define MyAppName "NexoJuris Licenças Admin"
 #define MyAppVersion "1.4.4"
 #define MyAppPublisher "NexoJuris"
-#define MyAppExeName "NexoJuris Conversor.exe"
+#define MyAppExeName "NexoJuris Licenças Admin.exe"
 
 [Setup]
-AppId={{D3EFD865-4B37-41DB-97FB-A0DB6607E863}
+AppId={{B718D66B-5076-4A3C-BC6D-C75130396D02}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
@@ -16,7 +16,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\release\packages
-OutputBaseFilename=NexoJuris-Conversor-Setup-v{#MyAppVersion}
+OutputBaseFilename=NexoJuris-Licencas-Admin-Setup-v{#MyAppVersion}
 SetupIconFile=..\assets\nexojuris.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
@@ -26,7 +26,7 @@ CloseApplications=force
 RestartApplications=no
 VersionInfoVersion={#MyAppVersion}.0
 VersionInfoCompany={#MyAppPublisher}
-VersionInfoDescription=Instalador do {#MyAppName}
+VersionInfoDescription=Instalador privado do {#MyAppName}
 VersionInfoProductName={#MyAppName}
 VersionInfoProductVersion={#MyAppVersion}
 VersionInfoCopyright=Copyright (C) 2026 {#MyAppPublisher}
@@ -34,18 +34,12 @@ VersionInfoCopyright=Copyright (C) 2026 {#MyAppPublisher}
 [Languages]
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 
-[Tasks]
-Name: "desktopicon"; Description: "Criar atalho na área de trabalho"; GroupDescription: "Atalhos adicionais:"; Flags: unchecked
-
 [Files]
-Source: "..\release\dist\NexoJuris Conversor\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\release\dist\NexoJuris Licenças Admin\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\abrir_admin_licencas.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
-
-[Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Executar {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Name: "{group}\{#MyAppName}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\abrir_admin_licencas.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"
 
 [UninstallDelete]
-Type: dirifempty; Name: "{app}\PDFs Convertidos"
+Type: dirifempty; Name: "{app}"
