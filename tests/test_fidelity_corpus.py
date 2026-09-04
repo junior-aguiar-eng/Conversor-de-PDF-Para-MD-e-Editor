@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from fidelity_corpus import evaluate_corpus, load_manifest
+from fidelity_corpus import _find_anchor, evaluate_corpus, load_manifest
 from text_fidelity import assess_page_fidelity
 
 
@@ -40,6 +40,19 @@ class FidelityDetectorTests(unittest.TestCase):
 
 
 class RealFidelityCorpusTests(unittest.TestCase):
+    def test_ocr_anchor_tolerates_one_substitution_in_a_long_word(self) -> None:
+        markdown = "um dever constitucional de protegao a maternidade e a crianga"
+        normalized = " ".join(markdown.casefold().split())
+
+        position = _find_anchor(
+            normalized,
+            "protecao a maternidade",
+            cursor=0,
+            tolerate_ocr_noise=True,
+        )
+
+        self.assertGreaterEqual(position, 0)
+
     def test_manifest_has_official_provenance_and_distinct_hashes(self) -> None:
         cases = load_manifest()["cases"]
         self.assertEqual(len(cases), 4)

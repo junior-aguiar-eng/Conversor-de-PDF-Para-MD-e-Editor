@@ -85,12 +85,7 @@ from licensing import (
     LicenseRequiredError,
     activate_act4_license,
     get_license_status,
-    online_refresh_is_due,
-    refresh_online_license,
     require_software_activation,
-)
-from licensing import (
-    activate_software as lic_activate_software,
 )
 from markdown_utils import HeadingProfile, SplitMode, reserve_batch_output_paths
 from models import ConversionFailure, ConversionResult, OutputReservation, format_duration
@@ -857,14 +852,8 @@ class BridgeApi:
     def get_license_info(self) -> dict[str, Any]:
         """Retorna o estado completo, preservando o booleano consumido pela UI atual."""
         status = get_license_status()
-        online_result = None
-        if online_refresh_is_due(status):
-            online_result = refresh_online_license()
-            status = get_license_status()
         return {
             "is_activated": status.allows("converter"),
-            "online_attempted": online_result is not None,
-            "online_error_code": online_result.get("error_code") if online_result else None,
             **status.to_mapping(),
         }
 
@@ -878,13 +867,6 @@ class BridgeApi:
             return {"ok": False, "error": "O aplicativo ainda está finalizando uma operação local."}
         self._window.destroy()
         return {"ok": True}
-
-    def activate_software(self, key: str) -> dict[str, Any]:
-        """Processa a chave de ativação fornecida pelo usuário e desbloqueia o software."""
-        result = lic_activate_software(key)
-        if result["ok"]:
-            self._emit("toast", {"type": "success", "message": result["message"]})
-        return result
 
     def import_license_file(self) -> dict[str, Any]:
         """Seleciona e importa uma licença ACT4 sem expor o caminho ao renderer."""
@@ -917,39 +899,12 @@ class BridgeApi:
             return {"ok": False, "error": "Falha inesperada ao importar a licença selecionada."}
 
     def verify_license_now(self) -> dict[str, Any]:
-        """Refaz a verificação local e tenta renovar o lease quando o serviço está configurado."""
-        online_result = refresh_online_license()
+        """Refaz localmente a verificação da licença armazenada."""
         status = get_license_status()
-        if online_result.get("ok"):
-            return {
-                **status.to_mapping(),
-                "ok": status.can_use_protected_features,
-                "online_attempted": True,
-                "message": status.message,
-            }
-        error_code = online_result.get("error_code")
-        if error_code not in {"service_not_configured", "act4_required"}:
-            return {
-                **status.to_mapping(),
-                "ok": status.can_use_protected_features,
-                "online_attempted": True,
-                "service_error": error_code,
-                "message": online_result.get("error", status.message),
-            }
-        if status.state == LicenseState.ONLINE_CHECK_REQUIRED:
-            message = (
-                "A licença local foi verificada, mas é necessário conectar-se à internet "
-                "para renovar o prazo de uso offline."
-            )
-        elif status.can_use_protected_features:
-            message = "Licença verificada neste computador."
-        else:
-            message = status.message
         return {
             **status.to_mapping(),
             "ok": status.can_use_protected_features,
-            "online_attempted": False,
-            "message": message,
+            "message": "Licença verificada neste computador." if status.can_use_protected_features else status.message,
         }
 
     def validate_environment(self) -> dict[str, Any]:
@@ -1512,9 +1467,23 @@ class BridgeApi:
         try:
             os.startfile(path)  # type: ignore[attr-defined]
             return True
-        except OSError as error:
-            self._emit("toast", {"type": "error", "message": f"Erro ao abrir arquivo: {error}"})
-            return False
+        except OSError as association_error:
+            try:
+                subprocess.Popen(["notepad.exe", str(path)])
+                self._emit(
+                    "toast",
+                    {"type": "info", "message": "Markdown aberto no Bloco de Notas (sem aplicativo padrão associado)."},
+                )
+                return True
+            except OSError as fallback_error:
+                self._emit(
+                    "toast",
+                    {
+                        "type": "error",
+                        "message": f"Erro ao abrir arquivo: {association_error}; alternativa indisponível: {fallback_error}",
+                    },
+                )
+                return False
 
     def get_recent_markdowns(self) -> dict[str, Any]:
         try:

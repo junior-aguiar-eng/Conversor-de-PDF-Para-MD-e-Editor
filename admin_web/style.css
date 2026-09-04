@@ -56,8 +56,18 @@ code { padding: 2px 5px; border-radius: 5px; background: #e8efeb; }
 .activity-list time { color: var(--muted); white-space: nowrap; }
 .count-badge, .status { display: inline-flex; align-items: center; padding: 5px 9px; border-radius: 999px; background: #e9f1ed; color: #345747; font-size: 11px; font-weight: 800; }
 .status.active { color: #0b6440; background: #e1f4e9; }
-.status.expired, .status.revoked { color: #972a38; background: #fae9eb; }
-.status.suspended { color: #805a17; background: #f8efd9; }
+.status.expired { color: #972a38; background: #fae9eb; }
+.status.expiring { color: #805a17; background: #f8efd9; }
+.status.valid { color: #176747; background: #e4f5ed; }
+
+.quick-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
+@media (max-width: 760px) { .quick-actions { grid-template-columns: 1fr 1fr; } }
+.wizard-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 0; margin: 18px 0; list-style: none; }
+.wizard-steps li { padding: 10px; border-bottom: 2px solid #d8d8d2; color: #72726d; }
+.wizard-steps li.active { border-color: #176747; color: #176747; font-weight: 700; }
+.wizard-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.wizard-panel.hidden { display: none; }
+.wizard-actions { display: flex; justify-content: flex-end; gap: 10px; }
 .result-list { display: grid; gap: 9px; }
 .result-card { padding: 16px; display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; }
 .result-card button { border: 0; background: transparent; text-align: left; color: inherit; }

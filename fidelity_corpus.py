@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import tempfile
 import unicodedata
 from pathlib import Path
@@ -27,6 +28,31 @@ def _anchor_normalized(value: str, *, accent_insensitive: bool) -> str:
             character for character in unicodedata.normalize("NFD", normalized) if not unicodedata.combining(character)
         )
     return normalized
+
+
+def _find_anchor(text: str, anchor: str, *, cursor: int, tolerate_ocr_noise: bool) -> int:
+    position = text.find(anchor, cursor)
+    if position >= 0 or not tolerate_ocr_noise:
+        return position
+
+    expected = anchor.split()
+    tokens = list(re.finditer(r"\w+", text[cursor:], flags=re.UNICODE))
+    for start in range(len(tokens) - len(expected) + 1):
+        substitutions = 0
+        for actual_match, expected_token in zip(tokens[start : start + len(expected)], expected, strict=True):
+            actual_token = actual_match.group(0)
+            if actual_token == expected_token:
+                continue
+            if len(expected_token) < 5 or len(actual_token) != len(expected_token):
+                break
+            if sum(left != right for left, right in zip(actual_token, expected_token, strict=True)) != 1:
+                break
+            substitutions += 1
+            if substitutions > 1:
+                break
+        else:
+            return cursor + tokens[start].start()
+    return -1
 
 
 def load_manifest(path: Path = MANIFEST_PATH) -> dict[str, Any]:
@@ -58,7 +84,12 @@ def _evaluate_case(case: dict[str, Any], output_root: Path, converter: PdfMarkdo
     missing_anchors: list[str] = []
     for anchor in case["ordered_anchors"]:
         normalized_anchor = _anchor_normalized(str(anchor), accent_insensitive=accent_insensitive)
-        position = normalized.find(normalized_anchor, cursor)
+        position = _find_anchor(
+            normalized,
+            normalized_anchor,
+            cursor=cursor,
+            tolerate_ocr_noise=accent_insensitive,
+        )
         if position < 0:
             missing_anchors.append(str(anchor))
         else:

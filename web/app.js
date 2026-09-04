@@ -4511,8 +4511,8 @@ class LicenseManager {
       licenseStateMessage: view.message,
       licenseExpiresAt: view.expiration,
       licenseDaysRemaining: view.daysRemaining,
-      licenseOfflineRemaining: view.offlineRemaining,
-      licenseLastOnline: view.lastOnlineValidation,
+      licenseIdentifier: view.licenseId,
+      licenseRevision: view.revision,
     };
     Object.entries(values).forEach(([id, value]) => {
       const element = document.getElementById(id);
@@ -4941,7 +4941,7 @@ Escolha voz feminina ou masculina. Ao trocar a voz, o áudio é gerado novamente
 Documentos abertos ou convertidos podem integrar o índice local. A busca retorna trechos correspondentes e destaca os termos encontrados.
 
 ## Capítulo 6: Proteção, senhas e licenciamento
-O aplicativo pode abrir PDFs protegidos mediante senha e criar novas cópias protegidas. A senha permanece apenas durante a sessão necessária. O licenciamento é validado localmente e vinculado ao computador autorizado; uma troca relevante de equipamento pode exigir nova ativação.`;
+O aplicativo pode abrir PDFs protegidos mediante senha e criar novas cópias protegidas. A senha permanece apenas durante a sessão necessária. O licenciamento é validado localmente e vinculado ao computador autorizado; na troca de equipamento, o administrador emite uma nova revisão da mesma licença, preservando sua identificação e seu prazo.`;
   }
 }
 

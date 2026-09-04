@@ -51,9 +51,7 @@ EXCLUDED_EXTENSIONS = {
 }
 
 
-EXCLUDED_FILES = {
-    "admin_keygen.py",
-}
+EXCLUDED_FILES: set[str] = set()
 
 
 def should_include_file(file_path: Path) -> bool:

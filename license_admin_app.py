@@ -107,8 +107,9 @@ def main() -> None:
                 "SELECT username, password_hash FROM admin_users WHERE admin_user_id = ?", (admin_user_id,)
             ).fetchone()
         if not admin_row["password_hash"]:
-            service.set_admin_password(admin_user_id, admin_password, acting_admin_user_id=admin_user_id)
-        service.authenticate_admin(str(admin_row["username"]), admin_password)
+            service.set_admin_password(admin_user_id, admin_password)
+        if not service.authenticate_admin(str(admin_row["username"]), admin_password):
+            raise PermissionError("Senha administrativa inválida.")
     else:
         admin_user_id = service.create_admin_user(
             getpass.getuser(), getpass.getuser(), role="owner", password=admin_password

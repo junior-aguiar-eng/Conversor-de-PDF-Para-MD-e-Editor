@@ -9,6 +9,7 @@ import shutil
 import tempfile
 import time
 import traceback
+import uuid
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -137,13 +138,23 @@ def _directory_usage(directory: Path) -> tuple[int, int]:
 
 def _atomic_write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("w", encoding="utf-8", newline="\n") as stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        for attempt in range(8):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                # OneDrive, antivírus e indexadores podem manter o destino aberto
+                # por alguns milissegundos. O arquivo temporário continua íntegro,
+                # portanto repetir apenas a promoção preserva a atomicidade.
+                time.sleep(0.05 * (attempt + 1))
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -519,7 +530,10 @@ class PdfMarkdownConverter:
                 f"A conversão excedeu o limite de memória de {MAX_CONVERSION_MEMORY_BYTES // (1024 * 1024)} MB."
             )
         required = required_free_disk_bytes(source_size)
-        free = shutil.disk_usage(output_dir).free
+        disk_probe = output_dir
+        while not disk_probe.exists() and disk_probe != disk_probe.parent:
+            disk_probe = disk_probe.parent
+        free = shutil.disk_usage(disk_probe).free
         if free < required:
             raise ResourceBudgetExceeded(
                 "Espaço livre insuficiente no destino: "

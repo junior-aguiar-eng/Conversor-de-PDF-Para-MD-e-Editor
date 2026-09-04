@@ -21,12 +21,12 @@ def parse_args() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     initialize = subparsers.add_parser("initialize")
-    initialize.add_argument("--purpose", choices=("license", "lease"), required=True)
+    initialize.add_argument("--purpose", choices=("license",), required=True)
     initialize.add_argument("--key-id", required=True)
     initialize.add_argument("--password-env", required=True)
 
     rotate = subparsers.add_parser("rotate")
-    rotate.add_argument("--purpose", choices=("license", "lease"), required=True)
+    rotate.add_argument("--purpose", choices=("license",), required=True)
     rotate.add_argument("--key-id", required=True)
     rotate.add_argument("--password-env", required=True)
     rotate.add_argument("--confirmation", required=True)
@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     restore_database.add_argument("--confirmation", required=True)
 
     public_keys = subparsers.add_parser("export-public-keys")
-    public_keys.add_argument("--purpose", choices=("license", "lease"), required=True)
+    public_keys.add_argument("--purpose", choices=("license",), required=True)
     public_keys.add_argument("--destination", type=Path, required=True)
     return parser.parse_args()
 

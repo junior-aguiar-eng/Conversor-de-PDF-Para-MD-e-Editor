@@ -1,24 +1,25 @@
 from __future__ import annotations
 
+import base64
+import json
 import sqlite3
 import tempfile
 import unittest
-from datetime import UTC, datetime
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
+import admin_licensing.security as security_module
 from admin_licensing import (
     ActiveEncryptedKeyProvider,
     AdminDatabase,
     AdminLicenseService,
     EncryptedSigningKeyStore,
     OperationalSecurityError,
-    generate_totp_secret,
-    totp_code,
 )
 from license_core import PublicKeyRing, verify_license
-from license_service.api import LicenseServiceApi
 
 
 class Phase10KeySecurityTests(unittest.TestCase):
@@ -95,14 +96,85 @@ class Phase10KeySecurityTests(unittest.TestCase):
                 confirmation="RESTAURAR-CHAVES:test",
             )
 
+    def test_backup_offline_rejeita_arquivo_extra_fora_do_chaveiro_sem_escrita_parcial(self) -> None:
+        source = EncryptedSigningKeyStore(self.root / "source", environment="production")
+        source.generate("license-prod-202609-a", self.password, purpose="license")
+        backup = source.export_offline_backup(self.root / "offline.nxjkeys", self.backup_password)
+
+        encoded = backup.read_bytes()
+        offset = len(security_module._BACKUP_MAGIC)
+        salt = encoded[offset : offset + 16]
+        nonce = encoded[offset + 16 : offset + 28]
+        ciphertext = encoded[offset + 28 :]
+        key = Scrypt(
+            salt=salt,
+            length=32,
+            n=security_module._SCRYPT_N,
+            r=security_module._SCRYPT_R,
+            p=security_module._SCRYPT_P,
+        ).derive(self.backup_password.encode("utf-8"))
+        aad = security_module._BACKUP_MAGIC + b"production"
+        bundle = json.loads(AESGCM(key).decrypt(nonce, ciphertext, aad))
+        key_id, key_item = next(iter(bundle["manifest"]["keys"].items()))
+        legitimate_file_name = key_item["file_name"]
+        legitimate_file = bundle["files"][legitimate_file_name]
+        bundle["files"]["../fora-do-chaveiro.txt"] = base64.b64encode(b"conteudo indevido").decode("ascii")
+        malicious_nonce = b"0123456789ab"
+        backup.write_bytes(
+            security_module._BACKUP_MAGIC
+            + salt
+            + malicious_nonce
+            + AESGCM(key).encrypt(
+                malicious_nonce,
+                json.dumps(bundle, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+                aad,
+            )
+        )
+
+        restored = EncryptedSigningKeyStore(self.root / "restored", environment="production")
+        with self.assertRaisesRegex(OperationalSecurityError, "referência inválida"):
+            restored.restore_offline_backup(
+                backup,
+                self.backup_password,
+                confirmation="RESTAURAR-CHAVES:production",
+            )
+
+        self.assertFalse((self.root / "fora-do-chaveiro.txt").exists())
+        self.assertEqual(list(restored.root.iterdir()), [])
+
+        del bundle["files"]["../fora-do-chaveiro.txt"]
+        del bundle["files"][legitimate_file_name]
+        alternate_stream_name = f"{key_id}.pem:fluxo"
+        key_item["file_name"] = alternate_stream_name
+        bundle["files"][alternate_stream_name] = legitimate_file
+        alternate_nonce = b"abcdefghijkl"
+        backup.write_bytes(
+            security_module._BACKUP_MAGIC
+            + salt
+            + alternate_nonce
+            + AESGCM(key).encrypt(
+                alternate_nonce,
+                json.dumps(bundle, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+                aad,
+            )
+        )
+        alternate_restore = EncryptedSigningKeyStore(self.root / "alternate", environment="production")
+        with self.assertRaisesRegex(OperationalSecurityError, "referência inválida"):
+            alternate_restore.restore_offline_backup(
+                backup,
+                self.backup_password,
+                confirmation="RESTAURAR-CHAVES:production",
+            )
+        self.assertEqual(list(alternate_restore.root.iterdir()), [])
+
     def test_chave_comprometida_deixa_de_ser_ativa_e_confiavel(self) -> None:
         store = EncryptedSigningKeyStore(self.root / "keys", environment="test")
-        key_id = "lease-test-202609-a"
-        store.generate(key_id, self.password, purpose="lease")
+        key_id = "license-test-202609-a"
+        store.generate(key_id, self.password, purpose="license")
         store.mark_compromised(key_id, confirmation=f"COMPROMETIDA:{key_id}")
-        self.assertNotIn(key_id, store.trusted_public_keys("lease"))
+        self.assertNotIn(key_id, store.trusted_public_keys("license"))
         with self.assertRaises(OperationalSecurityError):
-            store.active_key_id("lease")
+            store.active_key_id("license")
         with self.assertRaisesRegex(OperationalSecurityError, "comprometida"):
             store.load_private_key(key_id, self.password)
 
@@ -114,7 +186,6 @@ class Phase10AdminSecurityTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.database = AdminDatabase(self.root / "admin.db", environment="test")
         self.license_key = Ed25519PrivateKey.generate()
-        self.lease_key = Ed25519PrivateKey.generate()
         self.service = AdminLicenseService(
             self.database,
             key_id="license-main-2026-01",
@@ -125,60 +196,13 @@ class Phase10AdminSecurityTests(unittest.TestCase):
             "owner", "Owner", role="owner", password=self.password
         )
 
-    def test_conta_protegida_e_revogacao_invalida_usuario_e_tokens(self) -> None:
-        self.assertEqual(self.service.authenticate_admin("OWNER", self.password), self.admin_id)
-        with self.assertRaises(PermissionError):
-            self.service.authenticate_admin("owner", "senha-incorreta")
-        api = LicenseServiceApi(
-            self.database,
-            self.service,
-            lease_key_id="lease-online-2026-01",
-            lease_private_key_provider=lambda: self.lease_key,
-        )
-        token = "token-administrativo-fase10-com-32-caracteres"
-        api.register_admin_token(token, label="revogavel", admin_user_id=self.admin_id)
-        self.service.revoke_admin_user(
-            self.admin_id,
-            reason="credencial comprometida",
-            confirmation=f"REVOGAR-ADMIN:{self.admin_id}",
-            acting_admin_user_id=self.admin_id,
-        )
-        with self.assertRaises(PermissionError):
-            self.service.authenticate_admin("owner", self.password)
-        response = api.handle(
-            "GET",
-            "/v1/admin/search?q=",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        self.assertEqual(response.status, 401)
+    def test_conta_local_protegida_pode_ser_desativada(self) -> None:
+        authenticated = self.service.authenticate_admin("OWNER", self.password)
+        self.assertEqual(authenticated["admin_user_id"], self.admin_id)
+        self.assertIsNone(self.service.authenticate_admin("owner", "senha-incorreta"))
+        self.service.revoke_admin_user(self.admin_id, performed_by=self.admin_id)
+        self.assertIsNone(self.service.authenticate_admin("owner", self.password))
         self.assertTrue(self.database.verify_audit_chain())
-
-    def test_acesso_remoto_exige_token_e_totp_e_aceita_revogacao(self) -> None:
-        secret = generate_totp_secret()
-        api = LicenseServiceApi(
-            self.database,
-            self.service,
-            lease_key_id="lease-online-2026-01",
-            lease_private_key_provider=lambda: self.lease_key,
-            require_admin_totp=True,
-            admin_totp_secret_provider=lambda admin_id: secret if admin_id == self.admin_id else "",
-        )
-        token = "token-remoto-fase10-com-mais-de-32-caracteres"
-        token_id = api.register_admin_token(token, label="remote", admin_user_id=self.admin_id)
-        now = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
-        bearer = {"Authorization": f"Bearer {token}"}
-        self.assertEqual(api.handle("GET", "/v1/admin/search?q=", headers=bearer, now=now).status, 401)
-        authorized = {
-            **bearer,
-            "X-NexoJuris-TOTP": totp_code(secret, at=now),
-        }
-        self.assertEqual(api.handle("GET", "/v1/admin/search?q=", headers=authorized, now=now).status, 200)
-        api.revoke_admin_token(
-            token_id,
-            confirmation=f"REVOGAR-TOKEN:{token_id}",
-            admin_user_id=self.admin_id,
-        )
-        self.assertEqual(api.handle("GET", "/v1/admin/search?q=", headers=authorized, now=now).status, 401)
 
     def test_perda_do_banco_restauracao_e_auditoria_imutavel(self) -> None:
         customer_id = self.service.create_customer("Cliente preservado", admin_user_id=self.admin_id)

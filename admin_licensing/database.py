@@ -1,4 +1,4 @@
-"""Persistência SQLite, auditoria imutável e backups do núcleo administrativo."""
+"""Persistência SQLite, auditoria imutável e backups do Admin offline."""
 
 from __future__ import annotations
 
@@ -18,24 +18,22 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 _BACKUP_MAGIC = b"NXJ-ADMIN-BACKUP\x01"
 _BACKUP_SALT_BYTES = 16
 _BACKUP_NONCE_BYTES = 12
 _MIN_BACKUP_PASSWORD_CHARS = 12
 _REQUIRED_TABLES = frozenset(
     {
+        "admin_users",
+        "operational_settings",
         "customers",
         "licenses",
-        "licensed_devices",
         "license_features",
-        "license_renewals",
-        "license_status_changes",
+        "license_revisions",
         "offline_exports",
-        "online_leases",
-        "legacy_license_migrations",
         "audit_events",
-        "admin_users",
+        "admin_schema",
     }
 )
 
@@ -63,8 +61,6 @@ def _derive_backup_key(password: str, salt: bytes) -> bytes:
 
 
 class AdminDatabase:
-    """Abre conexões curtas e transações ``BEGIN IMMEDIATE`` para concorrência previsível."""
-
     def __init__(
         self,
         path: str | Path,
@@ -112,6 +108,15 @@ class AdminDatabase:
 
     def _initialize(self) -> None:
         with self.transaction() as connection:
+            existing = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'admin_schema'"
+            ).fetchone()
+            if existing:
+                version = connection.execute("SELECT version FROM admin_schema WHERE singleton = 1").fetchone()
+                if not version or int(version[0]) != _SCHEMA_VERSION:
+                    raise RuntimeError(
+                        "O banco administrativo usa um modelo anterior. Faça backup e inicialize um novo banco offline."
+                    )
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS admin_users (
@@ -123,12 +128,10 @@ class AdminDatabase:
                     active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
                     created_at TEXT NOT NULL
                 );
-
                 CREATE TABLE IF NOT EXISTS operational_settings (
                     setting_key TEXT PRIMARY KEY,
                     setting_value TEXT NOT NULL
                 );
-
                 CREATE TABLE IF NOT EXISTS customers (
                     customer_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -141,122 +144,52 @@ class AdminDatabase:
                     created_by TEXT REFERENCES admin_users(admin_user_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_customers_normalized_name ON customers(normalized_name);
-                CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email);
-                CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
-                CREATE INDEX IF NOT EXISTS idx_customers_tax_id ON customers(tax_id);
-
                 CREATE TABLE IF NOT EXISTS licenses (
                     license_id TEXT PRIMARY KEY,
                     customer_id TEXT NOT NULL REFERENCES customers(customer_id),
                     key_id TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK (status IN ('active', 'suspended', 'revoked')),
+                    current_revision INTEGER NOT NULL CHECK (current_revision >= 1),
+                    machine_id TEXT NOT NULL,
                     issued_at TEXT NOT NULL,
                     not_before TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     term_months INTEGER NOT NULL CHECK (term_months IN (3, 6, 12)),
-                    validation_mode TEXT NOT NULL CHECK (validation_mode IN ('offline', 'hybrid')),
-                    max_offline_days INTEGER NOT NULL CHECK (max_offline_days BETWEEN 0 AND 30),
                     customer_reference TEXT NOT NULL UNIQUE,
                     commercial_reference TEXT,
-                    activation_secret_hash TEXT,
                     created_by TEXT REFERENCES admin_users(admin_user_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_licenses_customer ON licenses(customer_id);
-                CREATE INDEX IF NOT EXISTS idx_licenses_status_expires ON licenses(status, expires_at);
-
-                CREATE TABLE IF NOT EXISTS licensed_devices (
-                    device_id TEXT PRIMARY KEY,
-                    license_id TEXT NOT NULL REFERENCES licenses(license_id),
-                    machine_id TEXT NOT NULL,
-                    bound_at TEXT NOT NULL,
-                    unbound_at TEXT,
-                    active INTEGER NOT NULL CHECK (active IN (0, 1)),
-                    created_by TEXT REFERENCES admin_users(admin_user_id)
-                );
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_device_per_license
-                    ON licensed_devices(license_id) WHERE active = 1;
-                CREATE INDEX IF NOT EXISTS idx_devices_machine ON licensed_devices(machine_id);
-
+                CREATE INDEX IF NOT EXISTS idx_licenses_expires ON licenses(expires_at);
+                CREATE INDEX IF NOT EXISTS idx_licenses_machine ON licenses(machine_id);
                 CREATE TABLE IF NOT EXISTS license_features (
                     license_id TEXT NOT NULL REFERENCES licenses(license_id),
                     feature TEXT NOT NULL CHECK (feature IN ('converter', 'ocr', 'reader')),
                     PRIMARY KEY (license_id, feature)
                 );
-
-                CREATE TABLE IF NOT EXISTS license_renewals (
-                    renewal_id TEXT PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS license_revisions (
                     license_id TEXT NOT NULL REFERENCES licenses(license_id),
-                    previous_expires_at TEXT NOT NULL,
-                    new_expires_at TEXT NOT NULL,
+                    revision INTEGER NOT NULL CHECK (revision >= 1),
+                    operation TEXT NOT NULL CHECK (operation IN ('issue', 'renew', 'replace_device')),
+                    key_id TEXT NOT NULL,
+                    machine_id TEXT NOT NULL,
+                    issued_at TEXT NOT NULL,
+                    not_before TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
                     term_months INTEGER NOT NULL CHECK (term_months IN (3, 6, 12)),
-                    renewed_at TEXT NOT NULL,
-                    admin_user_id TEXT REFERENCES admin_users(admin_user_id)
+                    document BLOB NOT NULL,
+                    document_sha256 TEXT NOT NULL,
+                    admin_user_id TEXT REFERENCES admin_users(admin_user_id),
+                    PRIMARY KEY (license_id, revision)
                 );
-
-                CREATE TABLE IF NOT EXISTS license_status_changes (
-                    change_id TEXT PRIMARY KEY,
-                    license_id TEXT NOT NULL REFERENCES licenses(license_id),
-                    previous_status TEXT NOT NULL,
-                    new_status TEXT NOT NULL,
-                    reason TEXT NOT NULL,
-                    changed_at TEXT NOT NULL,
-                    admin_user_id TEXT REFERENCES admin_users(admin_user_id)
-                );
-
                 CREATE TABLE IF NOT EXISTS offline_exports (
                     export_id TEXT PRIMARY KEY,
-                    license_id TEXT NOT NULL REFERENCES licenses(license_id),
-                    device_id TEXT NOT NULL REFERENCES licensed_devices(device_id),
+                    license_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
                     document_sha256 TEXT NOT NULL,
-                    file_name TEXT NOT NULL,
                     exported_at TEXT NOT NULL,
-                    admin_user_id TEXT REFERENCES admin_users(admin_user_id)
+                    admin_user_id TEXT REFERENCES admin_users(admin_user_id),
+                    FOREIGN KEY (license_id, revision) REFERENCES license_revisions(license_id, revision)
                 );
-
-                CREATE TABLE IF NOT EXISTS online_leases (
-                    lease_id TEXT PRIMARY KEY,
-                    license_id TEXT NOT NULL REFERENCES licenses(license_id),
-                    device_id TEXT NOT NULL REFERENCES licensed_devices(device_id),
-                    issued_at TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    last_seen_at TEXT,
-                    status TEXT NOT NULL CHECK (status IN ('active', 'expired', 'revoked'))
-                );
-                CREATE INDEX IF NOT EXISTS idx_online_leases_license ON online_leases(license_id, expires_at);
-
-                CREATE TABLE IF NOT EXISTS legacy_license_migrations (
-                    migration_id TEXT PRIMARY KEY,
-                    legacy_version TEXT NOT NULL CHECK (legacy_version IN ('ACT2', 'ACT3')),
-                    legacy_key_hash TEXT NOT NULL UNIQUE,
-                    machine_id TEXT NOT NULL,
-                    customer_id TEXT NOT NULL REFERENCES customers(customer_id),
-                    license_id TEXT NOT NULL REFERENCES licenses(license_id),
-                    acknowledged_at TEXT NOT NULL,
-                    admin_user_id TEXT REFERENCES admin_users(admin_user_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_legacy_migrations_machine
-                    ON legacy_license_migrations(machine_id, acknowledged_at);
-
-                CREATE TABLE IF NOT EXISTS request_nonces (
-                    nonce_hash TEXT PRIMARY KEY,
-                    scope TEXT NOT NULL,
-                    seen_at TEXT NOT NULL,
-                    expires_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_request_nonces_expiry ON request_nonces(expires_at);
-
-                CREATE TABLE IF NOT EXISTS admin_api_tokens (
-                    token_id TEXT PRIMARY KEY,
-                    token_hash TEXT NOT NULL UNIQUE,
-                    label TEXT NOT NULL,
-                    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
-                    requires_totp INTEGER NOT NULL DEFAULT 0 CHECK (requires_totp IN (0, 1)),
-                    created_at TEXT NOT NULL,
-                    last_used_at TEXT,
-                    revoked_at TEXT,
-                    admin_user_id TEXT REFERENCES admin_users(admin_user_id)
-                );
-
                 CREATE TABLE IF NOT EXISTS audit_events (
                     event_id TEXT PRIMARY KEY,
                     action TEXT NOT NULL,
@@ -269,101 +202,44 @@ class AdminDatabase:
                     event_hash TEXT NOT NULL UNIQUE
                 );
                 CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_events(entity_type, entity_id, occurred_at);
-
                 CREATE VIRTUAL TABLE IF NOT EXISTS license_search USING fts5(
-                    license_id UNINDEXED,
-                    content,
-                    tokenize = 'unicode61 remove_diacritics 2'
+                    license_id UNINDEXED, content, tokenize = 'unicode61 remove_diacritics 2'
                 );
-
                 CREATE TABLE IF NOT EXISTS admin_schema (
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                     version INTEGER NOT NULL
                 );
-                INSERT INTO admin_schema(singleton, version) VALUES (1, 5)
-                    ON CONFLICT(singleton) DO UPDATE SET version = MAX(version, excluded.version);
-
+                INSERT OR IGNORE INTO admin_schema(singleton, version) VALUES (1, 6);
                 CREATE TRIGGER IF NOT EXISTS immutable_customer_id
                 BEFORE UPDATE OF customer_id ON customers BEGIN SELECT RAISE(ABORT, 'customer_id is immutable'); END;
                 CREATE TRIGGER IF NOT EXISTS immutable_license_id
                 BEFORE UPDATE OF license_id ON licenses BEGIN SELECT RAISE(ABORT, 'license_id is immutable'); END;
-                CREATE TRIGGER IF NOT EXISTS immutable_device_id
-                BEFORE UPDATE OF device_id ON licensed_devices BEGIN SELECT RAISE(ABORT, 'device_id is immutable'); END;
-                CREATE TRIGGER IF NOT EXISTS audit_events_no_update
-                BEFORE UPDATE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
-                BEFORE DELETE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS status_changes_no_update
-                BEFORE UPDATE ON license_status_changes BEGIN SELECT RAISE(ABORT, 'license_status_changes is append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS status_changes_no_delete
-                BEFORE DELETE ON license_status_changes BEGIN SELECT RAISE(ABORT, 'license_status_changes is append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS renewals_no_update
-                BEFORE UPDATE ON license_renewals BEGIN SELECT RAISE(ABORT, 'license_renewals is append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS renewals_no_delete
-                BEFORE DELETE ON license_renewals BEGIN SELECT RAISE(ABORT, 'license_renewals is append-only'); END;
+                CREATE TRIGGER IF NOT EXISTS revisions_no_update
+                BEFORE UPDATE ON license_revisions BEGIN SELECT RAISE(ABORT, 'license_revisions is append-only'); END;
+                CREATE TRIGGER IF NOT EXISTS revisions_no_delete
+                BEFORE DELETE ON license_revisions BEGIN SELECT RAISE(ABORT, 'license_revisions is append-only'); END;
                 CREATE TRIGGER IF NOT EXISTS exports_no_update
                 BEFORE UPDATE ON offline_exports BEGIN SELECT RAISE(ABORT, 'offline_exports is append-only'); END;
                 CREATE TRIGGER IF NOT EXISTS exports_no_delete
                 BEFORE DELETE ON offline_exports BEGIN SELECT RAISE(ABORT, 'offline_exports is append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS legacy_migrations_no_update
-                BEFORE UPDATE ON legacy_license_migrations BEGIN SELECT RAISE(ABORT, 'legacy migrations are append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS legacy_migrations_no_delete
-                BEFORE DELETE ON legacy_license_migrations BEGIN SELECT RAISE(ABORT, 'legacy migrations are append-only'); END;
+                CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+                BEFORE UPDATE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
+                CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+                BEFORE DELETE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
                 """
             )
             if self.environment is not None:
-                bound_environment = connection.execute(
+                bound = connection.execute(
                     "SELECT setting_value FROM operational_settings WHERE setting_key = 'environment'"
                 ).fetchone()
-                if bound_environment and bound_environment[0] != self.environment:
+                if bound and bound[0] != self.environment:
                     raise RuntimeError(
-                        f"O banco administrativo pertence ao ambiente {bound_environment[0]}, não a {self.environment}."
+                        f"O banco administrativo pertence ao ambiente {bound[0]}, não a {self.environment}."
                     )
                 connection.execute(
                     "INSERT OR IGNORE INTO operational_settings(setting_key, setting_value) VALUES ('environment', ?)",
                     (self.environment,),
                 )
-            license_columns = {
-                str(row[1]) for row in connection.execute("PRAGMA table_info(licenses)").fetchall()
-            }
-            if "activation_secret_hash" not in license_columns:
-                connection.execute("ALTER TABLE licenses ADD COLUMN activation_secret_hash TEXT")
-            lease_columns = {
-                str(row[1]) for row in connection.execute("PRAGMA table_info(online_leases)").fetchall()
-            }
-            for column, declaration in (
-                ("nonce_hash", "TEXT"),
-                ("key_id", "TEXT"),
-                ("lease_document", "BLOB"),
-            ):
-                if column not in lease_columns:
-                    connection.execute(f"ALTER TABLE online_leases ADD COLUMN {column} {declaration}")
-            token_columns = {
-                str(row[1]) for row in connection.execute("PRAGMA table_info(admin_api_tokens)").fetchall()
-            }
-            for column, declaration in (
-                ("requires_totp", "INTEGER NOT NULL DEFAULT 0 CHECK (requires_totp IN (0, 1))"),
-                ("revoked_at", "TEXT"),
-            ):
-                if column not in token_columns:
-                    connection.execute(f"ALTER TABLE admin_api_tokens ADD COLUMN {column} {declaration}")
-            connection.execute(
-                """
-                INSERT INTO license_search(license_id, content)
-                SELECT l.license_id,
-                       trim(l.license_id || ' ' || c.normalized_name || ' ' || c.name || ' ' ||
-                            coalesce(c.email, '') || ' ' || coalesce(c.phone, '') || ' ' ||
-                            coalesce(c.tax_id, '') || ' ' || coalesce(d.machine_id, '') || ' ' ||
-                            coalesce(l.commercial_reference, '') || ' ' ||
-                            coalesce(c.commercial_reference, '') || ' ' || l.status || ' ' || l.expires_at)
-                FROM licenses l
-                JOIN customers c ON c.customer_id = l.customer_id
-                LEFT JOIN licensed_devices d ON d.license_id = l.license_id AND d.active = 1
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM license_search search WHERE search.license_id = l.license_id
-                )
-                """
-            )
 
     def append_audit(
         self,
@@ -387,22 +263,11 @@ class AdminDatabase:
         event_hash = hashlib.sha256(material).hexdigest()
         connection.execute(
             """
-            INSERT INTO audit_events(
-                event_id, action, entity_type, entity_id, occurred_at,
-                admin_user_id, details_json, previous_hash, event_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO audit_events(event_id, action, entity_type, entity_id, occurred_at,
+                                     admin_user_id, details_json, previous_hash, event_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                event_id,
-                action,
-                entity_type,
-                entity_id,
-                timestamp,
-                admin_user_id,
-                details_json,
-                previous_hash,
-                event_hash,
-            ),
+            (event_id, action, entity_type, entity_id, timestamp, admin_user_id, details_json, previous_hash, event_hash),
         )
         return event_hash
 
@@ -438,11 +303,10 @@ class AdminDatabase:
         with self.read() as connection:
             connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
             database_bytes = connection.serialize()
-        salt = os.urandom(_BACKUP_SALT_BYTES)
-        nonce = os.urandom(_BACKUP_NONCE_BYTES)
-        key = _derive_backup_key(password, salt)
-        ciphertext = AESGCM(key).encrypt(nonce, database_bytes, _BACKUP_MAGIC)
-        encoded = _BACKUP_MAGIC + salt + nonce + ciphertext
+        salt, nonce = os.urandom(_BACKUP_SALT_BYTES), os.urandom(_BACKUP_NONCE_BYTES)
+        encoded = _BACKUP_MAGIC + salt + nonce + AESGCM(_derive_backup_key(password, salt)).encrypt(
+            nonce, database_bytes, _BACKUP_MAGIC
+        )
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
         try:
             with os.fdopen(descriptor, "wb") as temporary:
@@ -475,9 +339,8 @@ class AdminDatabase:
             raise BackupError("Formato de backup administrativo inválido.")
         offset = len(_BACKUP_MAGIC)
         salt = encoded[offset : offset + _BACKUP_SALT_BYTES]
-        offset += _BACKUP_SALT_BYTES
-        nonce = encoded[offset : offset + _BACKUP_NONCE_BYTES]
-        ciphertext = encoded[offset + _BACKUP_NONCE_BYTES :]
+        nonce = encoded[offset + _BACKUP_SALT_BYTES : offset + _BACKUP_SALT_BYTES + _BACKUP_NONCE_BYTES]
+        ciphertext = encoded[offset + _BACKUP_SALT_BYTES + _BACKUP_NONCE_BYTES :]
         try:
             return AESGCM(_derive_backup_key(password, salt)).decrypt(nonce, ciphertext, _BACKUP_MAGIC)
         except InvalidTag as error:
@@ -485,6 +348,7 @@ class AdminDatabase:
 
     @staticmethod
     def _validate_database_file(path: Path) -> None:
+        connection: sqlite3.Connection | None = None
         try:
             connection = sqlite3.connect(path)
             integrity = connection.execute("PRAGMA integrity_check").fetchone()
@@ -496,11 +360,11 @@ class AdminDatabase:
         except sqlite3.DatabaseError as error:
             raise BackupError("O backup não contém um banco administrativo válido.") from error
         finally:
-            if "connection" in locals():
+            if connection is not None:
                 connection.close()
         if not integrity or integrity[0] != "ok" or not _REQUIRED_TABLES.issubset(tables):
             raise BackupError("A integridade ou o esquema do backup administrativo é inválido.")
-        if not version or int(version[0]) > _SCHEMA_VERSION:
+        if not version or int(version[0]) != _SCHEMA_VERSION:
             raise BackupError("A versão do backup não é suportada por este aplicativo.")
 
     def restore_encrypted_backup(
@@ -516,7 +380,9 @@ class AdminDatabase:
         if confirmation != expected:
             raise ConfirmationRequiredError(f"Confirmação obrigatória: {expected}")
         database_bytes = self._decrypt_backup(backup_path, password)
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".restore", dir=self.path.parent)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{self.path.name}.", suffix=".restore", dir=self.path.parent
+        )
         os.close(descriptor)
         temporary_path = Path(temporary_name)
         try:

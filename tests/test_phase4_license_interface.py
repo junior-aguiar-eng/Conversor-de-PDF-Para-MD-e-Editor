@@ -39,25 +39,22 @@ class Phase4LicenseBridgeTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn(".nxjlic", result["error"])
 
-    def test_verificacao_manual_preserva_distincao_do_prazo_offline(self) -> None:
+    def test_verificacao_manual_e_totalmente_local(self) -> None:
         status = LicenseStatus(
-            state=LicenseState.ONLINE_CHECK_REQUIRED,
+            state=LicenseState.EXPIRING,
             machine_id="NXJ2-TESTE",
-            message="É necessária uma validação online para continuar.",
-            license_format="act4",
-            validation_mode="hybrid",
+            message="Licença válida e próxima do vencimento.",
+            license_id="LIC-2026-000001",
+            revision=2,
             expires_at="2027-01-15T12:00:00Z",
             days_remaining=80,
-            offline_until="2026-08-30T12:00:00Z",
-            offline_seconds_remaining=0,
+            features=("converter",),
         )
         with patch("web_api.get_license_status", return_value=status):
             result = self.api.verify_license_now()
 
-        self.assertFalse(result["ok"])
-        self.assertFalse(result["online_attempted"])
-        self.assertEqual(result["state"], "online_check_required")
-        self.assertIn("prazo de uso offline", result["message"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["state"], "expiring")
         self.assertEqual(result["days_remaining"], 80)
 
     def test_encerramento_pelo_bloqueio_nao_libera_a_interface(self) -> None:
@@ -90,6 +87,13 @@ class Phase4LicenseMarkupTests(unittest.TestCase):
         self.assertIn("Encerrar aplicativo", self.html)
         self.assertIn("appLicense.copyMachineId()", self.html)
         self.assertLess(self.html.index('src="license-ui.js"'), self.html.index('src="app.js"'))
+
+    def test_modal_exibe_identidade_e_revisao_sem_conceitos_online(self) -> None:
+        self.assertIn("Identificação da licença", self.html)
+        self.assertIn("Revisão vigente", self.html)
+        self.assertNotIn("Uso offline restante", self.html)
+        self.assertNotIn("Última validação online", self.html)
+        self.assertIn("mesma licença", self.html)
 
     def test_importacao_pertence_ao_dialogo_de_licenca(self) -> None:
         license_start = self.html.index('id="activationModal"')

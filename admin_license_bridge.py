@@ -23,14 +23,6 @@ from license_key_config import LICENSE_PUBLIC_KEYS_B64
 logger = logging.getLogger(__name__)
 
 
-def _offline_validation(payload: dict[str, Any]) -> tuple[str, int]:
-    validation_mode = str(payload.get("validation_mode", "offline"))
-    max_offline_days = int(payload.get("max_offline_days", 0))
-    if validation_mode != "offline" or max_offline_days != 0:
-        raise ValueError("O Admin local emite somente licenças offline.")
-    return validation_mode, max_offline_days
-
-
 class AdminLicenseBridge:
     def __init__(
         self,
@@ -129,16 +121,14 @@ class AdminLicenseBridge:
 
     def issue_license(self, payload: dict[str, Any]) -> dict[str, Any]:
         def operation() -> dict[str, Any]:
-            validation_mode, max_offline_days = _offline_validation(payload)
-            license_id = self.service.issue_license(
+            service = self._signing_service(str(payload.get("private_key_password", "")))
+            license_id = service.issue_license(
                 str(payload.get("customer_id", "")),
                 term_months=int(payload.get("term_months", 0)),
                 features=tuple(payload.get("features") or ("converter", "ocr", "reader")),
-                validation_mode=validation_mode,
-                max_offline_days=max_offline_days,
                 customer_reference=payload.get("customer_reference"),
                 commercial_reference=payload.get("commercial_reference"),
-                machine_id=payload.get("machine_id"),
+                machine_id=str(payload.get("machine_id", "")),
                 admin_user_id=self.admin_user_id,
             )
             return {"license_id": license_id}
@@ -150,7 +140,6 @@ class AdminLicenseBridge:
         def operation() -> dict[str, Any]:
             term_months = int(payload.get("term_months", 0))
             features = tuple(payload.get("features") or ())
-            validation_mode, max_offline_days = _offline_validation(payload)
             machine_id = str(payload.get("machine_id", "")).strip()
             if term_months not in {3, 6, 12}:
                 raise ValueError("O prazo deve ser de 3, 6 ou 12 meses.")
@@ -161,6 +150,8 @@ class AdminLicenseBridge:
 
                 if not re.fullmatch(r"NXJ2-(?:[A-Fa-f0-9]{4}-){3}[A-Fa-f0-9]{4}", machine_id):
                     raise ValueError("O código da máquina NXJ2 é inválido.")
+            service = self._signing_service(str(payload.get("private_key_password", "")))
+            service.private_key_provider()
             customer_id = self.service.create_customer(
                 str(payload.get("name", "")),
                 email=payload.get("email"),
@@ -169,12 +160,10 @@ class AdminLicenseBridge:
                 commercial_reference=payload.get("commercial_reference"),
                 admin_user_id=self.admin_user_id,
             )
-            license_id = self.service.issue_license(
+            license_id = service.issue_license(
                 customer_id,
                 term_months=term_months,
                 features=features,
-                validation_mode=validation_mode,
-                max_offline_days=max_offline_days,
                 machine_id=machine_id,
                 commercial_reference=payload.get("commercial_reference"),
                 admin_user_id=self.admin_user_id,
@@ -183,82 +172,18 @@ class AdminLicenseBridge:
 
         return self._safe(operation)
 
-    def migrate_legacy_license(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Converte uma licença legada somente após validação e ciência explícita."""
+    def renew_license(self, license_id: str, term_months: int, private_key_password: str = "") -> dict[str, Any]:
         def operation() -> dict[str, Any]:
-            machine_id = str(payload.get("machine_id", "")).strip().upper()
-            activation_key = str(payload.get("activation_key", "")).strip().upper()
-            confirmation = str(payload.get("confirmation", ""))
-            term_months = int(payload.get("term_months", 0))
-            features = tuple(payload.get("features") or ())
-            validation_mode, max_offline_days = _offline_validation(payload)
-            if term_months not in {3, 6, 12}:
-                raise ValueError("O prazo deve ser de 3, 6 ou 12 meses.")
-            if not features or not set(features).issubset({"converter", "ocr", "reader"}):
-                raise ValueError("Selecione ao menos uma funcionalidade válida.")
-            migration_id, customer_id, license_id = self.service.create_customer_and_migrate_legacy_license(
-                str(payload.get("name", "")),
-                machine_id=machine_id,
-                activation_key=activation_key,
-                confirmation=confirmation,
-                term_months=term_months,
-                features=features,
-                validation_mode=validation_mode,
-                max_offline_days=max_offline_days,
-                email=payload.get("email"),
-                phone=payload.get("phone"),
-                tax_id=payload.get("tax_id"),
-                commercial_reference=payload.get("commercial_reference"),
-                admin_user_id=self.admin_user_id,
-            )
-            return {"migration_id": migration_id, "customer_id": customer_id, "license_id": license_id}
-
-        return self._safe(operation)
-
-    def renew_license(self, license_id: str, term_months: int) -> dict[str, Any]:
-        def operation() -> dict[str, Any]:
-            renewal_id = self.service.renew_license(
+            service = self._signing_service(private_key_password)
+            revision = service.renew_license(
                 license_id, term_months=int(term_months), admin_user_id=self.admin_user_id
             )
             return {
-                "renewal_id": renewal_id,
+                "revision": revision,
                 "expires_at": self.service.get_license(license_id)["expires_at"],
             }
 
         return self._safe(operation)
-
-    def suspend_license(self, license_id: str, reason: str) -> dict[str, Any]:
-        return self._safe(
-            lambda: {
-                "change_id": self.service.suspend_license(license_id, reason, admin_user_id=self.admin_user_id)
-            }
-        )
-
-    def reactivate_license(self, license_id: str, reason: str) -> dict[str, Any]:
-        return self._safe(
-            lambda: {
-                "change_id": self.service.reactivate_license(license_id, reason, admin_user_id=self.admin_user_id)
-            }
-        )
-
-    def revoke_license(self, license_id: str, reason: str, confirmation: str) -> dict[str, Any]:
-        return self._safe(
-            lambda: {
-                "change_id": self.service.revoke_license(
-                    license_id,
-                    reason,
-                    confirmation=confirmation,
-                    admin_user_id=self.admin_user_id,
-                )
-            }
-        )
-
-    def bind_device(self, license_id: str, machine_id: str) -> dict[str, Any]:
-        return self._safe(
-            lambda: {
-                "device_id": self.service.bind_device(license_id, machine_id, admin_user_id=self.admin_user_id)
-            }
-        )
 
     def replace_device(
         self,
@@ -266,10 +191,11 @@ class AdminLicenseBridge:
         machine_id: str,
         reason: str,
         confirmation: str,
+        private_key_password: str = "",
     ) -> dict[str, Any]:
         return self._safe(
             lambda: {
-                "device_id": self.service.replace_device(
+                "revision": self._signing_service(private_key_password).replace_device(
                     license_id,
                     machine_id,
                     confirmation=confirmation,
@@ -282,8 +208,6 @@ class AdminLicenseBridge:
     def export_license(self, license_id: str, private_key_password: str = "") -> dict[str, Any]:
         if not self._window:
             return {"ok": False, "error": "Janela administrativa indisponível."}
-        if self.signing_key_store is None and (self.private_key_path is None or not self.private_key_path.is_file()):
-            return {"ok": False, "error": "Configure a chave privada criptografada antes de exportar licenças."}
         import webview
 
         result = self._window.create_file_dialog(
@@ -296,29 +220,27 @@ class AdminLicenseBridge:
         target = result[0] if isinstance(result, (tuple, list)) else result
 
         def operation() -> dict[str, Any]:
-            service = self.service
-            if self.signing_key_store is not None:
-                provider = ActiveEncryptedKeyProvider(
-                    self.signing_key_store,
-                    purpose="license",
-                    password_provider=lambda: private_key_password,
-                )
-                service = AdminLicenseService(
-                    self.service.database,
-                    key_id=provider.key_id,
-                    private_key_provider=provider,
-                )
-            elif self.private_key_path is not None:
-                provider = EncryptedPrivateKeyProvider(self.private_key_path, lambda: private_key_password)
-                service = AdminLicenseService(
-                    self.service.database,
-                    key_id=self.service.key_id,
-                    private_key_provider=provider,
-                )
-            exported = service.export_license(license_id, target, admin_user_id=self.admin_user_id)
+            exported = self.service.export_license(license_id, target, admin_user_id=self.admin_user_id)
             return {"file_name": exported.name}
 
         return self._safe(operation)
+
+    def _signing_service(self, private_key_password: str) -> AdminLicenseService:
+        if self.signing_key_store is not None:
+            provider = ActiveEncryptedKeyProvider(
+                self.signing_key_store,
+                purpose="license",
+                password_provider=lambda: private_key_password,
+            )
+            return AdminLicenseService(
+                self.service.database, key_id=provider.key_id, private_key_provider=provider
+            )
+        if self.private_key_path is None or not self.private_key_path.is_file():
+            raise ValueError("Configure a chave privada criptografada antes desta operação.")
+        provider = EncryptedPrivateKeyProvider(self.private_key_path, lambda: private_key_password)
+        return AdminLicenseService(
+            self.service.database, key_id=self.service.key_id, private_key_provider=provider
+        )
 
     @staticmethod
     def _safe(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:

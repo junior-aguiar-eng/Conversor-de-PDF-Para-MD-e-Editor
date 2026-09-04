@@ -58,11 +58,11 @@ class AdminPrivateKeyConfigurationTests(unittest.TestCase):
         self.assertIn("não corresponde", wrong_key["error"])
         self.assertFalse(self.target.exists())
 
-    def test_exportacao_falha_antes_do_dialogo_quando_chave_nao_foi_configurada(self) -> None:
+    def test_reexportacao_nao_exige_reabrir_a_chave_privada(self) -> None:
         result = self.bridge.export_license("LIC-TEST")
-        self.assertFalse(result["ok"])
-        self.assertIn("Configure a chave privada", result["error"])
-        self.window.create_file_dialog.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.window.create_file_dialog.assert_called_once()
+        self.bridge.service.export_license.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -24,12 +24,10 @@ $arquivosDoAplicativo = @(
     "file_authorization.py",
     "library_db.py",
     "licensing.py",
-    "license_online_config.py",
     "markdown_utils.py",
     "models.py",
     "ocr_engine.py",
     "online_services.py",
-    "online_license_client.py",
     "production_diagnostics.py",
     "text_fidelity.py",
     "web_api.py",
@@ -58,7 +56,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # Falha durante a instalação, em vez de deixar imports ausentes aparecerem só ao abrir o aplicativo.
-& $python -c "import app, converter, library_db, license_core, licensing, ocr_engine, online_license_client, web_api"
+& $python -c "import app, converter, library_db, license_core, licensing, ocr_engine, web_api"
 if ($LASTEXITCODE -ne 0) {
     throw "A instalação está incompleta: um ou mais módulos do aplicativo não puderam ser importados."
 }

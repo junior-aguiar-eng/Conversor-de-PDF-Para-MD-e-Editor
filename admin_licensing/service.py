@@ -1,39 +1,30 @@
-"""Operações administrativas e emissão ACT4 sobre o banco local."""
+"""Serviço local de emissão e manutenção de licenças ACT4."""
 
 from __future__ import annotations
 
 import calendar
 import hashlib
-import json
 import os
 import re
-import shlex
 import tempfile
 import unicodedata
 import uuid
 from collections.abc import Callable, Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from license_core import (
-    LICENSE_FILE_SUFFIX,
-    LegacyLicenseVersion,
-    LicensePayload,
-    detect_legacy_activation_key,
-    issue_license,
-    verify_legacy_activation_key,
-)
+from license_core import LICENSE_FILE_SUFFIX, LicensePayload, issue_license
 
 from .database import AdminDatabase, ConfirmationRequiredError, utc_now_text
 from .security import hash_admin_password, verify_admin_password
 
-_MACHINE_ID = re.compile(r"NXJ2-(?:[A-F0-9]{4}-){3}[A-F0-9]{4}")
-_FEATURES = frozenset({"converter", "ocr", "reader"})
 _TERMS = frozenset({3, 6, 12})
+_FEATURES = frozenset({"converter", "ocr", "reader"})
+_MACHINE = re.compile(r"NXJ2-(?:[A-F0-9]{4}-){3}[A-F0-9]{4}")
 
 
 class AdminLicenseError(RuntimeError):
@@ -45,22 +36,18 @@ class RecordNotFoundError(AdminLicenseError):
 
 
 class InvalidTransitionError(AdminLicenseError):
-    pass
+    """Mantida como erro de domínio para compatibilidade da API local."""
 
 
-def _id(prefix: str) -> str:
+def _identifier(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex.upper()}"
 
 
-def _utc(value: datetime | None = None) -> datetime:
+def _timestamp(value: datetime | None = None) -> str:
     instant = datetime.now(UTC) if value is None else value
     if instant.tzinfo is None or instant.utcoffset() is None:
         raise ValueError("A data deve possuir fuso horário.")
-    return instant.astimezone(UTC).replace(microsecond=0)
-
-
-def _timestamp(value: datetime) -> str:
-    return _utc(value).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return instant.astimezone(UTC).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _parse_timestamp(value: str) -> datetime:
@@ -68,51 +55,53 @@ def _parse_timestamp(value: str) -> datetime:
 
 
 def _add_months(value: datetime, months: int) -> datetime:
-    month_index = value.year * 12 + value.month - 1 + months
-    year, zero_based_month = divmod(month_index, 12)
-    month = zero_based_month + 1
+    month_index = value.month - 1 + months
+    year, month = value.year + month_index // 12, month_index % 12 + 1
     day = min(value.day, calendar.monthrange(year, month)[1])
     return value.replace(year=year, month=month, day=day)
 
 
 def _normalize_name(value: str) -> str:
-    decomposed = unicodedata.normalize("NFKD", value.strip())
-    plain = "".join(character for character in decomposed if not unicodedata.combining(character))
-    return " ".join(plain.casefold().split())
+    normalized = unicodedata.normalize("NFKD", value.strip().casefold())
+    return "".join(character for character in normalized if not unicodedata.combining(character))
 
 
-def _optional_text(value: str | None, *, upper: bool = False) -> str | None:
-    normalized = (value or "").strip()
-    if not normalized:
-        return None
-    return normalized.upper() if upper else normalized
+def _optional_text(value: object) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _validate_machine_id(value: str) -> str:
+    normalized = value.strip().upper()
+    if not _MACHINE.fullmatch(normalized):
+        raise ValueError("O código da máquina NXJ2 é inválido.")
+    return normalized
+
+
+def _validate_features(values: Iterable[str]) -> tuple[str, ...]:
+    features = tuple(sorted(set(values)))
+    if not features or not set(features).issubset(_FEATURES):
+        raise ValueError("Selecione ao menos uma funcionalidade válida.")
+    return features
 
 
 class EncryptedPrivateKeyProvider:
-    """Carrega sob demanda somente PEM Ed25519 criptografado; não mantém a senha."""
+    """Carrega uma chave Ed25519 privada protegida por senha."""
 
     def __init__(self, path: str | Path, password_provider: Callable[[], str | bytes]) -> None:
         self.path = Path(path).expanduser().resolve()
         self.password_provider = password_provider
 
     def __call__(self) -> Ed25519PrivateKey:
-        try:
-            pem = self.path.read_bytes()
-        except OSError as error:
-            raise AdminLicenseError("Não foi possível ler a chave privada administrativa.") from error
-        if b"ENCRYPTED PRIVATE KEY" not in pem:
-            raise AdminLicenseError("A chave privada administrativa deve estar criptografada no disco.")
         password = self.password_provider()
-        password_bytes = password.encode("utf-8") if isinstance(password, str) else password
-        if not password_bytes:
-            raise AdminLicenseError("A senha da chave privada não pode ser vazia.")
+        encoded_password = password.encode("utf-8") if isinstance(password, str) else password
         try:
-            loaded = serialization.load_pem_private_key(pem, password=password_bytes)
-        except (TypeError, ValueError) as error:
-            raise AdminLicenseError("Não foi possível abrir a chave privada administrativa.") from error
-        if not isinstance(loaded, Ed25519PrivateKey):
-            raise AdminLicenseError("A chave administrativa deve ser Ed25519.")
-        return loaded
+            key = serialization.load_pem_private_key(self.path.read_bytes(), password=encoded_password)
+        except (OSError, TypeError, ValueError) as error:
+            raise AdminLicenseError("Não foi possível abrir a chave privada de assinatura.") from error
+        if not isinstance(key, Ed25519PrivateKey):
+            raise AdminLicenseError("A chave privada não é Ed25519.")
+        return key
 
 
 class AdminLicenseService:
@@ -122,12 +111,10 @@ class AdminLicenseService:
         *,
         key_id: str,
         private_key_provider: Callable[[], Ed25519PrivateKey],
-        legacy_key_verifier: Callable[[str, str], bool] = verify_legacy_activation_key,
     ) -> None:
         self.database = database
         self.key_id = key_id
         self.private_key_provider = private_key_provider
-        self.legacy_key_verifier = legacy_key_verifier
 
     def create_admin_user(
         self,
@@ -136,96 +123,67 @@ class AdminLicenseService:
         *,
         role: str = "operator",
         password: str | None = None,
-        password_hash: str | None = None,
     ) -> str:
-        admin_id = _id("ADM")
-        normalized_username = username.strip().casefold()
-        if not normalized_username or not display_name.strip():
-            raise ValueError("Nome de usuário e nome de exibição são obrigatórios.")
-        if password is not None and password_hash is not None:
-            raise ValueError("Informe a senha ou o hash, nunca ambos.")
-        stored_password_hash = hash_admin_password(password) if password is not None else password_hash
+        username = username.strip().casefold()
+        display_name = display_name.strip()
+        if not username or not display_name:
+            raise ValueError("Usuário e nome de exibição são obrigatórios.")
+        if role not in {"owner", "administrator", "operator", "auditor"}:
+            raise ValueError("Perfil administrativo inválido.")
+        admin_user_id = _identifier("ADM")
         with self.database.transaction() as connection:
             connection.execute(
-                """
-                INSERT INTO admin_users(admin_user_id, username, display_name, role, password_hash, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (admin_id, normalized_username, display_name.strip(), role, stored_password_hash, utc_now_text()),
+                """INSERT INTO admin_users(admin_user_id, username, display_name, role,
+                                            password_hash, active, created_at)
+                   VALUES (?, ?, ?, ?, ?, 1, ?)""",
+                (
+                    admin_user_id,
+                    username,
+                    display_name,
+                    role,
+                    hash_admin_password(password) if password else None,
+                    utc_now_text(),
+                ),
             )
-            self._audit(connection, "admin_user.created", "admin_user", admin_id, None, {"role": role})
-        return admin_id
+            self.database.append_audit(
+                connection,
+                event_id=_identifier("EVT"),
+                action="admin_user.created",
+                entity_type="admin_user",
+                entity_id=admin_user_id,
+                admin_user_id=admin_user_id,
+                details={"username": username, "role": role},
+            )
+        return admin_user_id
 
-    def authenticate_admin(self, username: str, password: str) -> str:
-        normalized_username = username.strip().casefold()
+    def authenticate_admin(self, username: str, password: str) -> dict[str, Any] | None:
         with self.database.read() as connection:
             row = connection.execute(
-                "SELECT admin_user_id, password_hash, active FROM admin_users WHERE username = ?",
-                (normalized_username,),
+                "SELECT * FROM admin_users WHERE username = ? AND active = 1",
+                (username.strip().casefold(),),
             ).fetchone()
-        if not row or not row["active"] or not verify_admin_password(password, row["password_hash"]):
-            raise PermissionError("Credenciais administrativas inválidas.")
-        return str(row["admin_user_id"])
+        if not row or not verify_admin_password(password, row["password_hash"]):
+            return None
+        return dict(row)
 
-    def set_admin_password(
-        self,
-        admin_user_id: str,
-        new_password: str,
-        *,
-        current_password: str | None = None,
-        acting_admin_user_id: str | None = None,
-    ) -> None:
+    def set_admin_password(self, admin_user_id: str, password: str) -> None:
+        encoded = hash_admin_password(password)
         with self.database.transaction() as connection:
-            self._require_admin(connection, acting_admin_user_id)
-            row = connection.execute(
-                "SELECT username, password_hash, active FROM admin_users WHERE admin_user_id = ?",
-                (admin_user_id,),
-            ).fetchone()
-            if not row or not row["active"]:
-                raise RecordNotFoundError("Usuário administrativo ativo não encontrado.")
-            if row["password_hash"] and not verify_admin_password(current_password or "", row["password_hash"]):
-                raise PermissionError("A senha administrativa atual é inválida.")
-            connection.execute(
-                "UPDATE admin_users SET password_hash = ? WHERE admin_user_id = ?",
-                (hash_admin_password(new_password), admin_user_id),
-            )
-            self._audit(
-                connection,
-                "admin_user.password_changed",
-                "admin_user",
-                admin_user_id,
-                acting_admin_user_id,
-            )
+            if not connection.execute(
+                "UPDATE admin_users SET password_hash = ? WHERE admin_user_id = ? AND active = 1",
+                (encoded, admin_user_id),
+            ).rowcount:
+                raise RecordNotFoundError("Usuário administrativo não encontrado.")
+            self._audit(connection, "admin_user.password_changed", "admin_user", admin_user_id, admin_user_id, {})
 
-    def revoke_admin_user(
-        self,
-        admin_user_id: str,
-        *,
-        reason: str,
-        confirmation: str,
-        acting_admin_user_id: str | None = None,
-    ) -> None:
-        expected = f"REVOGAR-ADMIN:{admin_user_id}"
-        if confirmation != expected:
-            raise ConfirmationRequiredError(f"Confirmação obrigatória: {expected}")
-        if not reason.strip():
-            raise ValueError("O motivo da revogação é obrigatório.")
+    def revoke_admin_user(self, admin_user_id: str, *, performed_by: str | None = None) -> None:
         with self.database.transaction() as connection:
-            self._require_admin(connection, acting_admin_user_id)
-            row = connection.execute(
-                "SELECT active FROM admin_users WHERE admin_user_id = ?", (admin_user_id,)
-            ).fetchone()
-            if not row or not row["active"]:
-                raise RecordNotFoundError("Usuário administrativo ativo não encontrado.")
-            connection.execute("UPDATE admin_users SET active = 0 WHERE admin_user_id = ?", (admin_user_id,))
-            connection.execute("UPDATE admin_api_tokens SET active = 0 WHERE admin_user_id = ?", (admin_user_id,))
+            if not connection.execute(
+                "UPDATE admin_users SET active = 0 WHERE admin_user_id = ? AND active = 1", (admin_user_id,)
+            ).rowcount:
+                raise RecordNotFoundError("Usuário administrativo não encontrado.")
             self._audit(
-                connection,
-                "admin_user.revoked",
-                "admin_user",
-                admin_user_id,
-                acting_admin_user_id,
-                {"reason": reason.strip()},
+                connection, "admin_user.deactivated", "admin_user", admin_user_id, performed_by, {}
             )
 
     def create_customer(
@@ -239,8 +197,7 @@ class AdminLicenseService:
         admin_user_id: str | None = None,
     ) -> str:
         with self.database.transaction() as connection:
-            self._require_admin(connection, admin_user_id)
-            return self._create_customer_in_transaction(
+            return self._create_customer(
                 connection,
                 name,
                 email=email,
@@ -250,227 +207,7 @@ class AdminLicenseService:
                 admin_user_id=admin_user_id,
             )
 
-    def issue_license(
-        self,
-        customer_id: str,
-        *,
-        term_months: int,
-        features: Iterable[str] = ("converter", "ocr", "reader"),
-        validation_mode: str = "offline",
-        max_offline_days: int = 0,
-        starts_at: datetime | None = None,
-        customer_reference: str | None = None,
-        commercial_reference: str | None = None,
-        machine_id: str | None = None,
-        activation_secret: str | None = None,
-        admin_user_id: str | None = None,
-    ) -> str:
-        prepared = self._prepare_license_issue(
-            term_months=term_months,
-            features=features,
-            validation_mode=validation_mode,
-            max_offline_days=max_offline_days,
-            starts_at=starts_at,
-            customer_reference=customer_reference,
-            commercial_reference=commercial_reference,
-            machine_id=machine_id,
-            activation_secret=activation_secret,
-        )
-        with self.database.transaction() as connection:
-            self._require_admin(connection, admin_user_id)
-            return self._issue_license_in_transaction(
-                connection,
-                customer_id,
-                prepared,
-                admin_user_id=admin_user_id,
-            )
-
-    def _prepare_license_issue(
-        self,
-        *,
-        term_months: int,
-        features: Iterable[str],
-        validation_mode: str,
-        max_offline_days: int,
-        starts_at: datetime | None = None,
-        customer_reference: str | None = None,
-        commercial_reference: str | None = None,
-        machine_id: str | None = None,
-        activation_secret: str | None = None,
-    ) -> dict[str, Any]:
-        if term_months not in _TERMS:
-            raise ValueError("O prazo deve ser de 3, 6 ou 12 meses.")
-        normalized_features = tuple(sorted(set(features)))
-        if not normalized_features or not set(normalized_features).issubset(_FEATURES):
-            raise ValueError("As funcionalidades da licença são inválidas.")
-        if validation_mode == "offline" and max_offline_days != 0:
-            raise ValueError("Licenças offline devem usar max_offline_days igual a 0.")
-        if validation_mode == "hybrid" and not 1 <= max_offline_days <= 30:
-            raise ValueError("Licenças híbridas devem usar prazo offline entre 1 e 30 dias.")
-        if validation_mode not in {"offline", "hybrid"}:
-            raise ValueError("O modo de validação deve ser offline ou hybrid.")
-        normalized_machine = (machine_id or "").strip().upper()
-        if normalized_machine and not _MACHINE_ID.fullmatch(normalized_machine):
-            raise ValueError("O código da máquina NXJ2 é inválido.")
-        activation_secret_hash = None
-        if activation_secret is not None:
-            if len(activation_secret) < 32:
-                raise ValueError("O segredo de ativação deve possuir ao menos 32 caracteres.")
-            activation_secret_hash = hashlib.sha256(activation_secret.encode("utf-8")).hexdigest()
-        starts = _utc(starts_at)
-        issued = _utc()
-        if issued > starts:
-            starts = issued
-        expires = _add_months(starts, term_months)
-        return {
-            "term_months": term_months,
-            "features": normalized_features,
-            "validation_mode": validation_mode,
-            "max_offline_days": max_offline_days,
-            "machine_id": normalized_machine,
-            "activation_secret_hash": activation_secret_hash,
-            "issued": issued,
-            "starts": starts,
-            "expires": expires,
-            "key_id": self._active_key_id(),
-            "customer_reference": (customer_reference or f"CUST-{uuid.uuid4().hex[:12]}").strip().upper(),
-            "commercial_reference": _optional_text(commercial_reference),
-        }
-
-    def validate_legacy_migration(
-        self,
-        machine_id: str,
-        activation_key: str,
-        *,
-        confirmation: str,
-    ) -> LegacyLicenseVersion:
-        normalized_machine = machine_id.strip().upper()
-        normalized_key = activation_key.strip().upper()
-        if not _MACHINE_ID.fullmatch(normalized_machine):
-            raise ValueError("O código da máquina NXJ2 é inválido.")
-        version = detect_legacy_activation_key(normalized_key)
-        if version not in {LegacyLicenseVersion.ACT2, LegacyLicenseVersion.ACT3}:
-            raise ValueError("Informe uma licença legada ACT2 ou ACT3 válida.")
-        expected = f"MIGRAR:{normalized_machine}"
-        if confirmation != expected:
-            raise ConfirmationRequiredError(f"Confirmação obrigatória: {expected}")
-        if not self.legacy_key_verifier(normalized_machine, normalized_key):
-            raise ValueError("A licença legada não é válida para a máquina informada.")
-        return version
-
-    def migrate_legacy_license(
-        self,
-        customer_id: str,
-        *,
-        machine_id: str,
-        activation_key: str,
-        confirmation: str,
-        term_months: int,
-        features: Iterable[str] = ("converter", "ocr", "reader"),
-        validation_mode: str = "offline",
-        max_offline_days: int = 0,
-        commercial_reference: str | None = None,
-        admin_user_id: str | None = None,
-    ) -> tuple[str, str]:
-        normalized_machine = machine_id.strip().upper()
-        normalized_key = activation_key.strip().upper()
-        version = self.validate_legacy_migration(
-            normalized_machine,
-            normalized_key,
-            confirmation=confirmation,
-        )
-        legacy_key_hash = hashlib.sha256(normalized_key.encode("ascii")).hexdigest()
-        prepared = self._prepare_license_issue(
-            term_months=term_months,
-            features=features,
-            validation_mode=validation_mode,
-            max_offline_days=max_offline_days,
-            machine_id=normalized_machine,
-            commercial_reference=commercial_reference,
-        )
-        with self.database.transaction() as connection:
-            self._require_admin(connection, admin_user_id)
-            self._require_legacy_migration_available(connection, legacy_key_hash)
-            license_id = self._issue_license_in_transaction(
-                connection,
-                customer_id,
-                prepared,
-                admin_user_id=admin_user_id,
-            )
-            migration_id = self._record_legacy_migration_in_transaction(
-                connection,
-                version=version,
-                legacy_key_hash=legacy_key_hash,
-                machine_id=normalized_machine,
-                customer_id=customer_id,
-                license_id=license_id,
-                admin_user_id=admin_user_id,
-            )
-        return migration_id, license_id
-
-    def create_customer_and_migrate_legacy_license(
-        self,
-        name: str,
-        *,
-        machine_id: str,
-        activation_key: str,
-        confirmation: str,
-        term_months: int,
-        features: Iterable[str] = ("converter", "ocr", "reader"),
-        validation_mode: str = "offline",
-        max_offline_days: int = 0,
-        email: str | None = None,
-        phone: str | None = None,
-        tax_id: str | None = None,
-        commercial_reference: str | None = None,
-        admin_user_id: str | None = None,
-    ) -> tuple[str, str, str]:
-        normalized_machine = machine_id.strip().upper()
-        normalized_key = activation_key.strip().upper()
-        version = self.validate_legacy_migration(
-            normalized_machine,
-            normalized_key,
-            confirmation=confirmation,
-        )
-        legacy_key_hash = hashlib.sha256(normalized_key.encode("ascii")).hexdigest()
-        prepared = self._prepare_license_issue(
-            term_months=term_months,
-            features=features,
-            validation_mode=validation_mode,
-            max_offline_days=max_offline_days,
-            machine_id=normalized_machine,
-            commercial_reference=commercial_reference,
-        )
-        with self.database.transaction() as connection:
-            self._require_admin(connection, admin_user_id)
-            self._require_legacy_migration_available(connection, legacy_key_hash)
-            customer_id = self._create_customer_in_transaction(
-                connection,
-                name,
-                email=email,
-                phone=phone,
-                tax_id=tax_id,
-                commercial_reference=commercial_reference,
-                admin_user_id=admin_user_id,
-            )
-            license_id = self._issue_license_in_transaction(
-                connection,
-                customer_id,
-                prepared,
-                admin_user_id=admin_user_id,
-            )
-            migration_id = self._record_legacy_migration_in_transaction(
-                connection,
-                version=version,
-                legacy_key_hash=legacy_key_hash,
-                machine_id=normalized_machine,
-                customer_id=customer_id,
-                license_id=license_id,
-                admin_user_id=admin_user_id,
-            )
-        return migration_id, customer_id, license_id
-
-    def _create_customer_in_transaction(
+    def _create_customer(
         self,
         connection: Any,
         name: str,
@@ -481,190 +218,108 @@ class AdminLicenseService:
         commercial_reference: str | None,
         admin_user_id: str | None,
     ) -> str:
-        normalized_name = _normalize_name(name)
-        if not normalized_name:
+        name = name.strip()
+        if not name:
             raise ValueError("O nome do cliente é obrigatório.")
-        customer_id = _id("CUS")
+        customer_id = _identifier("CUS")
         connection.execute(
-            """
-            INSERT INTO customers(
-                customer_id, name, normalized_name, email, phone, tax_id,
-                commercial_reference, created_at, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            """INSERT INTO customers(customer_id, name, normalized_name, email, phone, tax_id,
+                                     commercial_reference, created_at, created_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 customer_id,
-                name.strip(),
-                normalized_name,
+                name,
+                _normalize_name(name),
                 _optional_text(email),
                 _optional_text(phone),
-                _optional_text(tax_id, upper=True),
+                _optional_text(tax_id),
                 _optional_text(commercial_reference),
                 utc_now_text(),
                 admin_user_id,
             ),
         )
-        self._audit(connection, "customer.created", "customer", customer_id, admin_user_id)
+        self._audit(
+            connection, "customer.created", "customer", customer_id, admin_user_id, {"name": name}
+        )
         return customer_id
 
-    def _issue_license_in_transaction(
+    def issue_license(
         self,
-        connection: Any,
         customer_id: str,
-        prepared: dict[str, Any],
         *,
-        admin_user_id: str | None,
-    ) -> str:
-        if not connection.execute("SELECT 1 FROM customers WHERE customer_id = ?", (customer_id,)).fetchone():
-            raise RecordNotFoundError("Cliente não encontrado.")
-        prefix = f"LIC-{prepared['issued'].year}-"
-        row = connection.execute(
-            "SELECT COALESCE(MAX(CAST(substr(license_id, 10) AS INTEGER)), 0) FROM licenses WHERE license_id LIKE ?",
-            (f"{prefix}%",),
-        ).fetchone()
-        license_id = f"{prefix}{int(row[0]) + 1:06d}"
-        connection.execute(
-            """
-            INSERT INTO licenses(
-                license_id, customer_id, key_id, status, issued_at, not_before,
-                expires_at, term_months, validation_mode, max_offline_days,
-                customer_reference, commercial_reference, created_by,
-                activation_secret_hash
-            ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                license_id,
-                customer_id,
-                prepared["key_id"],
-                _timestamp(prepared["issued"]),
-                _timestamp(prepared["starts"]),
-                _timestamp(prepared["expires"]),
-                prepared["term_months"],
-                prepared["validation_mode"],
-                prepared["max_offline_days"],
-                prepared["customer_reference"],
-                prepared["commercial_reference"],
-                admin_user_id,
-                prepared["activation_secret_hash"],
-            ),
-        )
-        connection.executemany(
-            "INSERT INTO license_features(license_id, feature) VALUES (?, ?)",
-            ((license_id, feature) for feature in prepared["features"]),
-        )
-        device_id = None
-        if prepared["machine_id"]:
-            device_id = _id("DEV")
-            connection.execute(
-                """
-                INSERT INTO licensed_devices(device_id, license_id, machine_id, bound_at, active, created_by)
-                VALUES (?, ?, ?, ?, 1, ?)
-                """,
-                (device_id, license_id, prepared["machine_id"], utc_now_text(), admin_user_id),
-            )
-        self._refresh_search(connection, license_id)
-        self._audit(
-            connection,
-            "license.issued",
-            "license",
-            license_id,
-            admin_user_id,
-            {
-                "customer_id": customer_id,
-                "term_months": prepared["term_months"],
-                "validation_mode": prepared["validation_mode"],
-            },
-        )
-        if device_id:
-            self._audit(
-                connection,
-                "device.bound",
-                "license",
-                license_id,
-                admin_user_id,
-                {"device_id": device_id, "machine_id": prepared["machine_id"]},
-            )
-        return license_id
-
-    @staticmethod
-    def _require_legacy_migration_available(connection: Any, legacy_key_hash: str) -> None:
-        if connection.execute(
-            "SELECT 1 FROM legacy_license_migrations WHERE legacy_key_hash = ?",
-            (legacy_key_hash,),
-        ).fetchone():
-            raise InvalidTransitionError("Esta licença legada já possui uma migração registrada.")
-
-    def _record_legacy_migration_in_transaction(
-        self,
-        connection: Any,
-        *,
-        version: LegacyLicenseVersion,
-        legacy_key_hash: str,
+        term_months: int,
         machine_id: str,
-        customer_id: str,
-        license_id: str,
-        admin_user_id: str | None,
+        features: Iterable[str] = ("converter", "ocr", "reader"),
+        customer_reference: str | None = None,
+        commercial_reference: str | None = None,
+        admin_user_id: str | None = None,
+        at: datetime | None = None,
     ) -> str:
-        migration_id = _id("MIG")
-        connection.execute(
-            """
-            INSERT INTO legacy_license_migrations(
-                migration_id, legacy_version, legacy_key_hash, machine_id,
-                customer_id, license_id, acknowledged_at, admin_user_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                migration_id,
-                version.value,
-                legacy_key_hash,
-                machine_id,
-                customer_id,
-                license_id,
-                utc_now_text(),
-                admin_user_id,
-            ),
-        )
-        self._audit(
-            connection,
-            "license.migrated_from_legacy",
-            "license",
-            license_id,
-            admin_user_id,
-            {"migration_id": migration_id, "legacy_version": version.value, "machine_id": machine_id},
-        )
-        return migration_id
-
-    def bind_device(self, license_id: str, machine_id: str, *, admin_user_id: str | None = None) -> str:
-        normalized_machine = machine_id.strip().upper()
-        if not _MACHINE_ID.fullmatch(normalized_machine):
-            raise ValueError("O código da máquina NXJ2 é inválido.")
-        device_id = _id("DEV")
+        if term_months not in _TERMS:
+            raise ValueError("O prazo deve ser de 3, 6 ou 12 meses.")
+        machine_id = _validate_machine_id(machine_id)
+        normalized_features = _validate_features(features)
+        now = datetime.now(UTC) if at is None else at.astimezone(UTC)
+        issued_at = _timestamp(now)
+        expires_at = _timestamp(_add_months(now, term_months))
+        key_id, private_key = self._signing_identity()
         with self.database.transaction() as connection:
-            self._require_admin(connection, admin_user_id)
-            license_row = self._license_row(connection, license_id)
-            if license_row["status"] == "revoked":
-                raise InvalidTransitionError("Não é possível vincular dispositivo a uma licença revogada.")
-            if connection.execute(
-                "SELECT 1 FROM licensed_devices WHERE license_id = ? AND active = 1", (license_id,)
-            ).fetchone():
-                raise InvalidTransitionError("A licença já possui um dispositivo ativo.")
+            customer = connection.execute(
+                "SELECT * FROM customers WHERE customer_id = ?", (customer_id,)
+            ).fetchone()
+            if not customer:
+                raise RecordNotFoundError("Cliente não encontrado.")
+            license_id = self._next_license_id(connection, now.year)
+            reference = (customer_reference or license_id).strip().upper()
+            payload = LicensePayload(
+                key_id=key_id,
+                license_id=license_id,
+                revision=1,
+                machine_id=machine_id,
+                issued_at=issued_at,
+                not_before=issued_at,
+                expires_at=expires_at,
+                features=normalized_features,
+                customer_reference=reference,
+            )
+            document = issue_license(payload, private_key)
+            digest = hashlib.sha256(document).hexdigest()
             connection.execute(
-                """
-                INSERT INTO licensed_devices(device_id, license_id, machine_id, bound_at, active, created_by)
-                VALUES (?, ?, ?, ?, 1, ?)
-                """,
-                (device_id, license_id, normalized_machine, utc_now_text(), admin_user_id),
+                """INSERT INTO licenses(license_id, customer_id, key_id, current_revision,
+                                        machine_id, issued_at, not_before, expires_at, term_months,
+                                        customer_reference, commercial_reference, created_by)
+                   VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    license_id,
+                    customer_id,
+                    key_id,
+                    machine_id,
+                    issued_at,
+                    issued_at,
+                    expires_at,
+                    term_months,
+                    reference,
+                    _optional_text(commercial_reference),
+                    admin_user_id,
+                ),
+            )
+            connection.executemany(
+                "INSERT INTO license_features(license_id, feature) VALUES (?, ?)",
+                ((license_id, feature) for feature in normalized_features),
+            )
+            self._insert_revision(
+                connection, payload, "issue", term_months, document, digest, admin_user_id
             )
             self._refresh_search(connection, license_id)
             self._audit(
                 connection,
-                "device.bound",
+                "license.issued",
                 "license",
                 license_id,
                 admin_user_id,
-                {"device_id": device_id, "machine_id": normalized_machine},
+                {"revision": 1, "machine_id": machine_id, "expires_at": expires_at},
             )
-        return device_id
+        return license_id
 
     def renew_license(
         self,
@@ -672,40 +327,39 @@ class AdminLicenseService:
         *,
         term_months: int,
         admin_user_id: str | None = None,
-        now: datetime | None = None,
-    ) -> str:
+        at: datetime | None = None,
+    ) -> int:
         if term_months not in _TERMS:
-            raise ValueError("A renovação deve ser de 3, 6 ou 12 meses.")
-        instant = _utc(now)
-        renewal_id = _id("REN")
+            raise ValueError("O prazo deve ser de 3, 6 ou 12 meses.")
+        now = datetime.now(UTC) if at is None else at.astimezone(UTC)
+        key_id, private_key = self._signing_identity()
         with self.database.transaction() as connection:
-            self._require_admin(connection, admin_user_id)
             row = self._license_row(connection, license_id)
-            if row["status"] == "revoked":
-                raise InvalidTransitionError("Licenças revogadas não podem ser renovadas.")
-            previous = _parse_timestamp(row["expires_at"])
-            base = max(previous, instant)
-            new_expiration = _add_months(base, term_months)
-            connection.execute(
-                "UPDATE licenses SET expires_at = ?, term_months = ? WHERE license_id = ?",
-                (_timestamp(new_expiration), term_months, license_id),
+            features = self._features(connection, license_id)
+            revision = int(row["current_revision"]) + 1
+            base = max(now, _parse_timestamp(row["expires_at"]))
+            issued_at, expires_at = _timestamp(now), _timestamp(_add_months(base, term_months))
+            payload = LicensePayload(
+                key_id=key_id,
+                license_id=license_id,
+                revision=revision,
+                machine_id=row["machine_id"],
+                issued_at=issued_at,
+                not_before=issued_at,
+                expires_at=expires_at,
+                features=features,
+                customer_reference=row["customer_reference"],
             )
+            document = issue_license(payload, private_key)
+            digest = hashlib.sha256(document).hexdigest()
             connection.execute(
-                """
-                INSERT INTO license_renewals(
-                    renewal_id, license_id, previous_expires_at, new_expires_at,
-                    term_months, renewed_at, admin_user_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    renewal_id,
-                    license_id,
-                    row["expires_at"],
-                    _timestamp(new_expiration),
-                    term_months,
-                    _timestamp(instant),
-                    admin_user_id,
-                ),
+                """UPDATE licenses SET key_id = ?, current_revision = ?, issued_at = ?,
+                                       not_before = ?, expires_at = ?, term_months = ?
+                   WHERE license_id = ?""",
+                (key_id, revision, issued_at, issued_at, expires_at, term_months, license_id),
+            )
+            self._insert_revision(
+                connection, payload, "renew", term_months, document, digest, admin_user_id
             )
             self._refresh_search(connection, license_id)
             self._audit(
@@ -714,148 +368,111 @@ class AdminLicenseService:
                 "license",
                 license_id,
                 admin_user_id,
-                {"renewal_id": renewal_id, "new_expires_at": _timestamp(new_expiration), "term_months": term_months},
+                {"revision": revision, "previous_expires_at": row["expires_at"], "expires_at": expires_at},
             )
-        return renewal_id
-
-    def suspend_license(self, license_id: str, reason: str, *, admin_user_id: str | None = None) -> str:
-        return self._change_status(license_id, "suspended", reason, admin_user_id=admin_user_id)
-
-    def revoke_license(
-        self,
-        license_id: str,
-        reason: str,
-        *,
-        confirmation: str,
-        admin_user_id: str | None = None,
-    ) -> str:
-        expected = f"REVOGAR:{license_id}"
-        if confirmation != expected:
-            raise ConfirmationRequiredError(f"Confirmação obrigatória: {expected}")
-        return self._change_status(license_id, "revoked", reason, admin_user_id=admin_user_id)
-
-    def reactivate_license(self, license_id: str, reason: str, *, admin_user_id: str | None = None) -> str:
-        return self._change_status(license_id, "active", reason, admin_user_id=admin_user_id)
+        return revision
 
     def replace_device(
         self,
         license_id: str,
-        new_machine_id: str,
+        machine_id: str,
         *,
         confirmation: str,
         reason: str,
         admin_user_id: str | None = None,
-    ) -> str:
+        at: datetime | None = None,
+    ) -> int:
         expected = f"TROCAR:{license_id}"
         if confirmation != expected:
             raise ConfirmationRequiredError(f"Confirmação obrigatória: {expected}")
-        normalized_machine = new_machine_id.strip().upper()
-        if not _MACHINE_ID.fullmatch(normalized_machine):
-            raise ValueError("O código da nova máquina NXJ2 é inválido.")
-        if not reason.strip():
-            raise ValueError("O motivo da troca de computador é obrigatório.")
-        new_device_id = _id("DEV")
-        timestamp = utc_now_text()
+        machine_id = _validate_machine_id(machine_id)
+        reason = reason.strip()
+        if not reason:
+            raise ValueError("Informe o motivo da troca de computador.")
+        now = datetime.now(UTC) if at is None else at.astimezone(UTC)
+        issued_at = _timestamp(now)
+        key_id, private_key = self._signing_identity()
         with self.database.transaction() as connection:
-            self._require_admin(connection, admin_user_id)
             row = self._license_row(connection, license_id)
-            if row["status"] == "revoked":
-                raise InvalidTransitionError("Não é possível trocar o dispositivo de uma licença revogada.")
-            current = connection.execute(
-                "SELECT * FROM licensed_devices WHERE license_id = ? AND active = 1", (license_id,)
-            ).fetchone()
-            if not current:
-                raise RecordNotFoundError("A licença não possui dispositivo ativo para substituição.")
-            connection.execute(
-                "UPDATE licensed_devices SET active = 0, unbound_at = ? WHERE device_id = ?",
-                (timestamp, current["device_id"]),
+            if row["machine_id"] == machine_id:
+                raise InvalidTransitionError("A licença já está vinculada a esse computador.")
+            revision = int(row["current_revision"]) + 1
+            features = self._features(connection, license_id)
+            payload = LicensePayload(
+                key_id=key_id,
+                license_id=license_id,
+                revision=revision,
+                machine_id=machine_id,
+                issued_at=issued_at,
+                not_before=issued_at,
+                expires_at=row["expires_at"],
+                features=features,
+                customer_reference=row["customer_reference"],
             )
+            document = issue_license(payload, private_key)
+            digest = hashlib.sha256(document).hexdigest()
             connection.execute(
-                """
-                INSERT INTO licensed_devices(device_id, license_id, machine_id, bound_at, active, created_by)
-                VALUES (?, ?, ?, ?, 1, ?)
-                """,
-                (new_device_id, license_id, normalized_machine, timestamp, admin_user_id),
+                """UPDATE licenses SET key_id = ?, current_revision = ?, machine_id = ?,
+                                       issued_at = ?, not_before = ? WHERE license_id = ?""",
+                (key_id, revision, machine_id, issued_at, issued_at, license_id),
+            )
+            self._insert_revision(
+                connection,
+                payload,
+                "replace_device",
+                int(row["term_months"]),
+                document,
+                digest,
+                admin_user_id,
             )
             self._refresh_search(connection, license_id)
             self._audit(
                 connection,
-                "device.replaced",
+                "license.device_replaced",
                 "license",
                 license_id,
                 admin_user_id,
                 {
-                    "previous_device_id": current["device_id"],
-                    "new_device_id": new_device_id,
-                    "new_machine_id": normalized_machine,
-                    "reason": reason.strip(),
+                    "revision": revision,
+                    "old_machine_id": row["machine_id"],
+                    "new_machine_id": machine_id,
+                    "reason": reason,
                 },
             )
-        return new_device_id
+        return revision
 
     def export_license(
-        self,
-        license_id: str,
-        destination: str | Path,
-        *,
-        admin_user_id: str | None = None,
+        self, license_id: str, destination: str | Path, *, admin_user_id: str | None = None
     ) -> Path:
-        with self.database.read() as connection:
-            self._require_admin(connection, admin_user_id)
-            row = self._license_row(connection, license_id)
-            if row["status"] != "active":
-                raise InvalidTransitionError("Somente licenças ativas podem ser exportadas.")
-            if _parse_timestamp(row["expires_at"]) <= _utc():
-                raise InvalidTransitionError("Licenças expiradas não podem ser exportadas.")
-            device = connection.execute(
-                "SELECT * FROM licensed_devices WHERE license_id = ? AND active = 1", (license_id,)
-            ).fetchone()
-            if not device:
-                raise RecordNotFoundError("Vincule um dispositivo antes de exportar a licença.")
-            features = tuple(
-                item[0]
-                for item in connection.execute(
-                    "SELECT feature FROM license_features WHERE license_id = ? ORDER BY feature", (license_id,)
-                ).fetchall()
-            )
-        payload = LicensePayload(
-            key_id=row["key_id"],
-            license_id=row["license_id"],
-            machine_id=device["machine_id"],
-            issued_at=row["issued_at"],
-            not_before=row["not_before"],
-            expires_at=row["expires_at"],
-            validation_mode=row["validation_mode"],
-            max_offline_days=row["max_offline_days"],
-            features=features,
-            customer_reference=row["customer_reference"],
-        )
-        document = issue_license(payload, self._private_key_for(row["key_id"]))
         target = Path(destination).expanduser().resolve()
         if target.suffix.lower() != LICENSE_FILE_SUFFIX:
-            raise ValueError(f"A exportação deve usar a extensão {LICENSE_FILE_SUFFIX}.")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
-        try:
-            with os.fdopen(descriptor, "wb") as temporary:
-                temporary.write(document)
-                temporary.flush()
-                os.fsync(temporary.fileno())
-            os.replace(temporary_name, target)
-        finally:
-            Path(temporary_name).unlink(missing_ok=True)
-        digest = hashlib.sha256(document).hexdigest()
-        export_id = _id("EXP")
+            raise ValueError(f"A licença deve usar a extensão {LICENSE_FILE_SUFFIX}.")
         with self.database.transaction() as connection:
-            self._require_admin(connection, admin_user_id)
+            row = connection.execute(
+                """SELECT r.* FROM license_revisions r
+                   JOIN licenses l ON l.license_id = r.license_id AND l.current_revision = r.revision
+                   WHERE r.license_id = ?""",
+                (license_id,),
+            ).fetchone()
+            if not row:
+                raise RecordNotFoundError("Licença não encontrada.")
+            document = bytes(row["document"])
+            if hashlib.sha256(document).hexdigest() != row["document_sha256"]:
+                raise AdminLicenseError("O documento assinado armazenado está corrompido.")
+            self._atomic_write(target, document)
+            export_id = _identifier("EXP")
             connection.execute(
-                """
-                INSERT INTO offline_exports(
-                    export_id, license_id, device_id, document_sha256,
-                    file_name, exported_at, admin_user_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (export_id, license_id, device["device_id"], digest, target.name, utc_now_text(), admin_user_id),
+                """INSERT INTO offline_exports(export_id, license_id, revision, document_sha256,
+                                                exported_at, admin_user_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    export_id,
+                    license_id,
+                    row["revision"],
+                    row["document_sha256"],
+                    utc_now_text(),
+                    admin_user_id,
+                ),
             )
             self._audit(
                 connection,
@@ -863,356 +480,204 @@ class AdminLicenseService:
                 "license",
                 license_id,
                 admin_user_id,
-                {"export_id": export_id, "device_id": device["device_id"], "sha256": digest},
+                {"revision": row["revision"], "document_sha256": row["document_sha256"]},
             )
         return target
 
     def get_license(self, license_id: str) -> dict[str, Any]:
         with self.database.read() as connection:
-            row = self._license_row(connection, license_id)
-            customer = connection.execute(
-                "SELECT * FROM customers WHERE customer_id = ?", (row["customer_id"],)
+            row = connection.execute(
+                """SELECT l.*, c.name AS customer_name, c.email AS customer_email,
+                          c.phone AS customer_phone, c.tax_id AS customer_tax_id,
+                          c.commercial_reference AS customer_commercial_reference
+                   FROM licenses l JOIN customers c ON c.customer_id = l.customer_id
+                   WHERE l.license_id = ?""",
+                (license_id,),
             ).fetchone()
-            device = connection.execute(
-                "SELECT * FROM licensed_devices WHERE license_id = ? AND active = 1", (license_id,)
-            ).fetchone()
-            features = [
-                feature[0]
-                for feature in connection.execute(
-                    "SELECT feature FROM license_features WHERE license_id = ? ORDER BY feature", (license_id,)
-                ).fetchall()
-            ]
-        return {
-            **dict(row),
-            "customer": dict(customer),
-            "active_device": dict(device) if device else None,
-            "features": features,
-        }
-
-    def search_licenses(
-        self,
-        query: str,
-        *,
-        page: int = 1,
-        page_size: int = 25,
-        now: datetime | None = None,
-    ) -> dict[str, Any]:
-        """Executa busca paginada; consulta vazia nunca carrega a tabela geral."""
-        expression = query.strip()
-        if not expression:
-            return {"query": "", "page": 1, "page_size": page_size, "total": 0, "items": []}
-        if len(expression) > 500:
-            raise ValueError("A busca não pode exceder 500 caracteres.")
-        if page < 1:
-            raise ValueError("A página deve ser maior ou igual a 1.")
-        if not 1 <= page_size <= 100:
-            raise ValueError("O tamanho da página deve ficar entre 1 e 100.")
-        instant = _utc(now)
-        instant_text = _timestamp(instant)
-        conditions: list[str] = []
-        parameters: list[Any] = []
-        free_terms: list[str] = []
-        try:
-            tokens = shlex.split(expression)
-        except ValueError as error:
-            raise ValueError("A busca contém aspas não fechadas.") from error
-        if len(tokens) > 20:
-            raise ValueError("A busca não pode exceder 20 termos.")
-        for token in tokens:
-            if ":" not in token:
-                free_terms.append(token)
-                continue
-            field, value = token.split(":", 1)
-            field = field.casefold()
-            value = value.strip()
-            if field == "status":
-                status = value.casefold()
-                if status in {"expirada", "expired"}:
-                    conditions.append("l.status = 'active' AND l.expires_at <= ?")
-                    parameters.append(instant_text)
-                elif status in {"ativa", "active"}:
-                    conditions.append("l.status = 'active' AND l.expires_at > ?")
-                    parameters.append(instant_text)
-                elif status in {"suspensa", "suspended"}:
-                    conditions.append("l.status = 'suspended'")
-                elif status in {"revogada", "revoked"}:
-                    conditions.append("l.status = 'revoked'")
-                elif status in {"aguardando", "aguardando_conexao"}:
-                    conditions.append(
-                        "l.validation_mode = 'hybrid' AND l.status = 'active' AND l.expires_at > ? "
-                        "AND NOT EXISTS (SELECT 1 FROM online_leases waiting WHERE waiting.license_id = l.license_id "
-                        "AND waiting.status = 'active' AND waiting.expires_at > ?)"
-                    )
-                    parameters.extend((instant_text, instant_text))
-                else:
-                    raise ValueError(f"Status de busca desconhecido: {value}.")
-            elif field in {"expira", "offline"}:
-                match = re.fullmatch(r"(\d{1,3})d", value.casefold())
-                if not match:
-                    raise ValueError(f"O filtro {field} deve usar o formato Nd, por exemplo 7d.")
-                days = int(match.group(1))
-                cutoff = _timestamp(instant + timedelta(days=days))
-                if field == "expira":
-                    conditions.append("l.status = 'active' AND l.expires_at > ? AND l.expires_at <= ?")
-                    parameters.extend((instant_text, cutoff))
-                else:
-                    conditions.append(
-                        "l.status = 'active' AND l.expires_at > ? AND "
-                        "EXISTS (SELECT 1 FROM online_leases lease_filter WHERE lease_filter.license_id = l.license_id "
-                        "AND lease_filter.status = 'active' AND lease_filter.expires_at > ? "
-                        "AND lease_filter.expires_at <= ?)"
-                    )
-                    parameters.extend((instant_text, instant_text, cutoff))
-            elif field == "cliente":
-                conditions.append("c.normalized_name LIKE ?")
-                parameters.append(f"{_normalize_name(value)}%")
-            elif field in {"maquina", "machine"}:
-                conditions.append("d.machine_id LIKE ?")
-                parameters.append(f"{value.upper()}%")
-            else:
-                free_terms.append(token)
-        if free_terms:
-            searchable = []
-            for term in free_terms:
-                parts = re.findall(r"[\w@.+-]+", term, flags=re.UNICODE)
-                searchable.extend(part for part in parts if part)
-            if searchable:
-                fts_query = " AND ".join(f'"{part.replace(chr(34), chr(34) * 2)}"*' for part in searchable)
-                conditions.append(
-                    "l.license_id IN (SELECT search.license_id FROM license_search search WHERE license_search MATCH ?)"
-                )
-                parameters.append(fts_query)
-        if not conditions:
-            return {"query": expression, "page": page, "page_size": page_size, "total": 0, "items": []}
-        where = " AND ".join(f"({condition})" for condition in conditions)
-        joins = (
-            " FROM licenses l JOIN customers c ON c.customer_id = l.customer_id "
-            "LEFT JOIN licensed_devices d ON d.license_id = l.license_id AND d.active = 1 "
-        )
-        with self.database.read() as connection:
-            total = int(connection.execute(f"SELECT COUNT(*){joins}WHERE {where}", parameters).fetchone()[0])
-            rows = connection.execute(
-                f"""
-                SELECT l.license_id, l.status, l.expires_at, l.validation_mode,
-                       l.commercial_reference, c.customer_id, c.name AS customer_name,
-                       c.email, c.phone, c.tax_id, d.machine_id,
-                       CASE WHEN l.status = 'active' AND l.expires_at <= ?
-                            THEN 'expired' ELSE l.status END AS effective_status
-                {joins}
-                WHERE {where}
-                ORDER BY CASE WHEN l.license_id = ? THEN 0 ELSE 1 END,
-                         l.expires_at ASC, l.license_id ASC
-                LIMIT ? OFFSET ?
-                """,
-                [instant_text, *parameters, expression.upper(), page_size, (page - 1) * page_size],
-            ).fetchall()
-        return {
-            "query": expression,
-            "page": page,
-            "page_size": page_size,
-            "total": total,
-            "items": [dict(row) for row in rows],
-        }
-
-    def dashboard(self, *, limit: int = 8, now: datetime | None = None) -> dict[str, Any]:
-        if not 1 <= limit <= 25:
-            raise ValueError("O limite do painel deve ficar entre 1 e 25.")
-        instant = _utc(now)
-        now_text = _timestamp(instant)
-        expiring_at = _timestamp(instant + timedelta(days=30))
-        expiring_condition = "l.status = 'active' AND l.expires_at > ? AND l.expires_at <= ?"
-        awaiting_condition = """
-            l.status = 'active' AND l.expires_at > ? AND l.validation_mode = 'hybrid'
-            AND NOT EXISTS (
-                SELECT 1 FROM online_leases ol WHERE ol.license_id = l.license_id
-                AND ol.status = 'active' AND ol.expires_at > ?
-            )
-        """
-        with self.database.read() as connection:
-            activities = [
-                dict(row)
-                for row in connection.execute(
-                    """
-                    SELECT event_id, action, entity_type, entity_id, occurred_at, admin_user_id
-                    FROM audit_events ORDER BY rowid DESC LIMIT ?
-                    """,
-                    (limit,),
-                ).fetchall()
-            ]
-            expiring = self._dashboard_licenses(
-                connection,
-                expiring_condition,
-                (now_text, expiring_at),
-                limit,
-            )
-            awaiting = self._dashboard_licenses(
-                connection,
-                awaiting_condition,
-                (now_text, now_text),
-                limit,
-            )
-            suspended = self._dashboard_licenses(connection, "l.status = 'suspended'", (), limit)
-            revoked = self._dashboard_licenses(connection, "l.status = 'revoked'", (), limit)
-            counts = {
-                "expiring": self._dashboard_count(connection, expiring_condition, (now_text, expiring_at)),
-                "awaiting_connection": self._dashboard_count(
-                    connection, awaiting_condition, (now_text, now_text)
-                ),
-                "suspended": self._dashboard_count(connection, "l.status = 'suspended'", ()),
-                "revoked": self._dashboard_count(connection, "l.status = 'revoked'", ()),
+            if not row:
+                raise RecordNotFoundError("Licença não encontrada.")
+            result = dict(row)
+            result["features"] = list(self._features(connection, license_id))
+            result["effective_status"] = self._effective_status(row["expires_at"])
+            result["active_device"] = {"machine_id": row["machine_id"]}
+            result["customer"] = {
+                "customer_id": row["customer_id"],
+                "name": row["customer_name"],
+                "email": row["customer_email"],
+                "phone": row["customer_phone"],
+                "tax_id": row["customer_tax_id"],
+                "commercial_reference": row["customer_commercial_reference"],
             }
-        return {
-            "counts": counts,
-            "activities": activities,
-            "expiring": expiring,
-            "awaiting_connection": awaiting,
-            "suspended": suspended,
-            "revoked": revoked,
-        }
+            return result
 
-    def license_detail(self, license_id: str, *, now: datetime | None = None) -> dict[str, Any]:
-        instant_text = _timestamp(_utc(now))
-        detail = self.get_license(license_id)
+    def license_detail(self, license_id: str) -> dict[str, Any]:
+        result = self.get_license(license_id)
         with self.database.read() as connection:
-            lease = connection.execute(
-                """
-                SELECT expires_at, last_seen_at, status FROM online_leases
-                WHERE license_id = ? ORDER BY issued_at DESC LIMIT 1
-                """,
+            revisions = connection.execute(
+                """SELECT revision, operation, key_id, machine_id, issued_at, not_before,
+                          expires_at, term_months, document_sha256, admin_user_id
+                   FROM license_revisions WHERE license_id = ? ORDER BY revision DESC""",
                 (license_id,),
+            ).fetchall()
+            exports = connection.execute(
+                """SELECT export_id, revision, document_sha256, exported_at, admin_user_id
+                   FROM offline_exports WHERE license_id = ? ORDER BY exported_at DESC""",
+                (license_id,),
+            ).fetchall()
+        result["revisions"] = [dict(row) for row in revisions]
+        result["exports"] = [dict(row) for row in exports]
+        result["history"] = self.history(license_id)
+        result["available_actions"] = ["renew", "replace_device", "export"]
+        return result
+
+    def history(self, license_id: str) -> list[dict[str, Any]]:
+        with self.database.read() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM licenses WHERE license_id = ?", (license_id,)
             ).fetchone()
-            history = connection.execute(
-                """
-                SELECT event_id, action, occurred_at, admin_user_id, details_json
-                FROM audit_events WHERE entity_type = 'license' AND entity_id = ?
-                ORDER BY rowid DESC LIMIT 100
-                """,
+            if not exists:
+                raise RecordNotFoundError("Licença não encontrada.")
+            rows = connection.execute(
+                """SELECT action, occurred_at, admin_user_id, details_json, event_hash
+                   FROM audit_events WHERE entity_type = 'license' AND entity_id = ?
+                   ORDER BY rowid DESC""",
                 (license_id,),
             ).fetchall()
-        effective_status = (
-            "expired" if detail["status"] == "active" and detail["expires_at"] <= instant_text else detail["status"]
-        )
-        detail["effective_status"] = effective_status
-        detail["last_connection"] = lease["last_seen_at"] if lease else None
-        detail["offline_until"] = lease["expires_at"] if lease else None
-        detail["lease_status"] = lease["status"] if lease else None
-        detail["history"] = [
-            {**dict(item), "details": json.loads(item["details_json"])} for item in history
-        ]
-        detail["available_actions"] = self._available_actions(detail["status"], bool(detail["active_device"]))
-        return detail
+        return [dict(row) for row in rows]
 
-    def history(self, entity_type: str, entity_id: str) -> list[dict[str, Any]]:
+    def search_licenses(self, query: str, *, page: int = 1, page_size: int = 25) -> dict[str, Any]:
+        if page < 1 or page_size < 1 or page_size > 100:
+            raise ValueError("Paginação inválida.")
+        terms = query.strip().split()
+        if not terms:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+        filters: list[str] = []
+        values: list[Any] = []
+        free: list[str] = []
+        now = utc_now_text()
+        for term in terms:
+            lowered = term.casefold()
+            if lowered.startswith("status:"):
+                status = lowered.split(":", 1)[1]
+                if status in {"valida", "ativa", "valid"}:
+                    filters.append("datetime(l.expires_at) > datetime(?, '+30 days')")
+                    values.append(now)
+                elif status in {"expirando", "a_vencer"}:
+                    filters.append(
+                        "datetime(l.expires_at) > datetime(?) "
+                        "AND datetime(l.expires_at) <= datetime(?, '+30 days')"
+                    )
+                    values.extend((now, now))
+                elif status in {"expirada", "expired"}:
+                    filters.append("datetime(l.expires_at) <= datetime(?)")
+                    values.append(now)
+                else:
+                    raise ValueError("Status de busca inválido.")
+            elif lowered.startswith("maquina:"):
+                filters.append("l.machine_id LIKE ?")
+                values.append(f"%{term.split(':', 1)[1].upper()}%")
+            elif lowered.startswith("cliente:"):
+                filters.append("c.normalized_name LIKE ?")
+                values.append(f"%{_normalize_name(term.split(':', 1)[1])}%")
+            elif lowered.startswith("expira:") and lowered.endswith("d"):
+                try:
+                    days = int(lowered[7:-1])
+                except ValueError as error:
+                    raise ValueError("Filtro expira deve usar o formato expira:30d.") from error
+                if days < 0 or days > 3650:
+                    raise ValueError("Período do filtro expira inválido.")
+                filters.append(
+                    "datetime(l.expires_at) > datetime(?) "
+                    "AND datetime(l.expires_at) <= datetime(?, ?)"
+                )
+                values.extend((now, now, f"+{days} days"))
+            else:
+                free.append(term)
+        if free:
+            pattern = f"%{_normalize_name(' '.join(free))}%"
+            filters.append(
+                "(lower(l.license_id) LIKE ? OR c.normalized_name LIKE ? "
+                "OR lower(l.machine_id) LIKE ? OR lower(l.customer_reference) LIKE ?)"
+            )
+            values.extend((pattern, pattern, pattern, pattern))
+        where = " AND ".join(filters) or "1 = 1"
+        offset = (page - 1) * page_size
         with self.database.read() as connection:
+            total = connection.execute(
+                f"SELECT COUNT(*) FROM licenses l JOIN customers c ON c.customer_id = l.customer_id WHERE {where}",
+                values,
+            ).fetchone()[0]
             rows = connection.execute(
-                """
-                SELECT event_id, action, entity_type, entity_id, occurred_at,
-                       admin_user_id, details_json, previous_hash, event_hash
-                FROM audit_events
-                WHERE entity_type = ? AND entity_id = ?
-                ORDER BY rowid
-                """,
-                (entity_type, entity_id),
+                f"""SELECT l.license_id, c.name AS customer_name, l.machine_id, l.expires_at,
+                           l.current_revision,
+                           CASE WHEN datetime(l.expires_at) <= datetime(?) THEN 'expired'
+                                WHEN datetime(l.expires_at) <= datetime(?, '+30 days') THEN 'expiring'
+                                ELSE 'valid' END AS effective_status
+                    FROM licenses l JOIN customers c ON c.customer_id = l.customer_id
+                    WHERE {where} ORDER BY l.expires_at, l.license_id LIMIT ? OFFSET ?""",
+                [now, now, *values, page_size, offset],
             ).fetchall()
-        return [dict(row) for row in rows]
+        return {"items": [dict(row) for row in rows], "total": total, "page": page, "page_size": page_size}
 
-    def _change_status(
-        self,
-        license_id: str,
-        new_status: str,
-        reason: str,
-        *,
-        admin_user_id: str | None,
-    ) -> str:
-        if not reason.strip():
-            raise ValueError("O motivo da alteração de status é obrigatório.")
-        allowed = {
-            ("active", "suspended"),
-            ("active", "revoked"),
-            ("suspended", "active"),
-            ("suspended", "revoked"),
+    def dashboard(self) -> dict[str, Any]:
+        now = utc_now_text()
+        with self.database.read() as connection:
+            counts = connection.execute(
+                """SELECT SUM(
+                          CASE WHEN datetime(expires_at) > datetime(?, '+30 days') THEN 1 ELSE 0 END
+                          ) AS valid,
+                          SUM(
+                          CASE WHEN datetime(expires_at) > datetime(?)
+                                 AND datetime(expires_at) <= datetime(?, '+30 days')
+                               THEN 1 ELSE 0 END
+                          ) AS expiring,
+                          SUM(CASE WHEN datetime(expires_at) <= datetime(?) THEN 1 ELSE 0 END) AS expired
+                   FROM licenses""",
+                (now, now, now, now),
+            ).fetchone()
+            upcoming = connection.execute(
+                """SELECT l.license_id, c.name AS customer_name, l.expires_at
+                   FROM licenses l JOIN customers c ON c.customer_id = l.customer_id
+                   WHERE datetime(l.expires_at) > datetime(?)
+                     AND datetime(l.expires_at) <= datetime(?, '+30 days')
+                   ORDER BY l.expires_at LIMIT 10""",
+                (now, now),
+            ).fetchall()
+            recent = connection.execute(
+                """SELECT action, entity_id, occurred_at FROM audit_events
+                   WHERE entity_type IN ('license', 'customer') ORDER BY rowid DESC LIMIT 10"""
+            ).fetchall()
+        return {
+            "counts": {name: int(counts[name] or 0) for name in ("valid", "expiring", "expired")},
+            "expiring_licenses": [dict(row) for row in upcoming],
+            "recent_activity": [dict(row) for row in recent],
         }
-        change_id = _id("STA")
-        timestamp = utc_now_text()
-        with self.database.transaction() as connection:
-            self._require_admin(connection, admin_user_id)
-            row = self._license_row(connection, license_id)
-            previous = row["status"]
-            if (previous, new_status) not in allowed:
-                raise InvalidTransitionError(f"Transição de {previous} para {new_status} não permitida.")
-            connection.execute("UPDATE licenses SET status = ? WHERE license_id = ?", (new_status, license_id))
-            connection.execute(
-                """
-                INSERT INTO license_status_changes(
-                    change_id, license_id, previous_status, new_status,
-                    reason, changed_at, admin_user_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (change_id, license_id, previous, new_status, reason.strip(), timestamp, admin_user_id),
-            )
-            self._refresh_search(connection, license_id)
-            self._audit(
-                connection,
-                f"license.{new_status}",
-                "license",
-                license_id,
-                admin_user_id,
-                {"change_id": change_id, "previous_status": previous, "reason": reason.strip()},
-            )
-        return change_id
 
     @staticmethod
-    def _dashboard_licenses(connection: Any, condition: str, parameters: tuple[Any, ...], limit: int) -> list[dict[str, Any]]:
+    def _atomic_write(target: Path, document: bytes) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(document)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_name, target)
+        finally:
+            Path(temporary_name).unlink(missing_ok=True)
+
+    def _signing_identity(self) -> tuple[str, Ed25519PrivateKey]:
+        key_id = str(getattr(self.private_key_provider, "key_id", self.key_id))
+        return key_id, self.private_key_provider()
+
+    @staticmethod
+    def _next_license_id(connection: Any, year: int) -> str:
+        prefix = f"LIC-{year}-"
         rows = connection.execute(
-            f"""
-            SELECT l.license_id, l.status, l.expires_at, l.validation_mode,
-                   c.name AS customer_name, d.machine_id
-            FROM licenses l
-            JOIN customers c ON c.customer_id = l.customer_id
-            LEFT JOIN licensed_devices d ON d.license_id = l.license_id AND d.active = 1
-            WHERE {condition}
-            ORDER BY l.expires_at ASC, l.license_id ASC LIMIT ?
-            """,
-            (*parameters, limit),
+            "SELECT license_id FROM licenses WHERE license_id LIKE ?", (f"{prefix}%",)
         ).fetchall()
-        return [dict(row) for row in rows]
-
-    @staticmethod
-    def _dashboard_count(connection: Any, condition: str, parameters: tuple[Any, ...]) -> int:
-        return int(connection.execute(f"SELECT COUNT(*) FROM licenses l WHERE {condition}", parameters).fetchone()[0])
-
-    @staticmethod
-    def _available_actions(status: str, has_device: bool) -> list[str]:
-        if status == "revoked":
-            return []
-        actions = ["renew", "export"] if has_device else ["bind_device"]
-        if status == "active":
-            actions.extend(("suspend", "revoke"))
-        elif status == "suspended":
-            actions.extend(("reactivate", "revoke"))
-        if has_device:
-            actions.append("replace_device")
-        return actions
-
-    @staticmethod
-    def _refresh_search(connection: Any, license_id: str) -> None:
-        connection.execute("DELETE FROM license_search WHERE license_id = ?", (license_id,))
-        connection.execute(
-            """
-            INSERT INTO license_search(license_id, content)
-            SELECT l.license_id,
-                   trim(l.license_id || ' ' || c.normalized_name || ' ' || c.name || ' ' ||
-                        coalesce(c.email, '') || ' ' || coalesce(c.phone, '') || ' ' ||
-                        coalesce(c.tax_id, '') || ' ' || coalesce(d.machine_id, '') || ' ' ||
-                        coalesce(l.commercial_reference, '') || ' ' ||
-                        coalesce(c.commercial_reference, '') || ' ' || l.status || ' ' || l.expires_at)
-            FROM licenses l
-            JOIN customers c ON c.customer_id = l.customer_id
-            LEFT JOIN licensed_devices d ON d.license_id = l.license_id AND d.active = 1
-            WHERE l.license_id = ?
-            """,
-            (license_id,),
-        )
+        sequence = max((int(row[0].removeprefix(prefix)) for row in rows), default=0) + 1
+        return f"{prefix}{sequence:06d}"
 
     @staticmethod
     def _license_row(connection: Any, license_id: str) -> Any:
@@ -1222,26 +687,67 @@ class AdminLicenseService:
         return row
 
     @staticmethod
-    def _require_admin(connection: Any, admin_user_id: str | None) -> None:
-        if admin_user_id is None:
-            return
+    def _features(connection: Any, license_id: str) -> tuple[str, ...]:
+        return tuple(
+            row[0]
+            for row in connection.execute(
+                "SELECT feature FROM license_features WHERE license_id = ? ORDER BY feature", (license_id,)
+            ).fetchall()
+        )
+
+    @staticmethod
+    def _insert_revision(
+        connection: Any,
+        payload: LicensePayload,
+        operation: str,
+        term_months: int,
+        document: bytes,
+        digest: str,
+        admin_user_id: str | None,
+    ) -> None:
+        connection.execute(
+            """INSERT INTO license_revisions(license_id, revision, operation, key_id, machine_id,
+                                             issued_at, not_before, expires_at, term_months,
+                                             document, document_sha256, admin_user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                payload.license_id,
+                payload.revision,
+                operation,
+                payload.key_id,
+                payload.machine_id,
+                payload.issued_at,
+                payload.not_before,
+                payload.expires_at,
+                term_months,
+                document,
+                digest,
+                admin_user_id,
+            ),
+        )
+
+    def _refresh_search(self, connection: Any, license_id: str) -> None:
         row = connection.execute(
-            "SELECT active FROM admin_users WHERE admin_user_id = ?", (admin_user_id,)
+            """SELECT l.license_id, l.machine_id, l.customer_reference, c.name, c.email,
+                      c.tax_id, c.commercial_reference
+               FROM licenses l JOIN customers c ON c.customer_id = l.customer_id
+               WHERE l.license_id = ?""",
+            (license_id,),
         ).fetchone()
-        if not row or not row[0]:
-            raise RecordNotFoundError("Usuário administrativo ativo não encontrado.")
+        content = " ".join(str(value or "") for value in row)
+        connection.execute("DELETE FROM license_search WHERE license_id = ?", (license_id,))
+        connection.execute(
+            "INSERT INTO license_search(license_id, content) VALUES (?, ?)", (license_id, content)
+        )
 
-    def _active_key_id(self) -> str:
-        dynamic_key_id = getattr(self.private_key_provider, "key_id", None)
-        return str(dynamic_key_id or self.key_id)
-
-    def _private_key_for(self, key_id: str) -> Ed25519PrivateKey:
-        resolver = getattr(self.private_key_provider, "for_key", None)
-        if callable(resolver):
-            return resolver(key_id)
-        if key_id != self.key_id:
-            raise AdminLicenseError(f"A chave privada {key_id} não está disponível para exportação.")
-        return self.private_key_provider()
+    @staticmethod
+    def _effective_status(expires_at: str) -> str:
+        remaining = _parse_timestamp(expires_at) - datetime.now(UTC)
+        if remaining.total_seconds() <= 0:
+            return "expired"
+        if remaining.days <= 30:
+            return "expiring"
+        return "valid"
 
     def _audit(
         self,
@@ -1250,11 +756,11 @@ class AdminLicenseService:
         entity_type: str,
         entity_id: str,
         admin_user_id: str | None,
-        details: dict[str, Any] | None = None,
+        details: dict[str, Any],
     ) -> None:
         self.database.append_audit(
             connection,
-            event_id=_id("EVT"),
+            event_id=_identifier("EVT"),
             action=action,
             entity_type=entity_type,
             entity_id=entity_id,

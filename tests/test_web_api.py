@@ -44,6 +44,20 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(format_file_size(2048), "2.0 KB")
         self.assertEqual(format_file_size(2 * 1024 * 1024), "2.0 MB")
 
+    def test_open_markdown_falls_back_to_notepad_without_file_association(self) -> None:
+        api = BridgeApi()
+        markdown = Path(self.storage_dir.name) / "resultado.md"
+        markdown.write_text("# Resultado", encoding="utf-8")
+        markdown_id = api._register_markdown(markdown, "test")["markdown_id"]
+
+        with (
+            patch("web_api.os.startfile", side_effect=OSError(1155, "Sem associação"), create=True),
+            patch("web_api.subprocess.Popen") as popen,
+        ):
+            self.assertTrue(api.open_markdown(markdown_id))
+
+        popen.assert_called_once_with(["notepad.exe", str(markdown.resolve())])
+
     def test_get_app_info_returns_expected_metadata(self) -> None:
         api = BridgeApi()
         info = api.get_app_info()

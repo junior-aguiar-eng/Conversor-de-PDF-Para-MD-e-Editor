@@ -35,12 +35,11 @@ _PAYLOAD_FIELDS = frozenset(
         "schema",
         "key_id",
         "license_id",
+        "revision",
         "machine_id",
         "issued_at",
         "not_before",
         "expires_at",
-        "validation_mode",
-        "max_offline_days",
         "features",
         "customer_reference",
     }
@@ -54,7 +53,6 @@ _CUSTOMER_REFERENCE_PATTERN = re.compile(r"[A-Z0-9](?:[A-Z0-9._-]{0,62}[A-Z0-9])
 _TIMESTAMP_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 _SIGNATURE_PATTERN = re.compile(r"[A-Za-z0-9_-]{86}")
 _ALLOWED_FEATURES = frozenset({"converter", "ocr", "reader"})
-_VALIDATION_MODES = frozenset({"offline", "hybrid"})
 
 
 def _parse_timestamp(value: str, field_name: str) -> datetime:
@@ -84,12 +82,11 @@ class LicensePayload:
 
     key_id: str
     license_id: str
+    revision: int
     machine_id: str
     issued_at: str
     not_before: str
     expires_at: str
-    validation_mode: str
-    max_offline_days: int
     features: tuple[str, ...]
     customer_reference: str
     schema: str = LICENSE_SCHEMA
@@ -99,6 +96,9 @@ class LicensePayload:
             raise UnsupportedSchemaError(f"Schema não suportado: {self.schema!r}.")
         _require_pattern(self.key_id, _LICENSE_KEY_ID_PATTERN, "key_id")
         _require_pattern(self.license_id, _LICENSE_ID_PATTERN, "license_id")
+        revision = _reject_bool_integer(self.revision, "revision")
+        if revision < 1:
+            raise LicenseFormatError("revision deve ser maior ou igual a 1.")
         _require_pattern(self.machine_id, _MACHINE_ID_PATTERN, "machine_id")
         _require_pattern(self.customer_reference, _CUSTOMER_REFERENCE_PATTERN, "customer_reference")
 
@@ -109,14 +109,6 @@ class LicensePayload:
             raise LicenseFormatError("issued_at não pode ser posterior a not_before.")
         if starts >= expires:
             raise LicenseFormatError("not_before deve ser anterior a expires_at.")
-
-        if self.validation_mode not in _VALIDATION_MODES:
-            raise LicenseFormatError("validation_mode deve ser 'offline' ou 'hybrid'.")
-        offline_days = _reject_bool_integer(self.max_offline_days, "max_offline_days")
-        if self.validation_mode == "offline" and offline_days != 0:
-            raise LicenseFormatError("Licenças offline devem usar max_offline_days igual a 0.")
-        if self.validation_mode == "hybrid" and not 1 <= offline_days <= 30:
-            raise LicenseFormatError("Licenças hybrid devem usar max_offline_days entre 1 e 30.")
 
         if not isinstance(self.features, tuple) or not self.features:
             raise LicenseFormatError("features deve conter ao menos uma funcionalidade.")
@@ -141,12 +133,11 @@ class LicensePayload:
             schema=value["schema"],
             key_id=value["key_id"],
             license_id=value["license_id"],
+            revision=value["revision"],
             machine_id=value["machine_id"],
             issued_at=value["issued_at"],
             not_before=value["not_before"],
             expires_at=value["expires_at"],
-            validation_mode=value["validation_mode"],
-            max_offline_days=value["max_offline_days"],
             features=tuple(features),
             customer_reference=value["customer_reference"],
         )
@@ -156,12 +147,11 @@ class LicensePayload:
             "schema": self.schema,
             "key_id": self.key_id,
             "license_id": self.license_id,
+            "revision": self.revision,
             "machine_id": self.machine_id,
             "issued_at": self.issued_at,
             "not_before": self.not_before,
             "expires_at": self.expires_at,
-            "validation_mode": self.validation_mode,
-            "max_offline_days": self.max_offline_days,
             "features": list(self.features),
             "customer_reference": self.customer_reference,
         }

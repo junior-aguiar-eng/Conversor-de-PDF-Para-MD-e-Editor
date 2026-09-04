@@ -13,7 +13,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from license_core import (
     LICENSE_FILE_FORMAT,
     LICENSE_SCHEMA,
-    LegacyLicenseVersion,
     LicenseExpiredError,
     LicenseFormatError,
     LicenseNotYetValidError,
@@ -24,7 +23,6 @@ from license_core import (
     UnknownKeyError,
     UnsupportedSchemaError,
     canonicalize_payload,
-    detect_legacy_activation_key,
     issue_license,
     load_license_file,
     parse_license,
@@ -40,12 +38,11 @@ class Act4ProtocolTests(unittest.TestCase):
         self.payload = LicensePayload(
             key_id=self.key_id,
             license_id="LIC-2026-000001",
+            revision=1,
             machine_id="NXJ2-1111-2222-3333-4444",
             issued_at="2026-09-01T00:00:00Z",
             not_before="2026-09-01T00:00:00Z",
             expires_at="2027-09-01T00:00:00Z",
-            validation_mode="offline",
-            max_offline_days=0,
             features=("converter", "ocr", "reader"),
             customer_reference="CLI-000001",
         )
@@ -185,15 +182,17 @@ class Act4ProtocolTests(unittest.TestCase):
         with self.assertRaises(LicenseFormatError):
             LicensePayload.from_mapping(values)
 
-    def test_validation_mode_controls_offline_days(self) -> None:
+    def test_revision_is_positive_and_hybrid_fields_are_rejected(self) -> None:
         values = self.payload.to_mapping()
-        values["max_offline_days"] = 7
+        values["revision"] = 0
         with self.assertRaises(LicenseFormatError):
             LicensePayload.from_mapping(values)
+        values = self.payload.to_mapping()
+        values["revision"] = True
+        with self.assertRaises(LicenseFormatError):
+            LicensePayload.from_mapping(values)
+        values = self.payload.to_mapping()
         values["validation_mode"] = "hybrid"
-        hybrid = LicensePayload.from_mapping(values)
-        self.assertEqual(hybrid.max_offline_days, 7)
-        values["max_offline_days"] = 0
         with self.assertRaises(LicenseFormatError):
             LicensePayload.from_mapping(values)
 
@@ -210,12 +209,9 @@ class Act4ProtocolTests(unittest.TestCase):
         with self.assertRaises(LicenseFormatError):
             parse_license(b"{" + b" " * (64 * 1024))
 
-    def test_legacy_tokens_are_classified_but_never_parsed_as_act4(self) -> None:
-        body = "-".join(["A" * 8] * 12 + ["A" * 7])
-        self.assertEqual(detect_legacy_activation_key(f"ACT2-01-{body}"), LegacyLicenseVersion.ACT2)
-        self.assertEqual(detect_legacy_activation_key(f"ACT3-01-{body}"), LegacyLicenseVersion.ACT3)
+    def test_legacy_tokens_are_not_license_documents(self) -> None:
         with self.assertRaises(LicenseFormatError):
-            parse_license(f"ACT3-01-{body}")
+            parse_license("ACT3-01-documento-obsoleto")
 
     def test_constants_match_documented_versions(self) -> None:
         self.assertEqual(LICENSE_SCHEMA, "nexojuris-license/v4")

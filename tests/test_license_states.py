@@ -25,9 +25,6 @@ from license_core import (
     LicenseState,
     LicenseStatus,
     MachineMismatchAccessError,
-    OnlineCheckRequiredError,
-    RevokedLicenseError,
-    SuspendedLicenseError,
     UnlicensedAccessError,
     evaluate_act4,
     invalid_status,
@@ -46,12 +43,11 @@ def _payload(**changes: object) -> LicensePayload:
         "schema": "nexojuris-license/v4",
         "key_id": "license-main-2026-01",
         "license_id": "LIC-2026-000001",
+        "revision": 1,
         "machine_id": MACHINE_ID,
         "issued_at": "2026-09-01T00:00:00Z",
         "not_before": "2026-09-01T00:00:00Z",
         "expires_at": "2027-09-01T00:00:00Z",
-        "validation_mode": "offline",
-        "max_offline_days": 0,
         "features": ["converter", "ocr", "reader"],
         "customer_reference": "CLI-000001",
     }
@@ -78,16 +74,6 @@ class LicenseStateMachineTests(unittest.TestCase):
                 ExpiredLicenseError,
             ),
             (
-                LicenseState.REVOKED,
-                evaluate_act4(payload, MACHINE_ID, at=datetime(2026, 10, 1, tzinfo=UTC), online_status="revoked"),
-                RevokedLicenseError,
-            ),
-            (
-                LicenseState.SUSPENDED,
-                evaluate_act4(payload, MACHINE_ID, at=datetime(2026, 10, 1, tzinfo=UTC), online_status="suspended"),
-                SuspendedLicenseError,
-            ),
-            (
                 LicenseState.CLOCK_TAMPERED,
                 evaluate_act4(payload, MACHINE_ID, at=datetime(2026, 10, 1, tzinfo=UTC), clock_tampered=True),
                 ClockTamperedError,
@@ -104,16 +90,6 @@ class LicenseStateMachineTests(unittest.TestCase):
                 self.assertFalse(status.can_use_protected_features)
                 with self.assertRaises(expected_error):
                     require_feature(status, "converter")
-
-    def test_hybrid_requires_current_lease(self) -> None:
-        payload = _payload(validation_mode="hybrid", max_offline_days=7)
-        now = datetime(2026, 10, 1, tzinfo=UTC)
-        required = evaluate_act4(payload, MACHINE_ID, at=now)
-        self.assertEqual(required.state, LicenseState.ONLINE_CHECK_REQUIRED)
-        with self.assertRaises(OnlineCheckRequiredError):
-            require_feature(required, "converter")
-        valid = evaluate_act4(payload, MACHINE_ID, at=now, offline_until=datetime(2026, 10, 8, tzinfo=UTC))
-        self.assertEqual(valid.state, LicenseState.VALID)
 
     def test_feature_absence_has_specific_error(self) -> None:
         status = evaluate_act4(
@@ -142,14 +118,10 @@ class LicenseStateMachineTests(unittest.TestCase):
                 "state",
                 "can_use_protected_features",
                 "license_id",
-                "license_format",
+                "revision",
                 "machine_id",
                 "expires_at",
                 "days_remaining",
-                "offline_until",
-                "offline_seconds_remaining",
-                "last_online_validation",
-                "validation_mode",
                 "features",
                 "message",
             },
@@ -196,10 +168,10 @@ class Act4ClientIntegrationTests(unittest.TestCase):
         self.assertEqual(status.license_id, "LIC-2026-000001")
         self.assertTrue(status.allows("converter"))
         backup = json.loads((self.root / "license.sig").read_text(encoding="utf-8"))
-        self.assertEqual(backup["format"], "nexojuris-license-backup/v2")
-        self.assertEqual(backup["license_format"], "act4")
+        self.assertEqual(backup["format"], "nexojuris-license-backup/v3")
+        self.assertEqual(backup["revision"], 1)
 
-    def test_database_migration_preserves_legacy_row(self) -> None:
+    def test_legacy_license_table_is_replaced_by_offline_schema(self) -> None:
         with closing(sqlite3.connect(self.root / "license.db")) as connection:
             connection.execute(
                 """
@@ -218,15 +190,26 @@ class Act4ClientIntegrationTests(unittest.TestCase):
         licensing_module._init_license_table()
         with closing(sqlite3.connect(self.root / "license.db")) as connection:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(system_license)")}
-            row = connection.execute("SELECT machine_id, activation_key, license_format FROM system_license").fetchone()
-        self.assertIn("license_document", columns)
-        self.assertEqual(row, ("NXJ-AAAA-BBBB-CCCC-DDDD", "ACT3-TEST", "legacy"))
+            row = connection.execute("SELECT * FROM system_license").fetchone()
+        self.assertEqual(
+            columns,
+            {"id", "machine_id", "license_id", "revision", "activated_at", "license_document"},
+        )
+        self.assertIsNone(row)
 
     def test_act4_backup_recovers_when_database_is_absent(self) -> None:
         self.assertTrue(licensing_module.activate_act4_license(self._document(), now=self.now)["ok"])
         (self.root / "license.db").unlink()
         status = licensing_module.get_license_status(now=self.now)
         self.assertEqual(status.state, LicenseState.VALID)
+
+    def test_import_rejects_revision_older_than_installed(self) -> None:
+        newer = self._document(revision=2, expires_at="2028-09-01T00:00:00Z")
+        self.assertTrue(licensing_module.activate_act4_license(newer, now=self.now)["ok"])
+        rejected = licensing_module.activate_act4_license(self._document(), now=self.now)
+        self.assertFalse(rejected["ok"])
+        self.assertIn("anterior", rejected["error"])
+        self.assertEqual(licensing_module.get_license_status(now=self.now).revision, 2)
 
     def test_temporal_rollback_surfaces_clock_tampered_state(self) -> None:
         self.assertTrue(licensing_module.activate_act4_license(self._document(), now=self.now)["ok"])
@@ -252,7 +235,7 @@ class Act4ClientIntegrationTests(unittest.TestCase):
             machine_id=MACHINE_ID,
             message="A licença expirou.",
             license_id="LIC-2026-000001",
-            license_format="act4",
+            revision=1,
             expires_at="2026-09-01T00:00:00Z",
             days_remaining=0,
             features=("reader",),
@@ -271,7 +254,7 @@ class Act4ClientIntegrationTests(unittest.TestCase):
             machine_id=MACHINE_ID,
             message="A licença expirou.",
             license_id="LIC-2026-000001",
-            license_format="act4",
+            revision=1,
             expires_at="2026-09-01T00:00:00Z",
             days_remaining=0,
             features=("ocr",),

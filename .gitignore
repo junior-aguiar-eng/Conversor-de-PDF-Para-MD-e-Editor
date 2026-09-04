@@ -15,3 +15,5 @@ tests/_sandbox/
 tests/.tmp/
 .pytest_cache/
 PDFs Convertidos/
+.superpowers/
+/docs/fidelity_audit_tmp/

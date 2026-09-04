@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import subprocess
 import tempfile
 import unittest
@@ -321,12 +319,6 @@ main().catch((error) => {{ console.error(error); process.exit(1); }});
 
     def test_preexisting_hmac_license_is_identified_as_currently_incompatible(self) -> None:
         machine_id = "NXJ-1111-2222-3333-4444"
-        signing_key = hashlib.sha256(
-            b":".join([b"NXJ_SEC_2026", b"CORE_NODE_LOCK", b"LEGAL_TECH_MASTER", b"SHA256_OFFLINE"])
-        ).digest()
-        digest = hmac.new(signing_key, machine_id.encode("utf-8"), hashlib.sha256).hexdigest().upper()
-        legacy_key = "ACT-" + "-".join(digest[index : index + 4] for index in range(0, 16, 4))
-
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             with (
@@ -334,8 +326,8 @@ main().catch((error) => {{ console.error(error); process.exit(1); }});
                 patch.object(licensing_module, "_LICENSE_BACKUP_PATH", root / "license.sig"),
                 patch.object(licensing_module, "get_machine_fingerprint", return_value=machine_id),
             ):
-                self.assertFalse(licensing_module.verify_license_key(machine_id, legacy_key))
-                licensing_module._save_license(machine_id, legacy_key)
+                self.assertFalse(hasattr(licensing_module, "verify_license_key"))
+                self.assertFalse(hasattr(licensing_module, "activate_software"))
                 self.assertEqual(licensing_module.is_software_activated(), (False, machine_id))
 
     def test_online_services_return_functional_errors_when_network_is_unavailable(self) -> None:

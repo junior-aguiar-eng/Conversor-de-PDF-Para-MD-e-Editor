@@ -60,6 +60,29 @@ class ConverterTests(unittest.TestCase):
         self.assertEqual(format_duration(45), "45s")
         self.assertEqual(format_duration(125), "2m 5s")
 
+    def test_atomic_write_retries_transient_windows_permission_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            destination = Path(tmp_dir) / "checkpoint" / "state.json"
+            real_replace = converter_module.os.replace
+            attempts = 0
+
+            def transient_replace(source: Path, target: Path) -> None:
+                nonlocal attempts
+                attempts += 1
+                if attempts < 3:
+                    raise PermissionError(5, "Acesso negado", str(target))
+                real_replace(source, target)
+
+            with (
+                patch.object(converter_module.os, "replace", side_effect=transient_replace),
+                patch.object(converter_module.time, "sleep"),
+            ):
+                converter_module._atomic_write_text(destination, '{"ok":true}')
+
+            self.assertEqual(destination.read_text(encoding="utf-8"), '{"ok":true}')
+            self.assertEqual(attempts, 3)
+            self.assertEqual(list(destination.parent.glob("*.tmp")), [])
+
     def test_build_summary_message_includes_counts_and_failures(self) -> None:
         summary = BatchConversionSummary(
             successes=[

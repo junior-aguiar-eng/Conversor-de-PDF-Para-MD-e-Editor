@@ -12,17 +12,22 @@
     <div>
       <p class="eyebrow">NEXOJURIS</p>
       <h1>Licenças Admin</h1>
-      <p class="subtitle">Administração local, rastreável e orientada por busca.</p>
+      <p class="subtitle">Emissão offline, prazos e histórico em um só lugar.</p>
     </div>
     <div class="topbar-actions">
       <span id="privateKeyStatus" class="key-status missing">Chave não configurada</span>
       <button id="configurePrivateKeyButton" class="secondary">Configurar chave privada</button>
-      <button id="migrateLicenseButton" class="secondary">Migrar ACT2/ACT3</button>
-      <button id="newLicenseButton" class="primary">Nova licença</button>
+      <button id="newLicenseButton" class="primary">Emitir licença</button>
     </div>
   </header>
 
   <main>
+    <section class="quick-actions" aria-label="Operações essenciais">
+      <button id="quickIssue" class="primary">Emitir licença</button>
+      <button data-focus-search="renew">Renovar</button>
+      <button data-focus-search="replace_device">Trocar computador</button>
+      <button data-focus-search="export">Reexportar arquivo</button>
+    </section>
     <section class="search-hero" aria-labelledby="searchTitle">
       <h2 id="searchTitle">Encontre uma licença</h2>
       <form id="searchForm" role="search">
@@ -31,12 +36,10 @@
         <button type="submit" class="primary">Buscar</button>
       </form>
       <div class="quick-filters" aria-label="Filtros rápidos">
+        <button data-filter="status:valida">Válidas</button>
+        <button data-filter="status:expirando">Expirando</button>
         <button data-filter="status:expirada">Expiradas</button>
-        <button data-filter="status:revogada">Revogadas</button>
-        <button data-filter="status:suspensa">Suspensas</button>
-        <button data-filter="status:aguardando">Aguardando conexão</button>
         <button data-filter="expira:7d">Expiram em 7 dias</button>
-        <button data-filter="offline:7d">Offline em 7 dias</button>
       </div>
       <p class="search-help">Filtros: <code>cliente:"João Silva"</code> <code>maquina:NXJ2-39A1</code> <code>expira:7d</code></p>
     </section>
@@ -76,55 +79,47 @@
       <button class="modal-close" data-close="newLicenseModal" aria-label="Fechar formulário">×</button>
       <p class="eyebrow">EMISSÃO</p>
       <h2 id="newLicenseTitle">Nova licença</h2>
-      <form id="newLicenseForm" class="form-grid">
-        <label class="span-2">Nome do cliente<input name="name" required maxlength="160"></label>
-        <label>E-mail<input name="email" type="email" maxlength="254"></label>
-        <label>Telefone<input name="phone" maxlength="40"></label>
-        <label>CPF/CNPJ<input name="tax_id" maxlength="24"></label>
-        <label>Referência comercial<input name="commercial_reference" maxlength="80"></label>
-        <label>Prazo<select name="term_months"><option value="3">3 meses</option><option value="6">6 meses</option><option value="12">12 meses</option></select></label>
-        <label>Validação<input value="Totalmente offline" readonly aria-readonly="true"></label>
-        <label>Código da máquina<input name="machine_id" placeholder="NXJ2-0000-0000-0000-0000" maxlength="24"></label>
-        <fieldset class="span-2 feature-fieldset">
-          <legend>Funcionalidades</legend>
-          <label><input type="checkbox" name="features" value="converter" checked> Conversor</label>
-          <label><input type="checkbox" name="features" value="ocr" checked> OCR</label>
-          <label><input type="checkbox" name="features" value="reader" checked> Leitor</label>
-        </fieldset>
+      <ol class="wizard-steps" aria-label="Etapas da emissão">
+        <li class="active" data-wizard-marker="1">1. Cliente e máquina</li>
+        <li data-wizard-marker="2">2. Condições</li>
+        <li data-wizard-marker="3">3. Conferência</li>
+      </ol>
+      <form id="newLicenseForm" class="form-grid" data-step="1">
+        <section class="wizard-panel span-2" data-wizard-panel="1">
+          <label>Nome do cliente<input name="name" required maxlength="160"></label>
+          <label>E-mail<input name="email" type="email" maxlength="254"></label>
+          <label>Telefone<input name="phone" maxlength="40"></label>
+          <label>CPF/CNPJ<input name="tax_id" maxlength="24"></label>
+          <label class="span-2">Código da máquina<input name="machine_id" required placeholder="NXJ2-0000-0000-0000-0000" maxlength="24"></label>
+        </section>
+        <section class="wizard-panel span-2 hidden" data-wizard-panel="2">
+          <label>Referência comercial<input name="commercial_reference" maxlength="80"></label>
+          <label>Prazo<select name="term_months"><option value="3">3 meses</option><option value="6">6 meses</option><option value="12">12 meses</option></select></label>
+          <label class="span-2">Operação<input value="Totalmente offline" readonly aria-readonly="true"></label>
+          <fieldset class="span-2 feature-fieldset">
+            <legend>Funcionalidades</legend>
+            <label><input type="checkbox" name="features" value="converter" checked> Conversor</label>
+            <label><input type="checkbox" name="features" value="ocr" checked> OCR</label>
+            <label><input type="checkbox" name="features" value="reader" checked> Leitor</label>
+          </fieldset>
+        </section>
+        <section class="wizard-panel span-2 hidden" data-wizard-panel="3">
+          <h3>Confira antes de assinar</h3>
+          <dl id="issueSummary" class="detail-grid"></dl>
+          <p class="subtitle">A emissão cria a revisão 1 desta licença. O arquivo poderá ser reexportado sem nova assinatura.</p>
+        </section>
         <div id="newLicenseError" class="alert error hidden span-2" role="alert"></div>
-        <button class="primary span-2" type="submit">Criar cliente e emitir licença</button>
+        <div class="wizard-actions span-2">
+          <button id="issuePrevious" class="secondary hidden" type="button">Voltar</button>
+          <button id="issueNext" class="primary" type="button">Continuar</button>
+          <button id="issueSubmit" class="primary hidden" type="submit">Confirmar e emitir</button>
+        </div>
       </form>
     </article>
   </div>
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-  <div id="migrationModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="migrationTitle">
-    <article class="modal-card">
-      <button class="modal-close" data-close="migrationModal" aria-label="Fechar migração">×</button>
-      <p class="eyebrow">MIGRAÇÃO EXPLÍCITA</p>
-      <h2 id="migrationTitle">Migrar licença ACT2/ACT3 para ACT4</h2>
-      <p class="subtitle">A licença antiga continuará válida até o cliente importar o novo arquivo ACT4.</p>
-      <form id="migrationForm" class="form-grid">
-        <label class="span-2">Nome do cliente<input name="name" required maxlength="160"></label>
-        <label>E-mail<input name="email" type="email" maxlength="254"></label>
-        <label>Referência comercial<input name="commercial_reference" maxlength="80"></label>
-        <label class="span-2">Código da máquina<input name="machine_id" required placeholder="NXJ2-0000-0000-0000-0000" maxlength="24"></label>
-        <label class="span-2">Licença ACT2/ACT3<textarea name="activation_key" required rows="3" maxlength="160"></textarea></label>
-        <label>Prazo ACT4<select name="term_months"><option value="3">3 meses</option><option value="6">6 meses</option><option value="12">12 meses</option></select></label>
-        <label>Validação ACT4<input value="Totalmente offline" readonly aria-readonly="true"></label>
-        <label class="span-2">Confirmação<input name="confirmation" required placeholder="MIGRAR:NXJ2-0000-0000-0000-0000"></label>
-        <fieldset class="span-2 feature-fieldset">
-          <legend>Funcionalidades ACT4</legend>
-          <label><input type="checkbox" name="features" value="converter" checked> Conversor</label>
-          <label><input type="checkbox" name="features" value="ocr" checked> OCR</label>
-          <label><input type="checkbox" name="features" value="reader" checked> Leitor</label>
-        </fieldset>
-        <div id="migrationError" class="alert error hidden span-2" role="alert"></div>
-        <button class="primary span-2" type="submit">Validar licença antiga e emitir ACT4</button>
-      </form>
-    </article>
-  </div>
   <script src="app.js"></script>
 </body>
 </html>

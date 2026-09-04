@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import hmac
 import json
 import os
 import re
-import struct
 import tempfile
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -22,7 +20,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 _ENVIRONMENTS = frozenset({"test", "production"})
-_KEY_ID = re.compile(r"(?:license|lease)-[a-z0-9](?:[a-z0-9._-]{0,54}[a-z0-9])?")
+_KEY_ID = re.compile(r"license-[a-z0-9](?:[a-z0-9._-]{0,54}[a-z0-9])?")
 _BACKUP_MAGIC = b"NXJ-KEY-BACKUP\x01"
 _PASSWORD_PREFIX = "scrypt-v1"
 _SCRYPT_N = 2**15
@@ -79,41 +77,6 @@ def verify_admin_password(password: str, encoded_hash: str | None) -> bool:
         return hmac.compare_digest(actual, expected)
     except (TypeError, ValueError, UnicodeEncodeError):
         return False
-
-
-def generate_totp_secret() -> str:
-    return base64.b32encode(os.urandom(20)).decode("ascii").rstrip("=")
-
-
-def totp_code(secret: str, *, at: datetime | None = None, step_seconds: int = 30) -> str:
-    instant = datetime.now(UTC) if at is None else at
-    if instant.tzinfo is None or instant.utcoffset() is None:
-        raise ValueError("O horário TOTP deve possuir fuso horário.")
-    normalized = secret.strip().replace(" ", "").upper()
-    padding = "=" * (-len(normalized) % 8)
-    try:
-        key = base64.b32decode(normalized + padding, casefold=True)
-    except ValueError as error:
-        raise ValueError("O segredo TOTP é inválido.") from error
-    if len(key) < 16:
-        raise ValueError("O segredo TOTP deve possuir ao menos 128 bits.")
-    counter = int(instant.timestamp()) // step_seconds
-    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
-    offset = digest[-1] & 0x0F
-    value = struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF
-    return f"{value % 1_000_000:06d}"
-
-
-def verify_totp(secret: str, code: str, *, at: datetime | None = None, window: int = 1) -> bool:
-    if not re.fullmatch(r"[0-9]{6}", code or ""):
-        return False
-    instant = datetime.now(UTC) if at is None else at
-    if instant.tzinfo is None or instant.utcoffset() is None:
-        raise ValueError("O horário TOTP deve possuir fuso horário.")
-    return any(
-        hmac.compare_digest(totp_code(secret, at=datetime.fromtimestamp(instant.timestamp() + offset * 30, UTC)), code)
-        for offset in range(-window, window + 1)
-    )
 
 
 def _canonical(value: Mapping[str, Any]) -> bytes:
@@ -267,15 +230,35 @@ class EncryptedSigningKeyStore:
         files = bundle.get("files")
         if not isinstance(manifest, dict) or manifest.get("environment") != self.environment or not isinstance(files, dict):
             raise OperationalSecurityError("Backup de chaves incompatível com este ambiente.")
-        for item in manifest.get("keys", {}).values():
-            file_name = item.get("file_name", "")
-            if Path(file_name).name != file_name or file_name not in files:
+        keys = manifest.get("keys")
+        if not isinstance(keys, dict):
+            raise OperationalSecurityError("Backup de chaves contém referência inválida.")
+        expected_files: set[str] = set()
+        for key_id, item in keys.items():
+            if not isinstance(item, dict):
                 raise OperationalSecurityError("Backup de chaves contém referência inválida.")
-            pem = base64.b64decode(files[file_name], validate=True)
+            try:
+                self._validate_identity(key_id, item.get("purpose"))
+            except (TypeError, ValueError) as error:
+                raise OperationalSecurityError("Backup de chaves contém referência inválida.") from error
+            file_name = item.get("file_name")
+            if file_name != f"{key_id}.pem" or file_name in expected_files:
+                raise OperationalSecurityError("Backup de chaves contém referência inválida.")
+            expected_files.add(file_name)
+        if set(files) != expected_files:
+            raise OperationalSecurityError("Backup de chaves contém referência inválida.")
+
+        restored_files: dict[str, bytes] = {}
+        for file_name in expected_files:
+            encoded_file = files[file_name]
+            if not isinstance(encoded_file, str):
+                raise OperationalSecurityError("Backup de chaves contém referência inválida.")
+            pem = base64.b64decode(encoded_file, validate=True)
             if b"ENCRYPTED PRIVATE KEY" not in pem:
                 raise OperationalSecurityError("Backup contém chave privada não criptografada.")
-        for file_name, encoded_file in files.items():
-            _atomic_write(self.root / file_name, base64.b64decode(encoded_file, validate=True))
+            restored_files[file_name] = pem
+        for file_name, pem in restored_files.items():
+            _atomic_write(self.root / file_name, pem)
         self._save_manifest(manifest)
 
     def _create_key(
@@ -323,7 +306,7 @@ class EncryptedSigningKeyStore:
         _atomic_write(self.manifest_path, _canonical(manifest))
 
     def _validate_identity(self, key_id: str, purpose: str) -> None:
-        if purpose not in {"license", "lease"} or not _KEY_ID.fullmatch(key_id) or not key_id.startswith(f"{purpose}-"):
+        if purpose != "license" or not _KEY_ID.fullmatch(key_id):
             raise ValueError("key_id ou finalidade inválida.")
         environment_marker = "test" if self.environment == "test" else "prod"
         if environment_marker not in key_id.split("-"):
