@@ -242,6 +242,34 @@ class Phase10AdminSecurityTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "pertence ao ambiente local"):
             AdminDatabase(local_database.path, environment="production")
 
+    def test_banco_local_legado_e_arquivado_antes_de_inicializar_schema_novo(self) -> None:
+        legacy_path = self.root / "legacy-admin.db"
+        connection = sqlite3.connect(legacy_path)
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE admin_schema(singleton INTEGER PRIMARY KEY, version INTEGER NOT NULL);
+                INSERT INTO admin_schema(singleton, version) VALUES (1, 5);
+                CREATE TABLE legacy_marker(value TEXT NOT NULL);
+                INSERT INTO legacy_marker(value) VALUES ('preservado');
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        migrated = AdminDatabase(legacy_path, environment="local")
+
+        self.assertIsNotNone(migrated.legacy_backup_path)
+        self.assertTrue(migrated.legacy_backup_path.is_file())
+        with migrated.read() as connection:
+            self.assertEqual(connection.execute("SELECT version FROM admin_schema").fetchone()[0], 6)
+        connection = sqlite3.connect(migrated.legacy_backup_path)
+        try:
+            self.assertEqual(connection.execute("SELECT value FROM legacy_marker").fetchone()[0], "preservado")
+        finally:
+            connection.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -73,8 +73,37 @@ class AdminDatabase:
         if environment not in {None, "local", "test", "production"}:
             raise ValueError("O ambiente administrativo deve ser local, test ou production.")
         self.environment = environment
+        self.legacy_backup_path: Path | None = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._archive_legacy_local_database()
         self._initialize()
+
+    def _archive_legacy_local_database(self) -> None:
+        if self.environment != "local" or not self.path.is_file():
+            return
+        connection = sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True)
+        try:
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'admin_schema'"
+            ).fetchone()
+            version = connection.execute("SELECT version FROM admin_schema WHERE singleton = 1").fetchone() if table else None
+        finally:
+            connection.close()
+        if not version or int(version[0]) == _SCHEMA_VERSION:
+            return
+
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        archive = self.path.with_name(f"{self.path.stem}.pre-offline-v{_SCHEMA_VERSION}-{timestamp}{self.path.suffix}")
+        if archive.exists():
+            archive = self.path.with_name(
+                f"{self.path.stem}.pre-offline-v{_SCHEMA_VERSION}-{timestamp}-{uuid.uuid4().hex[:8]}{self.path.suffix}"
+            )
+        os.replace(self.path, archive)
+        for sidecar in ("-wal", "-shm"):
+            source = Path(f"{self.path}{sidecar}")
+            if source.exists():
+                os.replace(source, Path(f"{archive}{sidecar}"))
+        self.legacy_backup_path = archive
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=self.busy_timeout_ms / 1000, isolation_level=None)
