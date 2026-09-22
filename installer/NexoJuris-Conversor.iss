@@ -1,5 +1,5 @@
 #define MyAppName "NexoJuris Conversor"
-#define MyAppVersion "1.4.7"
+#define MyAppVersion "1.4.8"
 #define MyAppPublisher "NexoJuris"
 #define MyAppExeName "NexoJuris Conversor.exe"
 
