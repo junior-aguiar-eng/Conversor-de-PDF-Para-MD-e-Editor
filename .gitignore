@@ -9,6 +9,10 @@ node_modules/
 __pycache__/
 *.py[cod]
 release/
+build/
+*.pyd
+*.c
+*.so
 "Boni Conversor PDF Markdown.spec"
 tests/__pycache__/
 tests/_sandbox/

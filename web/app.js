@@ -29,7 +29,7 @@ let applicationInitializationPromise = null;
 let declarativeEventsInitialized = false;
 const BRIDGE_READY_TIMEOUT_MS = 15_000;
 const BRIDGE_POLL_INTERVAL_MS = 100;
-const LICENSE_CHECK_TIMEOUT_MS = 10_000;
+const LICENSE_CHECK_TIMEOUT_MS = 25_000;
 
 const ALLOWED_DECLARATIVE_ACTIONS = new Set([
   "appLicense.closeModal", "appLicense.copyMachineId", "appLicense.exitApplication", "appLicense.importLicense", "appLicense.openModal",
@@ -4449,7 +4449,7 @@ class LicenseManager {
     this.checkFailed = false;
   }
 
-  async checkActivation() {
+  async checkActivation(allowRetry = true) {
     if (!window.pywebview || !window.pywebview.api) {
       this.renderCheckFailure("A comunicação com o aplicativo não está disponível. Tente novamente ou encerre o aplicativo.");
       return;
@@ -4476,6 +4476,11 @@ class LicenseManager {
         setTimeout(() => checkWelcomeGuide(), 150);
       }
     } catch (err) {
+      const isTimeout = typeof err?.message === "string" && err.message.includes("tempo limite");
+      if (allowRetry && isTimeout) {
+        console.warn("Primeira verificação de licença excedeu o tempo limite. Tentando novamente...", err);
+        return this.checkActivation(false);
+      }
       console.error("Erro ao verificar ativação:", err);
       this.renderCheckFailure("Não foi possível concluir a verificação da licença. Tente novamente ou encerre o aplicativo.");
     }

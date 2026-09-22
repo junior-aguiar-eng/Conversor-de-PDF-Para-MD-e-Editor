@@ -50,6 +50,23 @@ def prepare_web_assets() -> None:
         shutil.rmtree(WEB_DIST_DIR)
     shutil.copytree(WEB_DIR, WEB_DIST_DIR)
 
+    # Ofuscação do código frontend para mitigar engenharia reversa na release
+    app_js = WEB_DIST_DIR / "app.js"
+    if app_js.is_file():
+        try:
+            npx_cmd = shutil.which("npx") or ("npx.cmd" if sys.platform == "win32" else "npx")
+            subprocess.run(
+                [npx_cmd, "-y", "terser", str(app_js), "-o", str(app_js), "--compress", "--mangle"],
+                check=True,
+                capture_output=True,
+                cwd=str(PROJECT_ROOT),
+                timeout=30,
+            )
+            print("[BUILD] Código JavaScript (app.js) ofuscado e minificado com sucesso.")
+        except Exception as err:
+            print(f"[AVISO] Ofuscação de app.js ignorada ({err}); mantendo versão padrão.")
+
+
 
 def prepare_admin_web_assets() -> None:
     """Copia a interface administrativa autocontida para o build privado."""
@@ -267,6 +284,16 @@ def build() -> Path:
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     prepare_web_assets()
     prepare_admin_web_assets()
+
+    # Compilação dos módulos proprietários para C/pyd nativo
+    compile_script = PROJECT_ROOT / "compile_native.py"
+    if compile_script.is_file():
+        print("=== Compilando módulos nativos proprietários (.pyd) com Cython ===")
+        try:
+            subprocess.run([sys.executable, str(compile_script)], cwd=PROJECT_ROOT, check=True)
+        except Exception as err:
+            print(f"[AVISO] Falha ao compilar com Cython ({err}). Mantendo execução padrão.")
+
     version_file = generate_version_info()
     command = [sys.executable, "-m", "PyInstaller", *pyinstaller_arguments(version_file)]
     subprocess.run(command, cwd=PROJECT_ROOT, check=True)

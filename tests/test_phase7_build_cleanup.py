@@ -49,8 +49,10 @@ class Phase7BuildCleanupTests(unittest.TestCase):
 
     def test_apparently_idle_dependencies_remain_until_individual_release_audit(self) -> None:
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        for dependency in ("openpyxl", "pdfplumber", "pypdf", "pytesseract", "python-docx"):
-            self.assertRegex(pyproject, rf'"{re.escape(dependency)}[=<>]')
+        for preserved in ("openpyxl", "python-docx"):
+            self.assertRegex(pyproject, rf'"{re.escape(preserved)}[=<>]')
+        for purged in ("pdfplumber", "pypdf", "pytesseract"):
+            self.assertNotIn(f'"{purged}', pyproject)
 
     def test_obsolete_instance_zoom_is_removed_but_document_zoom_remains(self) -> None:
         app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")

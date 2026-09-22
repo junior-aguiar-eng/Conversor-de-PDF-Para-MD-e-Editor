@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import queue
+import socket
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from typing import Any
 
@@ -94,25 +96,20 @@ class CircuitBreaker:
             }
 
 
+# Timeout padrão de socket defensivo para conexões de rede não bloquearem indefinidamente
+if socket.getdefaulttimeout() is None:
+    socket.setdefaulttimeout(30.0)
+
+_ONLINE_SERVICE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="OnlineServiceWorker")
+
+
 def _run_with_timeout(operation: Callable[[], Any], timeout_seconds: float) -> Any:
-    """Executa trabalho bloqueante sem permitir que ele retenha a thread da ponte."""
-    outcome: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
-
-    def target() -> None:
-        try:
-            outcome.put((True, operation()))
-        except BaseException as error:
-            outcome.put((False, error))
-
-    worker = threading.Thread(target=target, name="OptionalOnlineService", daemon=True)
-    worker.start()
-    worker.join(max(0.0, timeout_seconds))
-    if worker.is_alive():
-        raise ServiceOperationTimeout("A operação online excedeu o tempo máximo.")
-    succeeded, value = outcome.get_nowait()
-    if succeeded:
-        return value
-    raise value  # type: ignore[misc]
+    """Executa trabalho bloqueante em pool gerenciado sem permitir retenção da thread chamadora."""
+    future: Future[Any] = _ONLINE_SERVICE_EXECUTOR.submit(operation)
+    try:
+        return future.result(timeout=max(0.0, timeout_seconds))
+    except FutureTimeoutError:
+        raise ServiceOperationTimeout("A operação online excedeu o tempo máximo.") from None
 
 
 def call_with_resilience(

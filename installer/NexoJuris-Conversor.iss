@@ -49,3 +49,19 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Executar {#MyAppName}"; Flags: 
 
 [UninstallDelete]
 Type: dirifempty; Name: "{app}\PDFs Convertidos"
+
+[Code]
+// Oculta os nomes individuais de cada arquivo sendo desempacotado
+procedure InitializeWizard;
+begin
+  WizardForm.FilenameLabel.Visible := False;
+  WizardForm.StatusLabel.Caption := 'Instalando os arquivos e componentes do NexoJuris...';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then
+  begin
+    WizardForm.FilenameLabel.Visible := False;
+  end;
+end;

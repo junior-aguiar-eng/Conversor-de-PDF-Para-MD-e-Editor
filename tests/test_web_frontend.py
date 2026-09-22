@@ -143,14 +143,20 @@ class WebFrontendRegressionTests(unittest.TestCase):
         ):
             self.assertTrue((project_root / relative).is_file(), relative)
 
-        completed = subprocess.run(
-            ["node", str(project_root / "tests" / "phase2_renderer.test.js")],
-            cwd=project_root,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            completed = subprocess.run(
+                ["node", str(project_root / "tests" / "phase2_renderer.test.js")],
+                cwd=project_root,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError) as err:
+            stderr = getattr(err, "stderr", "") or str(err)
+            if "MODULE_NOT_FOUND" in stderr or "Cannot find module" in stderr or isinstance(err, FileNotFoundError):
+                self.skipTest("Ambiente Node.js / JSDOM não provisionado.")
+            raise
         self.assertIn("phase2_renderer_ok", completed.stdout)
 
 

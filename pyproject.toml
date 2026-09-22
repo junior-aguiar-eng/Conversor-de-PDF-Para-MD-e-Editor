@@ -8,11 +8,8 @@ dependencies = [
     "deep-translator>=1.11.4",
     "edge-tts>=7.2.8",
     "openpyxl>=3.1.5",
-    "pdfplumber>=0.11.10",
     "pymupdf>=1.28.0",
     "pymupdf4llm==1.28.0",
-    "pypdf>=6.16.2",
-    "pytesseract>=0.3.13",
     "python-docx>=1.2.0",
     "pywebview>=6.2.1",
     "rapidocr-onnxruntime>=1.4.4",
@@ -23,8 +20,10 @@ package = false
 
 [dependency-groups]
 dev = [
+    "cython>=3.0.11",
     "pyinstaller==6.22.2",
     "ruff>=0.16.1",
+    "setuptools>=75.0.0",
 ]
 
 [tool.ruff]

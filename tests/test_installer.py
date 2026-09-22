@@ -24,6 +24,7 @@ class InstallerManifestTests(unittest.TestCase):
             "converter.py",
             "file_authorization.py",
             "library_db.py",
+            "license_key_config.py",
             "licensing.py",
             "markdown_utils.py",
             "models.py",
@@ -31,6 +32,7 @@ class InstallerManifestTests(unittest.TestCase):
             "online_services.py",
             "production_diagnostics.py",
             "text_fidelity.py",
+            "trusted_time.py",
             "web_api.py",
         }
         self.assertEqual(required_files - manifest, set())

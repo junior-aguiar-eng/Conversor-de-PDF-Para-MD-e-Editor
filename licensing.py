@@ -90,13 +90,29 @@ def _get_motherboard_uuid() -> str:
                 "(Get-CimInstance Win32_ComputerSystemProduct).UUID",
             ]
             out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=4.0)
-            clean_uuid = out.strip().upper()
+            clean_uuid = out.strip()
             if clean_uuid and len(clean_uuid) > 10 and clean_uuid != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
                 return clean_uuid
         except Exception as err:
             logger.debug(f"PowerShell UUID fallback: {err}")
 
-    # Fallback genérico para ambientes não-Windows ou com restrições
+        # Contingência por Serial de Volume do sistema (resiliente contra restrições de registro e VMs)
+        try:
+            import ctypes
+
+            volume_serial = ctypes.c_ulong()
+            system_drive = os.environ.get("SystemDrive", "C:")
+            root_path = f"{system_drive}\\" if not system_drive.endswith("\\") else system_drive
+            if ctypes.windll.kernel32.GetVolumeInformationW(
+                root_path, None, 0, ctypes.byref(volume_serial), None, None, None, 0
+            ):
+                serial_int = int(volume_serial.value)
+                if serial_int != 0:
+                    return f"VOL-{serial_int:08X}"
+        except Exception as err:
+            logger.debug(f"Volume Serial fallback indisponível: {err}")
+
+    # Fallback genérico para ambientes não-Windows ou com restrições severas
     return f"FALLBACK-UUID-{os.environ.get('COMPUTERNAME', platform.node())}"
 
 
