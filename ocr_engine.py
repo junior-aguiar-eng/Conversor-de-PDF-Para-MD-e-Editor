@@ -54,7 +54,10 @@ def ocr_pixmap(pixmap: fitz.Pixmap, min_score: float = 0.35) -> tuple[str, list[
     require_software_activation("ocr")
     ocr = get_ocr_engine()
     img_bytes = pixmap.tobytes("png")
-    result, _ = ocr(img_bytes)
+    try:
+        result, _ = ocr(img_bytes)
+    finally:
+        del img_bytes
 
     if not result:
         return "", []
@@ -129,5 +132,8 @@ def ocr_pixmap(pixmap: fitz.Pixmap, min_score: float = 0.35) -> tuple[str, list[
 def ocr_page_to_markdown(page: fitz.Page, dpi: int = 200) -> str:
     """Renderiza a página em alta resolução e extrai seu conteúdo em Markdown via RapidOCR."""
     pix = page.get_pixmap(dpi=dpi)
-    text, _ = ocr_pixmap(pix)
-    return text
+    try:
+        text, _ = ocr_pixmap(pix)
+        return text
+    finally:
+        del pix

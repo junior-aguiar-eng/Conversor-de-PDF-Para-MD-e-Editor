@@ -24,6 +24,14 @@ MODULES = [
     ("licensing", "licensing.py"),
     ("library_db", "library_db.py"),
     ("converter", "converter.py"),
+    ("api_bridge.common", "api_bridge/common.py"),
+    ("api_bridge.resource_helpers", "api_bridge/resource_helpers.py"),
+    ("api_bridge.online", "api_bridge/online.py"),
+    ("api_bridge.reader", "api_bridge/reader.py"),
+    ("api_bridge.editor", "api_bridge/editor.py"),
+    ("api_bridge.library", "api_bridge/library.py"),
+    ("api_bridge.conversion", "api_bridge/conversion.py"),
+    ("api_bridge.system", "api_bridge/system.py"),
     ("web_api", "web_api.py"),
 ]
 
@@ -45,16 +53,42 @@ def get_extensions() -> list[Extension]:
     return extensions
 
 
-def clean_c_files() -> None:
-    """Remove arquivos intermediários .c gerados pelo Cython."""
+def clean_native_artifacts(clean_pyd: bool = True) -> None:
+    """Remove arquivos intermediários (.c, .html) e extensões (.pyd/.so) gerados pelo Cython."""
     for _, file_rel in MODULES:
-        c_file = PROJECT_ROOT / (os.path.splitext(file_rel)[0] + ".c")
+        base_path = PROJECT_ROOT / os.path.splitext(file_rel)[0]
+        c_file = base_path.with_suffix(".c")
         if c_file.is_file():
             try:
                 c_file.unlink()
                 print(f"Removido: {c_file.name}")
             except OSError:
                 pass
+        html_file = base_path.with_suffix(".html")
+        if html_file.is_file():
+            try:
+                html_file.unlink()
+            except OSError:
+                pass
+        if clean_pyd:
+            parent_dir = base_path.parent
+            stem = base_path.name
+            for pyd_candidate in parent_dir.glob(f"{stem}*.pyd"):
+                try:
+                    pyd_candidate.unlink()
+                    print(f"Removido pyd: {pyd_candidate.name}")
+                except OSError:
+                    pass
+            for so_candidate in parent_dir.glob(f"{stem}*.so"):
+                try:
+                    so_candidate.unlink()
+                except OSError:
+                    pass
+
+
+def clean_c_files() -> None:
+    """Remove apenas arquivos intermediários .c mantendo extensões compiladas."""
+    clean_native_artifacts(clean_pyd=False)
 
 
 def build_extensions(inplace: bool = True) -> None:
@@ -96,7 +130,7 @@ if __name__ == "__main__":
     inplace = "--build-dir" not in sys.argv
 
     if clean:
-        clean_c_files()
+        clean_native_artifacts(clean_pyd=True)
     else:
         try:
             build_extensions(inplace=inplace)

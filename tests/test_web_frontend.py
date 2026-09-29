@@ -11,22 +11,36 @@ class WebFrontendRegressionTests(unittest.TestCase):
     def _read_project_file(*parts: str) -> str:
         return (Path(__file__).resolve().parents[1].joinpath(*parts)).read_text(encoding="utf-8")
 
+    @staticmethod
+    def _extract_js_method(source: str, method_name: str) -> str:
+        pattern = re.compile(rf"(?:async\s+)?{method_name}\s*\([^)]*\)\s*\{{")
+        match = pattern.search(source)
+        if not match:
+            raise AssertionError(f"Método JavaScript não encontrado: {method_name}")
+        start = match.start()
+        brace_start = match.end() - 1
+        depth = 0
+        for index in range(brace_start, len(source)):
+            if source[index] == "{":
+                depth += 1
+            elif source[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    return source[start : index + 1]
+        raise AssertionError(f"Método JavaScript incompleto: {method_name}")
+
     def test_successful_annotation_save_clears_pending_queue_before_render(self) -> None:
         app_js = self._read_project_file("web", "app.js")
-        method_start = app_js.index("  async saveAnnotations(asCopy = false) {")
-        method_end = app_js.index("\n  async restoreLastSave", method_start)
-        method = app_js[method_start:method_end]
+        method = self._extract_js_method(app_js, "saveAnnotations")
 
-        success_start = method.index("    if (res.ok) {")
+        success_start = method.index("if (res.ok) {")
         render_position = method.index("await this.renderCurrentPage(true);", success_start)
         success_before_render = method[success_start:render_position]
-        failure_start = method.index("    } else {", render_position)
+        failure_start = method.index("} else {", render_position)
         failure_branch = method[failure_start:]
 
         self.assertIn("this.clearPendingEdits();", success_before_render)
-        clear_method_start = app_js.index("  clearPendingEdits() {")
-        clear_method_end = app_js.index("\n  async saveAnnotations", clear_method_start)
-        clear_method = app_js[clear_method_start:clear_method_end]
+        clear_method = self._extract_js_method(app_js, "clearPendingEdits")
         self.assertIn("this.annotations.clear();", clear_method)
         self.assertIn("this.pendingRotations.clear();", clear_method)
         self.assertIn("this.undoStack = [];", clear_method)

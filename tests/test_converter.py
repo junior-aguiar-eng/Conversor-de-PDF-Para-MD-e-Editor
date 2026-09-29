@@ -441,8 +441,11 @@ class ConverterTests(unittest.TestCase):
                 status_path = checkpoint / "control-status.json"
                 deadline = time.monotonic() + 2
                 while time.monotonic() < deadline:
-                    if status_path.is_file() and '"paused"' in status_path.read_text(encoding="utf-8"):
-                        break
+                    try:
+                        if status_path.is_file() and '"paused"' in status_path.read_text(encoding="utf-8"):
+                            break
+                    except (PermissionError, OSError):
+                        pass
                     time.sleep(0.02)
                 self.assertTrue(status_path.is_file())
                 self.assertIn('"paused"', status_path.read_text(encoding="utf-8"))

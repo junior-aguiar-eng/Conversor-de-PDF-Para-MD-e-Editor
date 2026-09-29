@@ -8,7 +8,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from production_diagnostics import build_diagnostic_report, write_diagnostic_report
+from production_diagnostics import (
+    TelemetryTracker,
+    build_diagnostic_report,
+    diagnostic_status,
+    get_telemetry_tracker,
+    write_diagnostic_report,
+)
 from web_api import BridgeApi
 
 
@@ -95,6 +101,55 @@ class ProductionDiagnosticsTests(unittest.TestCase):
             exported = destination.with_suffix(".txt")
             self.assertTrue(result["ok"])
             self.assertEqual(exported.read_text(encoding="utf-8"), "diagnóstico")
+
+    def test_telemetry_tracker_aggregates_metrics(self) -> None:
+        tracker = TelemetryTracker()
+        tracker.record_conversion(
+            page_count=3,
+            duration_seconds=1.5,
+            page_coverage=[
+                {"status": "native", "fidelity_score": 0.95, "warning": ""},
+                {"status": "ocr", "fidelity_score": 0.80, "warning": "scanned"},
+                {"status": "failed", "fidelity_score": None, "warning": "corrupt"},
+            ],
+            current_rss_bytes=100 * 1024 * 1024,
+        )
+
+        summary = tracker.get_summary()
+        self.assertEqual(summary["documents_processed"], 1)
+        self.assertEqual(summary["pages_processed"], 3)
+        self.assertEqual(summary["total_extraction_seconds"], 1.5)
+        self.assertEqual(summary["pages_per_second"], 2.0)
+        self.assertEqual(summary["page_breakdown"]["native"], 1)
+        self.assertEqual(summary["page_breakdown"]["ocr"], 1)
+        self.assertEqual(summary["page_breakdown"]["failed"], 1)
+        self.assertEqual(summary["peak_rss_mb"], 100.0)
+        self.assertAlmostEqual(summary["fidelity"]["avg_score"], 0.875, places=3)
+        self.assertEqual(summary["fidelity"]["low_fidelity_pages"], 1)
+        self.assertEqual(summary["fidelity"]["warning_pages"], 2)
+
+    def test_diagnostic_status_and_report_include_telemetry(self) -> None:
+        tracker = get_telemetry_tracker()
+        tracker.reset()
+        tracker.record_conversion(
+            page_count=2,
+            duration_seconds=1.0,
+            page_coverage=[
+                {"status": "native", "fidelity_score": 0.98, "warning": ""},
+                {"status": "native", "fidelity_score": 0.92, "warning": ""},
+            ],
+            current_rss_bytes=50 * 1024 * 1024,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            status = diagnostic_status(directory=root)
+            self.assertIn("telemetry", status)
+            self.assertEqual(status["telemetry"]["pages_processed"], 2)
+
+            report = build_diagnostic_report(directory=root)
+            self.assertIn("telemetry", report.lower())
+            self.assertIn('"pages_processed": 2', report)
 
 
 if __name__ == "__main__":

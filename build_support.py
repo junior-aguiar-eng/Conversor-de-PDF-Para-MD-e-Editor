@@ -294,18 +294,25 @@ def build() -> Path:
         except Exception as err:
             print(f"[AVISO] Falha ao compilar com Cython ({err}). Mantendo execução padrão.")
 
-    version_file = generate_version_info()
-    command = [sys.executable, "-m", "PyInstaller", *pyinstaller_arguments(version_file)]
-    subprocess.run(command, cwd=PROJECT_ROOT, check=True)
-    admin_version_file = generate_admin_version_info()
-    admin_command = [sys.executable, "-m", "PyInstaller", *admin_pyinstaller_arguments(admin_version_file)]
-    subprocess.run(admin_command, cwd=PROJECT_ROOT, check=True)
-    executable = verify_release()
-    admin_executable = verify_admin_release()
-    shutil.rmtree(WORK_DIR)
-    print(f"Release criada: {executable}")
-    print(f"Release administrativa criada: {admin_executable}")
-    return executable
+    try:
+        version_file = generate_version_info()
+        command = [sys.executable, "-m", "PyInstaller", *pyinstaller_arguments(version_file)]
+        subprocess.run(command, cwd=PROJECT_ROOT, check=True)
+        admin_version_file = generate_admin_version_info()
+        admin_command = [sys.executable, "-m", "PyInstaller", *admin_pyinstaller_arguments(admin_version_file)]
+        subprocess.run(admin_command, cwd=PROJECT_ROOT, check=True)
+        executable = verify_release()
+        admin_executable = verify_admin_release()
+        shutil.rmtree(WORK_DIR)
+        print(f"Release criada: {executable}")
+        print(f"Release administrativa criada: {admin_executable}")
+        return executable
+    finally:
+        if compile_script.is_file():
+            try:
+                subprocess.run([sys.executable, str(compile_script), "--clean"], cwd=PROJECT_ROOT, check=False)
+            except Exception:
+                pass
 
 
 def main() -> int:

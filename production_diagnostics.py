@@ -125,6 +125,105 @@ def configure_production_diagnostics(*, directory: Path | None = None) -> dict[s
         return diagnostic_status(directory=destination)
 
 
+class TelemetryTracker:
+    """Rastreador de telemetria operacional com agregação thread-safe em memória."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.reset()
+
+    def reset(self) -> None:
+        with getattr(self, "_lock", threading.Lock()):
+            self._documents_processed = 0
+            self._pages_processed = 0
+            self._total_extraction_seconds = 0.0
+            self._ocr_pages = 0
+            self._native_pages = 0
+            self._fallback_pages = 0
+            self._empty_pages = 0
+            self._failed_pages = 0
+            self._peak_rss_bytes = 0
+            self._fidelity_scores: list[float] = []
+            self._warning_pages = 0
+
+    def record_conversion(
+        self,
+        *,
+        page_count: int,
+        duration_seconds: float,
+        page_coverage: tuple[Any, ...] | list[Any] = (),
+        current_rss_bytes: int = 0,
+    ) -> None:
+        with self._lock:
+            self._documents_processed += 1
+            self._pages_processed += page_count
+            self._total_extraction_seconds += max(0.0, float(duration_seconds))
+            if current_rss_bytes > self._peak_rss_bytes:
+                self._peak_rss_bytes = current_rss_bytes
+
+            for item in page_coverage:
+                status = getattr(item, "status", None) or (item.get("status") if isinstance(item, dict) else "")
+                if status == "ocr":
+                    self._ocr_pages += 1
+                elif status == "native":
+                    self._native_pages += 1
+                elif status == "fallback":
+                    self._fallback_pages += 1
+                elif status == "empty":
+                    self._empty_pages += 1
+                elif status == "failed":
+                    self._failed_pages += 1
+
+                score = getattr(item, "fidelity_score", None) or (
+                    item.get("fidelity_score") if isinstance(item, dict) else None
+                )
+                if isinstance(score, (int, float)):
+                    self._fidelity_scores.append(float(score))
+
+                warning = getattr(item, "warning", None) or (
+                    item.get("warning") if isinstance(item, dict) else ""
+                )
+                if warning:
+                    self._warning_pages += 1
+
+    def get_summary(self) -> dict[str, Any]:
+        with self._lock:
+            duration = self._total_extraction_seconds
+            pages = self._pages_processed
+            pages_per_sec = round(pages / duration, 2) if duration > 0.001 else 0.0
+            scores = self._fidelity_scores
+            avg_fidelity = round(sum(scores) / len(scores), 4) if scores else None
+            low_fidelity_count = sum(1 for s in scores if s < 0.85)
+
+            return {
+                "documents_processed": self._documents_processed,
+                "pages_processed": pages,
+                "total_extraction_seconds": round(duration, 3),
+                "pages_per_second": pages_per_sec,
+                "page_breakdown": {
+                    "native": self._native_pages,
+                    "ocr": self._ocr_pages,
+                    "fallback": self._fallback_pages,
+                    "empty": self._empty_pages,
+                    "failed": self._failed_pages,
+                },
+                "peak_rss_bytes": self._peak_rss_bytes,
+                "peak_rss_mb": round(self._peak_rss_bytes / (1024 * 1024), 2),
+                "fidelity": {
+                    "avg_score": avg_fidelity,
+                    "low_fidelity_pages": low_fidelity_count,
+                    "warning_pages": self._warning_pages,
+                },
+            }
+
+
+_GLOBAL_TELEMETRY = TelemetryTracker()
+
+
+def get_telemetry_tracker() -> TelemetryTracker:
+    return _GLOBAL_TELEMETRY
+
+
 def diagnostic_status(*, directory: Path | None = None) -> dict[str, Any]:
     destination = (directory or _active_directory or diagnostics_directory()).resolve()
     return {
@@ -135,6 +234,7 @@ def diagnostic_status(*, directory: Path | None = None) -> dict[str, Any]:
         "native_crash_file": str(destination / "native-crash.log"),
         "rotation_max_bytes": LOG_MAX_BYTES,
         "rotation_backup_count": LOG_BACKUP_COUNT,
+        "telemetry": _GLOBAL_TELEMETRY.get_summary(),
     }
 
 
@@ -229,6 +329,7 @@ def build_diagnostic_report(
         "storage": library_status or {},
         "online_services": online_services or {},
         "disk": disk_status,
+        "telemetry": _GLOBAL_TELEMETRY.get_summary(),
         "recent_event_categories": _classify_recent_events(recent_logs),
         "privacy": "Não inclui conteúdo dos PDFs, texto extraído, senhas ou chaves de licença.",
     }

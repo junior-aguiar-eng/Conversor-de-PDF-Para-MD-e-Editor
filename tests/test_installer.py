@@ -39,7 +39,7 @@ class InstallerManifestTests(unittest.TestCase):
 
         for filename in required_files:
             self.assertTrue((project_root / filename).is_file(), filename)
-        for package in ("license_core",):
+        for package in ("license_core", "api_bridge"):
             self.assertIn(f'Join-Path $origem "{package}"', script)
             self.assertTrue((project_root / package / "__init__.py").is_file(), package)
 

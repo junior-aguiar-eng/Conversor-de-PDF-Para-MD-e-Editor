@@ -40,6 +40,7 @@ Copy-Item -Path ($arquivosDoAplicativo | ForEach-Object { Join-Path $origem $_ }
 Copy-Item -Path (Join-Path $origem "web") -Destination (Join-Path $Destino "web") -Recurse -Force
 Copy-Item -Path (Join-Path $origem "assets") -Destination (Join-Path $Destino "assets") -Recurse -Force
 Copy-Item -Path (Join-Path $origem "license_core") -Destination (Join-Path $Destino "license_core") -Recurse -Force
+Copy-Item -Path (Join-Path $origem "api_bridge") -Destination (Join-Path $Destino "api_bridge") -Recurse -Force
 
 $python = Join-Path $Destino ".venv\Scripts\python.exe"
 if ($RecriarAmbiente -and (Test-Path (Join-Path $Destino ".venv"))) {
@@ -58,7 +59,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # Falha durante a instalação, em vez de deixar imports ausentes aparecerem só ao abrir o aplicativo.
-& $python -c "import app, converter, library_db, license_core, licensing, ocr_engine, web_api, trusted_time, license_key_config"
+& $python -c "import app, converter, library_db, license_core, licensing, ocr_engine, web_api, trusted_time, license_key_config, api_bridge"
 if ($LASTEXITCODE -ne 0) {
     throw "A instalação está incompleta: um ou mais módulos do aplicativo não puderam ser importados."
 }

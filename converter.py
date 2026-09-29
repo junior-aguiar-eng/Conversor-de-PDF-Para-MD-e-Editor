@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import os
@@ -159,11 +160,21 @@ def _atomic_write_text(path: Path, content: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+_CONTROL_ACTION_CACHE: dict[Path, tuple[int, str]] = {}
+
+
 def _read_control_action(checkpoint_dir: Path) -> str:
+    control_path = checkpoint_dir / "control.json"
     try:
-        payload = json.loads((checkpoint_dir / "control.json").read_text(encoding="utf-8"))
+        stat = control_path.stat()
+        cached = _CONTROL_ACTION_CACHE.get(control_path)
+        if cached is not None and cached[0] == stat.st_mtime_ns:
+            return cached[1]
+        payload = json.loads(control_path.read_text(encoding="utf-8"))
         action = str(payload.get("action", "running"))
-        return action if action in {"running", "pause", "stop"} else "running"
+        result = action if action in {"running", "pause", "stop"} else "running"
+        _CONTROL_ACTION_CACHE[control_path] = (stat.st_mtime_ns, result)
+        return result
     except (OSError, json.JSONDecodeError, TypeError):
         return "running"
 
@@ -473,6 +484,12 @@ class PdfMarkdownConverter:
                         )
                     self._check_resource_budget(output_dir, source_size, deadline)
                     deadline += _honor_conversion_control(checkpoint_dir, page_number)
+                    try:
+                        del page
+                    except UnboundLocalError:
+                        pass
+                    if page_number % 25 == 0 or (current_process_rss_bytes() or 0) > 250 * 1024 * 1024:
+                        gc.collect()
 
                 markdown = "\n\n---\n\n".join(rendered_pages)
                 self._check_resource_budget(output_dir, source_size, deadline)
@@ -490,6 +507,7 @@ class PdfMarkdownConverter:
         asset_count = sum(1 for item in temporary_assets_dir.rglob("*") if item.is_file())
         finalization_assets_dir = temporary_assets_dir
         if checkpoint_dir is not None:
+            reservation.assets_dir.parent.mkdir(parents=True, exist_ok=True)
             finalization_assets_dir = Path(
                 tempfile.mkdtemp(prefix=f".{reservation.assets_dir.name}.", dir=reservation.assets_dir.parent)
             )
