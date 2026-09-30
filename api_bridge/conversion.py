@@ -973,6 +973,8 @@ class ConversionMixin:
             for result in successes
             if result.fidelity_review_pages
         ]
+        telemetry_stats = get_telemetry_tracker().get_summary()
+        ocr_cache_info = telemetry_stats.get("ocr_cache", {})
         self._set_conversion_state("completed")
         self._emit(
             "batch_done",
@@ -987,6 +989,8 @@ class ConversionMixin:
                 "problem_page_count": sum(len(item["pages"]) for item in problem_pages),
                 "fidelity_pages": fidelity_pages,
                 "fidelity_review_page_count": sum(len(item["pages"]) for item in fidelity_pages),
+                "ocr_cache_hits": int(ocr_cache_info.get("hits", 0)),
+                "ocr_cache_hit_ratio": float(ocr_cache_info.get("hit_ratio", 0.0)),
             },
         )
 

@@ -30,6 +30,7 @@ from models import (
     ConversionResult,
     build_summary_message,
 )
+from ocr_engine import warmup_ocr_engine_async
 from production_diagnostics import configure_production_diagnostics, diagnostic_status, log_startup_failure
 from web_api import BridgeApi
 
@@ -252,6 +253,7 @@ def run_gui() -> None:
     )
     api.set_window(window)
     configure_shutdown_handlers(window, api)
+    warmup_ocr_engine_async()
     webview.start(gui="edgechromium", debug=False)
 
 

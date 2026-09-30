@@ -132,6 +132,18 @@ def get_ocr_engine() -> Any:
     return _RAPID_OCR_INSTANCE
 
 
+def warmup_ocr_engine_async() -> None:
+    """Dispara a inicialização assíncrona em background do RapidOCR em thread desacoplada."""
+    def _warmup_worker() -> None:
+        try:
+            get_ocr_engine()
+            logger.info("Motor RapidOCR pré-aquecido em background com sucesso.")
+        except Exception as error:
+            logger.debug("Warmup de RapidOCR em background ignorado: %s", error)
+
+    threading.Thread(target=_warmup_worker, daemon=True, name="OCR-Warmup").start()
+
+
 def is_scanned_page(page: fitz.Page, min_char_count: int = 40) -> bool:
     """Verifica se uma página de PDF é predominantemente digitalizada/escaneada.
 

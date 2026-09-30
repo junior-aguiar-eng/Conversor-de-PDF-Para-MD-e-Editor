@@ -1105,13 +1105,20 @@ window.onBackendEvent = function (eventName, data) {
     const fidelityWarning = data.fidelity_review_page_count
       ? `, ${data.fidelity_review_page_count} página(s) exigem conferência de fidelidade`
       : "";
+    const cacheNotice = data.ocr_cache_hits
+      ? ` (⚡ ${data.ocr_cache_hits} pág(s) aceleradas por cache)`
+      : "";
     const pageWarning = `${failedWarning}${fidelityWarning}`;
-    document.getElementById("statusMessage").innerText = `Concluído: ${data.success_count} convertido(s), ${data.failure_count} com erro${pageWarning}.`;
+    document.getElementById("statusMessage").innerText = `Concluído: ${data.success_count} convertido(s), ${data.failure_count} com erro${pageWarning}.${cacheNotice}`;
     showToast(
-      `Conversão finalizada em ${data.elapsed_formatted}${pageWarning}!`,
+      `Conversão finalizada em ${data.elapsed_formatted}${pageWarning}!${cacheNotice}`,
       data.problem_page_count || data.fidelity_review_page_count ? "info" : "success"
     );
     appendLog("INFO", `Lote concluído em ${data.elapsed_formatted}. Arquivos salvos em: ${data.output_dir}`);
+    if (data.ocr_cache_hits) {
+      const hitPercent = Math.round((data.ocr_cache_hit_ratio || 0) * 100);
+      appendLog("INFO", `Cache de OCR: ${data.ocr_cache_hits} página(s) recuperadas instantaneamente (${hitPercent}% de taxa de acerto).`);
+    }
     for (const item of data.problem_pages || []) {
       appendLog("AVISO", `${item.name}: páginas não recuperadas ${item.pages.join(", ")}.`);
     }
