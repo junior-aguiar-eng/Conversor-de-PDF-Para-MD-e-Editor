@@ -114,11 +114,51 @@ Em `converter.py`, durante a iteração de páginas:
 
 ---
 
-## 5. Telemetria Corporativa e Observabilidade
+## 5. Paralelismo de Páginas (Page-Level Parallelism)
+
+Para documentos extensos (acima de 3 páginas), o NexoJuris emprega uma arquitetura híbrida de concorrência em dois níveis: **Paralelismo de Arquivos (Multiprocessing)** e **Paralelismo de Páginas (Multithreading)**.
+
+```mermaid
+graph TD
+    subgraph "Process Pool (Warm Workers por Arquivo)"
+        P1["Worker Processo 1 (Doc A)"]
+        P2["Worker Processo 2 (Doc B)"]
+    end
+    
+    subgraph "Thread Pool por Documento (converter.py)"
+        P1 --> T1["Thread 1 (Pág 1) - Doc Local"]
+        P1 --> T2["Thread 2 (Pág 2) - Doc Local"]
+        P1 --> T3["Thread 3 (Pág 3) - Doc Local"]
+        P1 --> T4["Thread 4 (Pág 4) - Doc Local"]
+    end
+    
+    subgraph "Sincronização & Saída"
+        T1 & T2 & T3 & T4 --> Lock["Checkpoint Lock (state.json)"]
+        T1 & T2 & T3 & T4 --> Det["Reconstrução Determinística [results[p]]"]
+        Det --> MD["Markdown Final 100% Sequencial"]
+    end
+```
+
+### 5.1. Diretrizes de Concorrência e Thread-Safety
+1. **Isolamento de Buffers C MuPDF**: Cada worker thread instancia e reutiliza seu próprio ponteiro de documento C nativo (`pymupdf.open(source)`) via `threading.local`. Isso elimina contenção de locks no motor MuPDF e aproveita a liberação nativa do GIL durante operações pesadas de decodificação e OCR.
+2. **Propagação de Contexto Assíncrono (`ContextVar`)**: Para assegurar que o caminho seguro de imagens (`_IMAGE_OUTPUT_CONTEXT`) permaneça acessível sem colisões, cada submissão ao pool utiliza um clone independente do contexto atual:
+   ```python
+   executor.submit(copy_context().run, _worker_extract, page_number)
+   ```
+3. **Escalonamento e Auto-Tuning**:
+   - Documentos curtos ($\le 3$ páginas): Executam sequencialmente com zero overhead de thread pool (`page_workers=1`).
+   - Documentos extensos ($\ge 4$ páginas): Utilizam até `min(cpu_count, 4)` threads simultâneas.
+   - Em lotes concorrentes: A quantidade de threads por arquivo é ajustada dinamicamente com base nas CPUs disponíveis: `max(1, min(4, cpu_count // file_workers))`.
+4. **Sincronização de Checkpoint Atômico**: A escrita em disco de arquivos individuais de páginas (`pages/00000X.md`) é naturalmente concorrente, enquanto a consolidação em `state.json` é protegida por `threading.Lock()`.
+5. **Determinismo Absoluto**: Independentemente da ordem de conclusão assíncrona das threads, o Markdown e as métricas de fidelidade são remontados rigorosamente segundo a ordem original das páginas selecionadas.
+
+---
+
+## 6. Telemetria Corporativa e Observabilidade
 
 O sistema conta com um coletor de telemetria operacional centralizado e thread-safe: `TelemetryTracker` em `production_diagnostics.py`.
 
-### 5.1. Métricas Agregadas Coletadas
+### 6.1. Métricas Agregadas Coletadas
 - **Vazão Operacional**:
   - `documents_processed`: Total de documentos processados na sessão.
   - `pages_processed`: Total de páginas processadas.
@@ -133,7 +173,7 @@ O sistema conta com um coletor de telemetria operacional centralizado e thread-s
   - `low_fidelity_pages`: Quantidade de páginas com score abaixo de 0.85 (marcadas para conferência visual do usuário).
   - `warning_pages`: Total de páginas com alertas de caracteres anômalos ou avisos de extração.
 
-### 5.2. Garantias de Privacidade e Conformidade
+### 6.2. Garantias de Privacidade e Conformidade
 Seguindo os mais altos padrões de segurança e compliance:
 - **Zero Retenção Documental**: Não são registrados títulos de documentos, caminhos de pastas privadas ou fragmentos de texto do PDF.
 - **Sanitização de Caminhos**: Nos relatórios de diagnóstico e logs exportados, o caminho do perfil do usuário é automaticamente mascarado como `%USERPROFILE%`.
@@ -141,13 +181,13 @@ Seguindo os mais altos padrões de segurança e compliance:
 
 ---
 
-## 6. Portões de Qualidade e Integração Contínua (CI)
+## 7. Portões de Qualidade e Integração Contínua (CI)
 
 Todas as alterações obedecem rigorosamente aos portões de validação da suíte de testes:
 ```powershell
 # Verificação de linter e integridade sintática
 uv run ruff check .
 
-# Execução da suíte completa de testes (266+ testes unitários e de integração)
+# Execução da suíte completa de testes (269 testes unitários e de integração)
 uv run python -m unittest discover -s tests -v
 ```

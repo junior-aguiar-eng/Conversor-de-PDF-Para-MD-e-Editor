@@ -460,6 +460,232 @@ class ConverterTests(unittest.TestCase):
             self.assertEqual(calls, [0, 1, 2])
             self.assertEqual(len(result_holder), 1)
 
+    def test_page_parallelism_matches_sequential_output_and_order(self) -> None:
+        class FakePage:
+            def __init__(self, index: int) -> None:
+                self.index = index
+
+            def get_images(self, full: bool = False) -> list[object]:
+                return []
+
+            def get_text(self, _kind: str = "text") -> str:
+                return f"conteúdo texto {self.index + 1}"
+
+        class FakeDocument:
+            page_count = 6
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def close(self):
+                pass
+
+            def load_page(self, page_index: int) -> FakePage:
+                return FakePage(page_index)
+
+        def fake_to_markdown(_document, **kwargs):
+            page_idx = kwargs["pages"][0]
+            # Pequeno sleep inversamente proporcional ao índice da página para forçar
+            # conclusão fora de ordem entre threads
+            time.sleep((6 - page_idx) * 0.01)
+            return f"# Título da Página {page_idx + 1}\n\nTexto detalhado da página {page_idx + 1}."
+
+        converter = converter_module.PdfMarkdownConverter.__new__(converter_module.PdfMarkdownConverter)
+        converter._pymupdf = SimpleNamespace(open=lambda _source: FakeDocument())
+        converter._to_markdown = fake_to_markdown
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source = root / "multipage.pdf"
+            source.write_bytes(b"%PDF multipage")
+
+            with patch.object(converter_module, "is_scanned_page", return_value=False):
+                res_seq = converter.convert(
+                    source,
+                    root / "saida_seq",
+                    split_output=False,
+                    max_chunk_characters=1000,
+                    page_workers=1,
+                )
+                res_par = converter.convert(
+                    source,
+                    root / "saida_par",
+                    split_output=False,
+                    max_chunk_characters=1000,
+                    page_workers=4,
+                )
+
+            md_seq = res_seq.markdown_path.read_text(encoding="utf-8")
+            md_par = res_par.markdown_path.read_text(encoding="utf-8")
+
+            self.assertEqual(md_seq, md_par)
+            self.assertEqual([c.page_number for c in res_seq.page_coverage], [1, 2, 3, 4, 5, 6])
+            self.assertEqual([c.page_number for c in res_par.page_coverage], [1, 2, 3, 4, 5, 6])
+            # Verifica que a ordem no Markdown é estritamente sequencial
+            pos1 = md_par.find("Página 1")
+            pos2 = md_par.find("Página 2")
+            pos3 = md_par.find("Página 3")
+            pos4 = md_par.find("Página 4")
+            pos5 = md_par.find("Página 5")
+            pos6 = md_par.find("Página 6")
+            self.assertTrue(0 <= pos1 < pos2 < pos3 < pos4 < pos5 < pos6)
+
+    def test_page_parallelism_with_checkpoint_resume(self) -> None:
+        class FakePage:
+            def __init__(self, index: int) -> None:
+                self.index = index
+
+            def get_images(self, full: bool = False) -> list[object]:
+                return []
+
+            def get_text(self, _kind: str = "text") -> str:
+                return f"conteúdo texto {self.index + 1}"
+
+        class FakeDocument:
+            page_count = 4
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def close(self):
+                pass
+
+            def load_page(self, page_index: int) -> FakePage:
+                return FakePage(page_index)
+
+        extracted_pages: list[int] = []
+        lock = threading.Lock()
+
+        def fake_to_markdown(_document, **kwargs):
+            page_idx = kwargs["pages"][0]
+            with lock:
+                extracted_pages.append(page_idx + 1)
+            return f"conteúdo extraído {page_idx + 1}"
+
+        converter = converter_module.PdfMarkdownConverter.__new__(converter_module.PdfMarkdownConverter)
+        converter._pymupdf = SimpleNamespace(open=lambda _source: FakeDocument())
+        converter._to_markdown = fake_to_markdown
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source = root / "checkpoint_par.pdf"
+            source.write_bytes(b"%PDF resume")
+            checkpoint = root / "checkpoint"
+
+            # Primeira execução: salva páginas 1 e 2 e interrompe após a 2
+            with (
+                patch.object(converter_module, "is_scanned_page", return_value=False),
+                patch.object(
+                    converter_module,
+                    "_directory_usage",
+                    side_effect=[(0, 0), (0, 0), RuntimeError("interrupção planejada")],
+                ),
+                self.assertRaisesRegex(RuntimeError, "interrupção planejada"),
+            ):
+                converter.convert(
+                    source,
+                    root / "saida",
+                    split_output=False,
+                    max_chunk_characters=1000,
+                    checkpoint_dir=checkpoint,
+                    page_workers=1,
+                )
+
+            self.assertTrue((checkpoint / "pages" / "000001.md").is_file())
+            self.assertTrue((checkpoint / "pages" / "000002.md").is_file())
+
+            # Segunda execução com paralelismo de páginas: retoma do checkpoint
+            extracted_pages.clear()
+            with patch.object(converter_module, "is_scanned_page", return_value=False):
+                res = converter.convert(
+                    source,
+                    root / "saida",
+                    split_output=False,
+                    max_chunk_characters=1000,
+                    checkpoint_dir=checkpoint,
+                    page_workers=3,
+                )
+
+            # As páginas 1 e 2 vieram do checkpoint, apenas 3 e 4 foram extraídas no pool paralelo
+            self.assertEqual(sorted(extracted_pages), [3, 4])
+            md = res.markdown_path.read_text(encoding="utf-8")
+            self.assertIn("conteúdo extraído 1", md)
+            self.assertIn("conteúdo extraído 2", md)
+            self.assertIn("conteúdo extraído 3", md)
+            self.assertIn("conteúdo extraído 4", md)
+            self.assertEqual([c.page_number for c in res.page_coverage], [1, 2, 3, 4])
+
+    def test_convert_worker_accepts_page_workers(self) -> None:
+        class FakePage:
+            def get_images(self, full: bool = False) -> list[object]:
+                return []
+
+            def get_text(self, _kind: str = "text") -> str:
+                return "conteúdo do worker"
+
+        class FakeDocument:
+            page_count = 2
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def close(self):
+                pass
+
+            def load_page(self, _page_index: int) -> FakePage:
+                return FakePage()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source = root / "worker_test.pdf"
+            source.write_bytes(b"%PDF worker")
+            output = root / "saida_worker"
+
+            with (
+                patch.object(converter_module, "is_scanned_page", return_value=False),
+                patch.object(converter_module, "_worker_converter", new=None),
+            ):
+                mock_inst = unittest.mock.MagicMock()
+                mock_inst.convert.return_value = ConversionResult(
+                    source=source,
+                    markdown_path=output / "worker_test.md",
+                    asset_count=0,
+                    chunk_count=0,
+                )
+                converter_module._worker_converter = mock_inst
+
+                res = converter_module.convert_worker(
+                    source=source,
+                    output_dir=output,
+                    split_output=False,
+                    max_chunk_characters=1000,
+                    page_workers=2,
+                )
+
+                self.assertIsInstance(res, ConversionResult)
+                mock_inst.convert.assert_called_once_with(
+                    source,
+                    output,
+                    False,
+                    1000,
+                    "jurisprudencia",
+                    None,
+                    "semantic",
+                    None,
+                    True,
+                    None,
+                    page_workers=2,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

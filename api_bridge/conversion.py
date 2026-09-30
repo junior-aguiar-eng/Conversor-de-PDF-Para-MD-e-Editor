@@ -664,6 +664,10 @@ class ConversionMixin:
         idle_pools: list[ProcessPoolExecutor] = []
         next_index = 0
 
+        cpu_count_fn = getattr(getattr(web_api, "os", os), "cpu_count", os.cpu_count)
+        available_cpus = cpu_count_fn() or 1
+        page_workers_per_file = max(1, min(4, available_cpus // max(1, worker_count)))
+
         try:
             while pending or (next_index < total and not self.cancel_requested.is_set()):
                 if not self.cancel_requested.is_set() and self.resume_processing.is_set():
@@ -700,6 +704,7 @@ class ConversionMixin:
                                 split_mode,
                                 page_numbers,
                                 checkpoint_dir,
+                                page_workers_per_file,
                             )
                         except (BrokenProcessPool, RuntimeError) as error:
                             with self._active_checkpoint_lock:

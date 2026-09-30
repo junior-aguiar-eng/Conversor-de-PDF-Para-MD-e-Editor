@@ -8,10 +8,12 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import time
 import traceback
 import uuid
-from contextvars import ContextVar
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import ContextVar, copy_context
 from pathlib import Path
 
 from constants import (
@@ -269,6 +271,37 @@ def _save_page_checkpoint(
     )
 
 
+def _read_checkpoint_page(
+    checkpoint_dir: Path | None,
+    checkpoint_state: dict[str, object] | None,
+    page_number: int,
+) -> tuple[str, PageCoverage] | None:
+    if checkpoint_dir is None or checkpoint_state is None:
+        return None
+    checkpoint_pages = checkpoint_state.get("pages", {})
+    if not isinstance(checkpoint_pages, dict):
+        return None
+    checkpoint_entry = checkpoint_pages.get(str(page_number))
+    checkpoint_page = checkpoint_dir / "pages" / f"{page_number:06}.md"
+    if isinstance(checkpoint_entry, dict) and checkpoint_page.is_file():
+        status = str(checkpoint_entry.get("status", "failed"))
+        if status not in {"native", "ocr", "fallback", "empty", "failed"}:
+            raise RuntimeError("Checkpoint de conversão contém status inválido.")
+        warning = str(checkpoint_entry.get("warning", ""))
+        raw_fidelity_score = checkpoint_entry.get("fidelity_score")
+        fidelity_score = float(raw_fidelity_score) if isinstance(raw_fidelity_score, (int, float)) else None
+        raw_fidelity_issues = checkpoint_entry.get("fidelity_issues", [])
+        fidelity_issues = (
+            tuple(str(item) for item in raw_fidelity_issues)
+            if isinstance(raw_fidelity_issues, list)
+            else ()
+        )
+        rendered_text = checkpoint_page.read_text(encoding="utf-8")
+        coverage = PageCoverage(page_number, status, warning, fidelity_score, fidelity_issues)
+        return rendered_text, coverage
+    return None
+
+
 def _safe_image_md_path(folder: str, filename: str) -> tuple[str, str]:
     """Retorna a referência relativa ao Markdown e o caminho físico da imagem."""
     base = Path(folder).expanduser().resolve() if folder.strip() else Path.cwd()
@@ -329,6 +362,53 @@ class PdfMarkdownConverter:
         self._to_markdown = pymupdf4llm.to_markdown
         self._pymupdf = pymupdf
 
+    def _process_page(
+        self,
+        document: object,
+        page_number: int,
+        temporary_assets_dir: Path,
+    ) -> tuple[str, PageCoverage]:
+        page_index = page_number - 1
+        try:
+            page = document.load_page(page_index)
+        except Exception as error:
+            warning = self._safe_warning(error)
+            page_coverage = PageCoverage(page_number, "failed", warning)
+            rendered_page = self._format_page(page_number, "failed", "", warning)
+            return rendered_page, page_coverage
+
+        detection_warning = ""
+        try:
+            scanned = is_scanned_page(page)
+        except Exception as error:
+            scanned = False
+            detection_warning = f"Detecção de página digitalizada falhou: {self._safe_warning(error)}"
+        text, status, warning = self._extract_page(
+            document,
+            page,
+            page_index,
+            scanned,
+            str(temporary_assets_dir),
+        )
+        combined_warning = "; ".join(item for item in (detection_warning, warning) if item)
+        fidelity = assess_page_fidelity(page, text, status)
+        page_coverage = PageCoverage(
+            page_number,
+            status,
+            combined_warning,
+            fidelity.score,
+            fidelity.issues,
+        )
+        if fidelity.issues:
+            fidelity_warning = "Fidelidade textual: " + "; ".join(fidelity.issues) + "."
+            combined_warning = "; ".join(item for item in (combined_warning, fidelity_warning) if item)
+        rendered_page = self._format_page(page_number, status, text, combined_warning)
+        try:
+            del page
+        except UnboundLocalError:
+            pass
+        return rendered_page, page_coverage
+
     def convert(
         self,
         source: Path,
@@ -341,6 +421,7 @@ class PdfMarkdownConverter:
         page_numbers: tuple[int, ...] | None = None,
         activation_verified: bool = False,
         checkpoint_dir: Path | None = None,
+        page_workers: int | None = None,
     ) -> ConversionResult:
         if not activation_verified:
             require_software_activation()
@@ -383,49 +464,35 @@ class PdfMarkdownConverter:
 
                 extraction_start = time.perf_counter()
                 deadline = time.monotonic() + MAX_CONVERSION_SECONDS
-                rendered_pages: list[str] = []
-                coverage: list[PageCoverage] = []
                 initial_asset_count, initial_asset_bytes = _directory_usage(temporary_assets_dir)
                 if initial_asset_count > MAX_IMAGES_PER_DOCUMENT or initial_asset_bytes > MAX_EXTRACTED_ASSET_BYTES:
                     raise ResourceBudgetExceeded("O checkpoint excede o orçamento de imagens da conversão.")
+
+                results: dict[int, tuple[str, PageCoverage]] = {}
+                pages_to_process: list[int] = []
                 for page_number in selected:
-                    self._check_resource_budget(output_dir, source_size, deadline)
-                    checkpoint_entry = None
-                    if checkpoint_state is not None:
-                        checkpoint_pages = checkpoint_state.get("pages", {})
-                        if isinstance(checkpoint_pages, dict):
-                            checkpoint_entry = checkpoint_pages.get(str(page_number))
-                    checkpoint_page = (
-                        checkpoint_dir / "pages" / f"{page_number:06}.md"
-                        if checkpoint_dir is not None
-                        else None
-                    )
-                    if isinstance(checkpoint_entry, dict) and checkpoint_page is not None and checkpoint_page.is_file():
-                        status = str(checkpoint_entry.get("status", "failed"))
-                        if status not in {"native", "ocr", "fallback", "empty", "failed"}:
-                            raise RuntimeError("Checkpoint de conversão contém status inválido.")
-                        warning = str(checkpoint_entry.get("warning", ""))
-                        raw_fidelity_score = checkpoint_entry.get("fidelity_score")
-                        fidelity_score = float(raw_fidelity_score) if isinstance(raw_fidelity_score, (int, float)) else None
-                        raw_fidelity_issues = checkpoint_entry.get("fidelity_issues", [])
-                        fidelity_issues = (
-                            tuple(str(item) for item in raw_fidelity_issues)
-                            if isinstance(raw_fidelity_issues, list)
-                            else ()
-                        )
-                        rendered_pages.append(checkpoint_page.read_text(encoding="utf-8"))
-                        coverage.append(PageCoverage(page_number, status, warning, fidelity_score, fidelity_issues))
+                    cached = _read_checkpoint_page(checkpoint_dir, checkpoint_state, page_number)
+                    if cached is not None:
+                        results[page_number] = cached
                         deadline += _honor_conversion_control(checkpoint_dir, page_number)
-                        continue
-                    page_index = page_number - 1
-                    try:
-                        page = document.load_page(page_index)
-                    except Exception as error:
-                        warning = self._safe_warning(error)
-                        page_coverage = PageCoverage(page_number, "failed", warning)
-                        rendered_page = self._format_page(page_number, "failed", "", warning)
-                        coverage.append(page_coverage)
-                        rendered_pages.append(rendered_page)
+                    else:
+                        pages_to_process.append(page_number)
+
+                total_pending = len(pages_to_process)
+                if page_workers is not None:
+                    effective_page_workers = max(1, min(int(page_workers), total_pending or 1))
+                elif total_pending <= 3:
+                    effective_page_workers = 1
+                else:
+                    effective_page_workers = min(os.cpu_count() or 1, 4, total_pending)
+
+                checkpoint_lock = threading.Lock()
+
+                if effective_page_workers <= 1 or not pages_to_process:
+                    for page_number in pages_to_process:
+                        self._check_resource_budget(output_dir, source_size, deadline)
+                        rendered_page, page_coverage = self._process_page(document, page_number, temporary_assets_dir)
+                        results[page_number] = (rendered_page, page_coverage)
                         if checkpoint_dir is not None and checkpoint_state is not None:
                             _save_page_checkpoint(
                                 checkpoint_dir,
@@ -434,63 +501,83 @@ class PdfMarkdownConverter:
                                 rendered_page,
                                 page_coverage,
                             )
+                        asset_count, asset_bytes = _directory_usage(temporary_assets_dir)
+                        if asset_count > MAX_IMAGES_PER_DOCUMENT:
+                            formatted_max = f"{MAX_IMAGES_PER_DOCUMENT:,}".replace(",", ".")
+                            raise ResourceBudgetExceeded(
+                                f"A extração excedeu o limite de {formatted_max} arquivos de imagem."
+                            )
+                        if asset_bytes > MAX_EXTRACTED_ASSET_BYTES:
+                            raise ResourceBudgetExceeded(
+                                f"As imagens extraídas excederam {MAX_EXTRACTED_ASSET_BYTES // (1024 * 1024)} MB."
+                            )
+                        self._check_resource_budget(output_dir, source_size, deadline)
                         deadline += _honor_conversion_control(checkpoint_dir, page_number)
-                        continue
+                        if page_number % 25 == 0 or (current_process_rss_bytes() or 0) > 250 * 1024 * 1024:
+                            gc.collect()
+                else:
+                    thread_local = threading.local()
+                    opened_docs: list[object] = []
+                    docs_lock = threading.Lock()
 
-                    detection_warning = ""
-                    try:
-                        scanned = is_scanned_page(page)
-                    except Exception as error:
-                        scanned = False
-                        detection_warning = f"Detecção de página digitalizada falhou: {self._safe_warning(error)}"
-                    text, status, warning = self._extract_page(
-                        document,
-                        page,
-                        page_index,
-                        scanned,
-                        str(temporary_assets_dir),
-                    )
-                    combined_warning = "; ".join(item for item in (detection_warning, warning) if item)
-                    fidelity = assess_page_fidelity(page, text, status)
-                    page_coverage = PageCoverage(
-                        page_number,
-                        status,
-                        combined_warning,
-                        fidelity.score,
-                        fidelity.issues,
-                    )
-                    if fidelity.issues:
-                        fidelity_warning = "Fidelidade textual: " + "; ".join(fidelity.issues) + "."
-                        combined_warning = "; ".join(item for item in (combined_warning, fidelity_warning) if item)
-                    rendered_page = self._format_page(page_number, status, text, combined_warning)
-                    coverage.append(page_coverage)
-                    rendered_pages.append(rendered_page)
-                    if checkpoint_dir is not None and checkpoint_state is not None:
-                        _save_page_checkpoint(
-                            checkpoint_dir,
-                            checkpoint_state,
-                            page_number,
-                            rendered_page,
-                            page_coverage,
-                        )
-                    asset_count, asset_bytes = _directory_usage(temporary_assets_dir)
-                    if asset_count > MAX_IMAGES_PER_DOCUMENT:
-                        raise ResourceBudgetExceeded(
-                            f"A extração excedeu o limite de {MAX_IMAGES_PER_DOCUMENT:,} arquivos de imagem.".replace(",", ".")
-                        )
-                    if asset_bytes > MAX_EXTRACTED_ASSET_BYTES:
-                        raise ResourceBudgetExceeded(
-                            f"As imagens extraídas excederam {MAX_EXTRACTED_ASSET_BYTES // (1024 * 1024)} MB."
-                        )
-                    self._check_resource_budget(output_dir, source_size, deadline)
-                    deadline += _honor_conversion_control(checkpoint_dir, page_number)
-                    try:
-                        del page
-                    except UnboundLocalError:
-                        pass
-                    if page_number % 25 == 0 or (current_process_rss_bytes() or 0) > 250 * 1024 * 1024:
-                        gc.collect()
+                    def _worker_extract(p_num: int) -> tuple[int, str, PageCoverage]:
+                        doc = getattr(thread_local, "doc", None)
+                        if doc is None or getattr(doc, "is_closed", False):
+                            doc = self._pymupdf.open(source)
+                            thread_local.doc = doc
+                            with docs_lock:
+                                opened_docs.append(doc)
+                        rendered, cov = self._process_page(doc, p_num, temporary_assets_dir)
+                        return p_num, rendered, cov
 
+                    with ThreadPoolExecutor(max_workers=effective_page_workers) as executor:
+                        future_to_page = {
+                            executor.submit(copy_context().run, _worker_extract, p_num): p_num
+                            for p_num in pages_to_process
+                        }
+                        try:
+                            for future in as_completed(future_to_page):
+                                p_num = future_to_page[future]
+                                _, rendered_page, page_coverage = future.result()
+                                results[p_num] = (rendered_page, page_coverage)
+                                if checkpoint_dir is not None and checkpoint_state is not None:
+                                    with checkpoint_lock:
+                                        _save_page_checkpoint(
+                                            checkpoint_dir,
+                                            checkpoint_state,
+                                            p_num,
+                                            rendered_page,
+                                            page_coverage,
+                                        )
+                                asset_count, asset_bytes = _directory_usage(temporary_assets_dir)
+                                if asset_count > MAX_IMAGES_PER_DOCUMENT:
+                                    formatted_max = f"{MAX_IMAGES_PER_DOCUMENT:,}".replace(",", ".")
+                                    raise ResourceBudgetExceeded(
+                                        f"A extração excedeu o limite de {formatted_max} arquivos de imagem."
+                                    )
+                                if asset_bytes > MAX_EXTRACTED_ASSET_BYTES:
+                                    raise ResourceBudgetExceeded(
+                                        f"As imagens extraídas excederam {MAX_EXTRACTED_ASSET_BYTES // (1024 * 1024)} MB."
+                                    )
+                                self._check_resource_budget(output_dir, source_size, deadline)
+                                deadline += _honor_conversion_control(checkpoint_dir, p_num)
+                                if len(results) % 25 == 0 or (current_process_rss_bytes() or 0) > 250 * 1024 * 1024:
+                                    gc.collect()
+                        except Exception:
+                            for f in future_to_page:
+                                f.cancel()
+                            raise
+                        finally:
+                            with docs_lock:
+                                for doc_handle in opened_docs:
+                                    try:
+                                        doc_handle.close()
+                                    except Exception:
+                                        pass
+                                opened_docs.clear()
+
+                rendered_pages = [results[page_number][0] for page_number in selected]
+                coverage = [results[page_number][1] for page_number in selected]
                 markdown = "\n\n---\n\n".join(rendered_pages)
                 self._check_resource_budget(output_dir, source_size, deadline)
                 extraction_seconds = time.perf_counter() - extraction_start
@@ -674,6 +761,7 @@ def convert_worker(
     split_mode: SplitMode = "semantic",
     page_numbers: tuple[int, ...] | None = None,
     checkpoint_dir: Path | None = None,
+    page_workers: int | None = None,
 ) -> ConversionResult | ConversionFailure:
     """Converte um arquivo dentro de um processo do pool. Nunca propaga
     exceção, para que a falha de um arquivo não derrube o processo inteiro."""
@@ -692,6 +780,7 @@ def convert_worker(
             page_numbers,
             True,
             checkpoint_dir,
+            page_workers=page_workers,
         )
     except Exception as error:
         return ConversionFailure(
