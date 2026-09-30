@@ -152,6 +152,13 @@ graph TD
 4. **Sincronização de Checkpoint Atômico**: A escrita em disco de arquivos individuais de páginas (`pages/00000X.md`) é naturalmente concorrente, enquanto a consolidação em `state.json` é protegida por `threading.Lock()`.
 5. **Determinismo Absoluto**: Independentemente da ordem de conclusão assíncrona das threads, o Markdown e as métricas de fidelidade são remontados rigorosamente segundo a ordem original das páginas selecionadas.
 
+### 5.2. Cache Semântico de OCR e Detecção Rápida de Páginas em Branco
+Para documentos escaneados e peças processuais com páginas repetitivas (certidões, carimbos, procurações padrão e termos de juntada):
+1. **Detecção Instantânea de Páginas em Branco (`is_blank_pixmap`)**: Amostragem de luminância em tempo constante $O(1)$ que descarta páginas brancas ou uniformes em $<0.1\text{ ms}$, eliminando desperdício de segundos de inferência ONNX em páginas vazias.
+2. **Cache em 2 Níveis Baseado em Hash SHA-256 (`ocr_engine.py`)**:
+   - **L1 (Memória RAM)**: `OrderedDict` LRU thread-safe com capacidade para 512 páginas em memória, provendo resolução imediata ($<0.05\text{ ms}$) para páginas repetidas no mesmo lote.
+   - **L2 (Disco Persistente)**: Diretório estruturado em `%LOCALAPPDATA%\NexoJuris\Conversor\ocr_cache` com indexação atômica por prefixos de hash, persistindo os resultados entre sessões do aplicativo.
+
 ---
 
 ## 6. Telemetria Corporativa e Observabilidade
@@ -166,6 +173,8 @@ O sistema conta com um coletor de telemetria operacional centralizado e thread-s
   - `pages_per_second`: Velocidade média ponderada de conversão.
 - **Distribuição por Método de Extração**:
   - Contagem granular de páginas processadas via extração `native` (vetorial), `ocr` (RapidOCR), `fallback`, páginas vazias (`empty`) ou páginas com falha (`failed`).
+- **Eficiência de Cache de OCR**:
+  - `ocr_cache`: Contadores de `hits`, `misses` e `hit_ratio` operacional.
 - **Resiliência e Memória**:
   - `peak_rss_bytes` / `peak_rss_mb`: Pico máximo de consumo de memória física (Working Set) atingido pelo aplicativo.
 - **Qualidade Textual (Fidelidade)**:

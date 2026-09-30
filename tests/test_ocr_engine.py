@@ -125,6 +125,79 @@ class OcrEngineTests(unittest.TestCase):
                 self.assertTrue(res["ocr_applied"])
                 self.assertEqual(res["text"], "Texto do Carimbo Notarial")
 
+    def test_is_blank_pixmap_detects_empty_pages(self) -> None:
+        from ocr_engine import is_blank_pixmap
+
+        doc = fitz.open()
+        page = doc.new_page(width=100, height=100)
+        pix_blank = page.get_pixmap()
+        self.assertTrue(is_blank_pixmap(pix_blank))
+
+        page.draw_rect(fitz.Rect(10, 10, 60, 60), color=(0, 0, 0), fill=(0, 0, 0))
+        pix_content = page.get_pixmap()
+        self.assertFalse(is_blank_pixmap(pix_content))
+        doc.close()
+
+    def test_ocr_pixmap_skips_processing_for_blank_page(self) -> None:
+        from ocr_engine import ocr_pixmap
+
+        doc = fitz.open()
+        page = doc.new_page(width=100, height=100)
+        pix_blank = page.get_pixmap()
+        doc.close()
+
+        with patch("ocr_engine.get_ocr_engine") as mock_engine:
+            text, blocks = ocr_pixmap(pix_blank)
+            self.assertEqual(text, "")
+            self.assertEqual(blocks, [])
+            mock_engine.assert_not_called()
+
+    def test_ocr_pixmap_uses_cache_on_repeated_calls(self) -> None:
+        from ocr_engine import clear_ocr_cache, ocr_pixmap
+        from production_diagnostics import get_telemetry_tracker
+
+        clear_ocr_cache()
+        tracker = get_telemetry_tracker()
+        tracker.reset()
+
+        doc = fitz.open()
+        page = doc.new_page(width=100, height=100)
+        page.draw_rect(fitz.Rect(10, 10, 50, 50), color=(0, 0, 0), fill=(0, 0, 0))
+        pix = page.get_pixmap()
+        doc.close()
+
+        with patch("ocr_engine.get_ocr_engine") as mock_get_engine:
+            mock_engine = unittest.mock.MagicMock()
+            mock_get_engine.return_value = mock_engine
+            mock_engine.return_value = (
+                [
+                    [[[10, 10], [90, 10], [90, 30], [10, 30]], "CERTIDÃO REPETIDA", 0.98],
+                ],
+                [0.05],
+            )
+
+            # Primeira chamada: executa OCR (cache miss)
+            text1, blocks1 = ocr_pixmap(pix)
+            self.assertEqual(mock_engine.call_count, 1)
+            self.assertIn("CERTIDÃO REPETIDA", text1)
+
+            # Segunda chamada: recupera do cache L1 (cache hit) sem invocar o motor
+            text2, blocks2 = ocr_pixmap(pix)
+            self.assertEqual(mock_engine.call_count, 1)
+            self.assertEqual(text1, text2)
+            self.assertEqual(blocks1, blocks2)
+
+            # Terceira chamada: limpa a memória para forçar recuperação de L2 (disco)
+            clear_ocr_cache(memory_only=True)
+            text3, blocks3 = ocr_pixmap(pix)
+            self.assertEqual(mock_engine.call_count, 1)
+            self.assertEqual(text1, text3)
+
+            summary = tracker.get_summary()
+            self.assertEqual(summary["ocr_cache"]["misses"], 1)
+            self.assertEqual(summary["ocr_cache"]["hits"], 2)
+            self.assertGreater(summary["ocr_cache"]["hit_ratio"], 0.6)
+
 
 if __name__ == "__main__":
     unittest.main()

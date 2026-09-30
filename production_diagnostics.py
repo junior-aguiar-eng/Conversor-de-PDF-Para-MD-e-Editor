@@ -145,6 +145,15 @@ class TelemetryTracker:
             self._peak_rss_bytes = 0
             self._fidelity_scores: list[float] = []
             self._warning_pages = 0
+            self._ocr_cache_hits = 0
+            self._ocr_cache_misses = 0
+
+    def record_ocr_cache(self, hit: bool) -> None:
+        with self._lock:
+            if hit:
+                self._ocr_cache_hits += 1
+            else:
+                self._ocr_cache_misses += 1
 
     def record_conversion(
         self,
@@ -194,6 +203,8 @@ class TelemetryTracker:
             scores = self._fidelity_scores
             avg_fidelity = round(sum(scores) / len(scores), 4) if scores else None
             low_fidelity_count = sum(1 for s in scores if s < 0.85)
+            total_cache_lookups = self._ocr_cache_hits + self._ocr_cache_misses
+            hit_ratio = round(self._ocr_cache_hits / total_cache_lookups, 3) if total_cache_lookups > 0 else 0.0
 
             return {
                 "documents_processed": self._documents_processed,
@@ -206,6 +217,11 @@ class TelemetryTracker:
                     "fallback": self._fallback_pages,
                     "empty": self._empty_pages,
                     "failed": self._failed_pages,
+                },
+                "ocr_cache": {
+                    "hits": self._ocr_cache_hits,
+                    "misses": self._ocr_cache_misses,
+                    "hit_ratio": hit_ratio,
                 },
                 "peak_rss_bytes": self._peak_rss_bytes,
                 "peak_rss_mb": round(self._peak_rss_bytes / (1024 * 1024), 2),
