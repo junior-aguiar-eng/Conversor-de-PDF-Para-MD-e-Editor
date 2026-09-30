@@ -37,7 +37,22 @@ PYINSTALLER_PACKAGES = (
     "edge_tts",
     "deep_translator",
 )
-PYINSTALLER_HIDDEN_IMPORTS = ("sqlite3", "winreg", "licensing", "ocr_engine", "library_db")
+PYINSTALLER_HIDDEN_IMPORTS = (
+    "sqlite3",
+    "winreg",
+    "licensing",
+    "ocr_engine",
+    "library_db",
+    "api_bridge",
+    "api_bridge.common",
+    "api_bridge.resource_helpers",
+    "api_bridge.conversion",
+    "api_bridge.editor",
+    "api_bridge.library",
+    "api_bridge.online",
+    "api_bridge.reader",
+    "api_bridge.system",
+)
 ADMIN_APP_NAME = "NexoJuris Licenças Admin"
 ADMIN_PYINSTALLER_PACKAGES = ("webview", "clr_loader", "pythonnet", "cryptography")
 ADMIN_PYINSTALLER_HIDDEN_IMPORTS = ("sqlite3", "admin_license_bridge", "admin_licensing")
