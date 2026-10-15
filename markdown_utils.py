@@ -15,7 +15,7 @@ from typing import Literal
 from document_privacy import IdentificationPlan, plan_from_source
 from models import ConversionResult, OutputReservation, PageCoverage
 
-HeadingProfile = Literal["jurisprudencia", "curso"]
+HeadingProfile = Literal["auto", "jurisprudencia", "curso"]
 SplitMode = Literal["semantic", "strict"]
 
 HEADING_PATTERN = re.compile(r"(?m)^#{1,2}\s+.+?\s*$")
@@ -609,7 +609,7 @@ def finalize_markdown(
     split_output: bool,
     max_chunk_characters: int,
     extraction_seconds: float = 0.0,
-    heading_profile: HeadingProfile = "jurisprudencia",
+    heading_profile: HeadingProfile = "auto",
     split_mode: SplitMode = "semantic",
     page_coverage: tuple[PageCoverage, ...] = (),
     reservation: OutputReservation | None = None,
@@ -619,9 +619,10 @@ def finalize_markdown(
     # Reclassifica os níveis de título por conteúdo antes de qualquer outra
     # função consumir o texto: o corte em partes deve ver a hierarquia
     # corrigida, não a que o pymupdf4llm inferiu da fonte do PDF.
-    # heading_profile escolhe a heurística de conteúdo (boletim de
-    # jurisprudência vs. material de curso com numeração hierárquica) — não
-    # há detecção automática por enquanto, o chamador decide.
+    from document_structure import resolve_profile
+
+    requested_heading_profile = heading_profile
+    heading_profile = resolve_profile(markdown, heading_profile)
     editorial_stats: tuple[tuple[str, int], ...] = ()
     editorial_issues: tuple[str, ...] = ()
     privacy = privacy_plan if privacy_plan is not None else plan_from_source(source)
@@ -665,6 +666,7 @@ def finalize_markdown(
         structure, html = build_document_exports(
             markdown, target.markdown_path, source, heading_profile, page_coverage, editorial_stats, editorial_issues,
             privacy_stats=privacy_stats,
+            requested_heading_profile=requested_heading_profile,
         )
         # Bytes UTF-8 idênticos em todos os SOs: o hash do JSON referencia o MD gravado.
         for temporary, content in zip(document_temps, (structure, html, markdown), strict=True):

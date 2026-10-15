@@ -10,6 +10,7 @@ from pathlib import Path
 
 from constants import resource_root
 from course_editorial import build_section_index
+from document_structure import exam_index, toc_diagnostics
 from models import PageCoverage
 
 
@@ -22,6 +23,7 @@ def build_document_exports(
     editorial_stats: tuple[tuple[str, int], ...],
     editorial_issues: tuple[str, ...],
     privacy_stats: tuple[tuple[str, int], ...] = (),
+    requested_heading_profile: str | None = None,
 ) -> tuple[str, str]:
     """Deriva ambos os formatos do mesmo conteúdo, sem alterar o Markdown.
 
@@ -33,20 +35,53 @@ def build_document_exports(
     if source.is_file():
         with source.open("rb") as stream:
             source_hash = hashlib.file_digest(stream, "sha256").hexdigest()
+    sections = build_section_index(markdown)
+    questions, answers = exam_index(markdown, sections)
+    toc_entries, discrepancies = toc_diagnostics(markdown, sections)
+    issues = list(editorial_issues)
+    issues.extend(
+        f"Sumário da fonte (página {entry['toc_page']}): {entry['title']} anuncia {entry['announced_page']}; "
+        f"localização física {entry['actual_page']}. Transcrição preservada."
+        for entry in discrepancies
+    )
+    issues.extend(f"Questão {q['number']} (página {q['page_start']}): {', '.join(q['ambiguities'])}"
+                  for q in questions if q['ambiguities'])
     structure = {
-        "schema_version": 1,
+        "schema_version": 2,
         "markdown_file": markdown_path.name,
         "markdown_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
         "source_file": source.name,
         "source_sha256": source_hash,
         "heading_profile": heading_profile,
-        "sections": build_section_index(markdown),
+        "profile_selection": {"requested": requested_heading_profile or heading_profile,
+                              "effective": heading_profile,
+                              "method": "automatic_outline" if requested_heading_profile == "auto" else "explicit"},
+        "sections": sections,
+        "questions": questions,
+        "answers": answers,
+        "toc_entries": toc_entries,
+        "toc_discrepancies": discrepancies,
         "page_coverage": [asdict(item) for item in page_coverage],
-        "editorial_stats": dict(editorial_stats),
-        "editorial_issues": list(editorial_issues),
+        "editorial_stats": {**dict(editorial_stats), "section_count": len(sections),
+                            "question_count": len(questions), "answer_count": len(answers),
+                            "toc_discrepancy_count": len(discrepancies)},
+        "editorial_issues": issues,
+        "checks": {"section_index": "executed", "question_detection": "executed",
+                   "source_toc_comparison": "executed" if toc_entries else "not_run",
+                   "course_editorial": "executed" if heading_profile == "curso" else "not_run",
+                   "visual_fidelity": "not_run", "legal_accuracy": "not_run"},
+        "fidelity_score_definition": "Heurística lexical de 0 a 1: 0,65 recall de tokens + 0,30 similaridade "
+        "de ordem (até 2000 tokens) + 0,05 ausência de Unicode suspeito. Não mede fidelidade visual, "
+        "estrutura ou correção jurídica. null: comparação indisponível/insuficiente. Calculada antes da etapa editorial.",
         "privacy": dict(privacy_stats),
         "privacy_scope": "Marcas textuais de identificação pessoal nas margens da fonte; não é anonimização geral do conteúdo.",
-        "provenance": "page_start/page_end são páginas físicas do PDF; null significa origem não identificada.",
+        "provenance": "page_start/page_end são páginas físicas inclusivas; null significa origem não identificada. "
+        "line/line_end delimitam a seção completa (inclusive descendentes), até antes do próximo título de nível "
+        "igual ou superior. direct_line_end limita o preâmbulo antes do primeiro descendente; "
+        "direct_page_end é sua última página com conteúdo. Linhas são 1-based, inclusivas, do Markdown final.",
+        "id_policy": "v2: SHA-256 truncado do caminho textual ancestral e ocorrência entre homônimos; "
+        "inserções de outros títulos não alteram o ID. Renomear/mover ancestrais ou inserir homônimo anterior altera o ID. "
+        "IDs sequenciais v1 não são preservados.",
     }
     web = resource_root() / "web"
     payload = json.dumps({**structure, "markdown": markdown}, ensure_ascii=False)

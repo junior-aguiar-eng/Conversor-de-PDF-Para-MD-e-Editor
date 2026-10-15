@@ -30,6 +30,9 @@ Para reconstruir o ambiente e remover dependências antigas, com o aplicativo fe
 - **Opções Avançadas de Estruturação**:
   - **Gerar partes**: cria `Nome-do-PDF_partes/parte_001.md`, respeitando títulos `#` e `##` quando o arquivo ultrapassa o limite escolhido (`60.000` caracteres por padrão).
   - **Perfil de normalização de títulos**:
+    - **Automático (padrão)**: usa o perfil de curso ao encontrar pelo menos dois
+      prefixos numéricos aninhados distintos em títulos extraídos; usa o perfil
+      de boletim nos demais casos. A escolha manual continua disponível.
     - **Boletim de jurisprudência (STJ/STF)**: reconhece ramos do direito como `#1`, rótulo "COMENTÁRIO" como `#2` e dispositivos legais como `#3`.
     - **Material de curso**: preserva numeração hierárquica (`1.`, `1.1.`, `A.`, `a)`, `i)`...) e rebaixa falsos títulos em corpo de texto.
 - **Arquitetura Modular da API Bridge**: A interface Python-JavaScript foi modularizada no pacote `api_bridge/`, decompondo a camada em sete mixins especializados (`ConversionMixin`, `EditorMixin`, `LibraryMixin`, `OnlineMixin`, `ReaderMixin`, `ResourceHelperMixin` e `SystemMixin`), com orquestração central transparente via `BridgeApi` em `web_api.py`.
@@ -83,6 +86,10 @@ alterar referências. Comentários de proveniência devem ser tratados como
 metadados pelo consumidor de IA. Sublinhado e marca-texto usam HTML inline, que
 depende do suporte do leitor Markdown. Código cercado por fences e código inline
 não recebem alterações editoriais.
+
+O [contrato estrutural v2](docs/CONTRATO_ESTRUTURAL_V2.md) documenta intervalos
+por linha, política de IDs, questões, gabaritos expressos, comparações do sumário
+e limites dos diagnósticos. A seleção efetiva do perfil acompanha cada JSON.
 
 Regressões sintéticas: `python -m unittest discover -s tests -p test_course_editorial.py`.
 Uma aprovação dos testes não substitui inspeção do documento convertido.
@@ -147,6 +154,19 @@ sem habilitar threads. O paralelismo de documentos em processos isolados permane
 Testes dos novos formatos:
 `python -m unittest discover -s tests -p test_document_exports.py` e
 `node tests/reading_export.test.js`.
+
+### Build dos recursos web
+
+Execute `npm ci` e depois `npm run build:web`. O build copia renderizadores,
+fontes e licenças do lockfile e recompila `web/tailwind.css`. O projeto fixa
+Tailwind e `@tailwindcss/cli` **4.3.3**. A entrada usa `@import`, `@config` e
+fontes explícitas para carregar o tema existente. Tamanhos de sombras, blur,
+bordas e contornos de foco mantêm a compatibilidade com a interface anterior.
+O override de `@parcel/watcher` **2.6.0** evita a cadeia vulnerável de
+`braces`/`micromatch` da versão 2.5.1 fixada pelo CLI. Ao atualizá-lo, valide
+também `npm audit` e o teste de compilação CSS.
+Consulte a [instalação oficial do CLI](https://tailwindcss.com/docs/installation/tailwind-cli).
+O CI executa esse build em Linux e Windows antes dos testes.
 
 ## Release Windows
 

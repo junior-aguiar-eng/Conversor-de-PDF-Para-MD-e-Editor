@@ -95,8 +95,6 @@ class WebFrontendRegressionTests(unittest.TestCase):
         visible_labels = index_html.casefold()
         for legacy_label in (
             "jurídic",
-            "jurisprudência",
-            "material de curso",
             "doutrina",
             "tribunal",
             "sqlite fts5",
@@ -107,6 +105,10 @@ class WebFrontendRegressionTests(unittest.TestCase):
             "microsoft edge",
         ):
             self.assertNotIn(legacy_label, visible_labels)
+
+        self.assertIn('Boletim de jurisprudência', index_html)
+        self.assertIn('Material de curso', index_html)
+        self.assertIn("selectProfile('auto')", index_html)
 
         for chapter in (
             "Visão geral e privacidade",

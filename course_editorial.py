@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from collections import Counter
@@ -28,6 +29,9 @@ class SourceEvidence:
     contextual_hyphenations: dict[tuple[str, str], str] = field(default_factory=dict)
     word_spacing: dict[str, tuple[str, str]] = field(default_factory=dict)
     has_source: bool = False
+    fused_words: set[str] = field(default_factory=set)
+    heading_suffixes: set[str] = field(default_factory=set)
+    separated_forms: set[tuple[str, str]] = field(default_factory=set)
 
 
 @dataclass
@@ -144,6 +148,12 @@ def read_source_evidence(source: Path | None) -> SourceEvidence:
                     if previous_hyphen:
                         complete = re.sub(rf'^{_LETTER}+\b', '', complete)
                     vocabulary.update(re.findall(rf'{_LETTER}+(?:-{_LETTER}+)*', complete))
+                    evidence.fused_words.update(re.findall(rf'{_LETTER}{{3,}}', text))
+                    evidence.separated_forms.update(re.findall(rf'\b({_LETTER}+)\s+({_LETTER}+)\b', text))
+                    if re.match(r'^[A-Z]\.\s', text) and len(text) < 150 and all(
+                        span.get('flags', 0) & 16 for span in line['spans'] if span['text'].strip()
+                    ):
+                        evidence.heading_suffixes.add(text)
                     previous_hyphen = text.endswith('-')
                     spans = line['spans']
                     for left_span, right_span in zip(spans, spans[1:], strict=False):
@@ -256,6 +266,42 @@ def _repair_style_spacing(text: str, evidence: SourceEvidence, stats: Counter) -
         insertions.add(mapping[match.start() + len(left)][0])
         stats['source_spacing_repaired'] += 1
     return ''.join((' ' if index in insertions else '') + char for index, char in enumerate(text))
+
+
+def _repair_style_fragments(text: str, evidence: SourceEvidence, stats: Counter) -> str:
+    """Só retira espaços em fronteiras de estilo com palavra inteira na fonte."""
+    plain, mapping = _project(text)
+    deletions = set()
+    for match in re.finditer(rf'({_LETTER}+) ({_LETTER}+)', plain):
+        # A expressão usa as mesmas classes Unicode da projeção textual.
+        word = match[1] + match[2]
+        gap = match.start(2) - 1
+        start, end = mapping[gap]
+        surrounding = text[mapping[gap - 1][1]:mapping[gap + 1][0]]
+        if (word in evidence.fused_words and (match[1], match[2]) not in evidence.separated_forms
+                and _STYLE.search(surrounding)):
+            deletions.update(range(start, end))
+            stats['style_fragments_repaired'] += 1
+    return ''.join(char for index, char in enumerate(text) if index not in deletions)
+
+
+def _split_embedded_headings(text: str, evidence: SourceEvidence, stats: Counter) -> str:
+    lines = []
+    for line in text.splitlines():
+        match = _HEADING.match(line)
+        plain = _visible(match[2]) if match else ''
+        if match and _NUMERIC.match(plain):
+            for suffix in sorted(evidence.heading_suffixes, key=len, reverse=True):
+                if plain.endswith(' ' + suffix):
+                    first, second = _split_visible(match[2], len(plain) - len(suffix))
+                    lines.extend([match[1] + ' ' + first, '', match[1] + ' ' + second])
+                    stats['source_headings_separated'] += 1
+                    break
+            else:
+                lines.append(line)
+        else:
+            lines.append(line)
+    return '\n'.join(lines)
 
 
 def _normalize_emphasis(text: str, stats: Counter) -> str:
@@ -508,11 +554,17 @@ def prepare_course_markdown(
     text = _join_pages(text, evidence, stats)
     text = _repair_hyphenation(text, evidence, stats)
     text = _repair_style_spacing(text, evidence, stats)
+    text = _repair_style_fragments(text, evidence, stats)
     # Espaço espúrio em sufixos de dispositivos: § 4º- B -> § 4º-B.
     text = re.sub(r'(§\s*\d+[º°o]?|\b[Aa]rt\.\s*\d+)-[ \t]+([A-Z])\b', r'\1-\2', text)
     text = re.sub(r'(?<=[\w*>_)])[ \t]+([,.;:!?])', r'\1', text)
     text = _normalize_emphasis(text, stats)
+    text = _split_embedded_headings(text, evidence, stats)
     text = _structure(text, stats)
+    from document_structure import normalize_exam_collections
+
+    text = normalize_exam_collections(text, stats)
+    text = _join_pages(text, evidence, stats)
     # A estruturação pode rebaixar um fragmento isolado que o layout chamou de
     # título. Repare a quebra agora exposta, sempre usando a evidência do PDF.
     text = _repair_hyphenation(text, evidence, stats)
@@ -522,8 +574,20 @@ def prepare_course_markdown(
         text = re.sub(r'(?m)^(#{2,6})(?=\s)', lambda m: m.group(1)[1:], text)
     text = re.sub(r'\n[ \t]*\n(?:[ \t]*\n)+', '\n\n', text).strip() + '\n'
     text = _clean_styles(text)
-    remaining = len(re.findall(rf'{_LETTER}+-[ \t\n]+{_LETTER}+', _visible(text)))
-    issues = (f'{remaining} possível(is) fragmentação(ões) lexical(is) ainda requer(em) conferência',) if remaining else ()
+    plain, mapping = _project(text)
+    fragments = [match for match in re.finditer(rf'{_LETTER}+-[ \t\n]+{_LETTER}+', plain)
+                 if not re.fullmatch(r'[IVXLCDM]+', match[0].split('-', 1)[0])]
+    remaining = len(fragments)
+    issues = []
+    for fragment in fragments[:20]:
+        position = mapping[fragment.start()][0]
+        pages = list(_PAGE.finditer(text[:position]))
+        page = int(pages[-1][1]) if pages else None
+        line = text[:position].count('\n') + 1
+        issues.append(f'Possível fragmentação lexical na página {page}, linha {line}: '
+                      f'{fragment[0]!r}; conferir a fonte, sem correção presumida.')
+    if remaining > 20:
+        issues.append(f'Mais {remaining - 20} possíveis fragmentações lexicais; conferir a fonte.')
     stats['unresolved_hyphenations'] = remaining
     stats['section_count'] = len(build_section_index(text))
     for index, code in enumerate(protected):
@@ -531,7 +595,7 @@ def prepare_course_markdown(
     logger.info('Preparação editorial do perfil curso: %s', dict(stats))
     for issue in issues:
         logger.warning('Conferência editorial: %s', issue)
-    return EditorialResult(text, dict(stats), issues)
+    return EditorialResult(text, dict(stats), tuple(issues))
 
 
 def build_section_index(markdown: str) -> list[dict]:
@@ -548,7 +612,9 @@ def build_section_index(markdown: str) -> list[dict]:
     nodes: list[dict] = []
     stack: list[dict] = []
     page: int | None = None
-    for line_number, line in enumerate(protected.splitlines(), 1):
+    occurrences: Counter = Counter()
+    lines = protected.splitlines()
+    for line_number, line in enumerate(lines, 1):
         page_markers = list(_PAGE.finditer(line))
         if page_markers:
             page = int(page_markers[-1].group(1))
@@ -560,19 +626,35 @@ def build_section_index(markdown: str) -> list[dict]:
             continue
         level = len(heading.group(1))
         while stack and stack[-1]['level'] >= level:
-            stack.pop()
+            stack.pop()['line_end'] = line_number - 1
+        if stack and stack[-1]['direct_line_end'] is None:
+            stack[-1]['direct_line_end'] = line_number - 1
+            stack[-1]['direct_page_end'] = stack[-1]['page_end']
         for ancestor in stack:
             ancestor['page_end'] = page
+        title = _visible(heading.group(2))
+        key = '\x1f'.join([ancestor['title'] for ancestor in stack] + [title])
+        occurrences[key] += 1
+        digest = hashlib.sha256(f'{key}\x1f{occurrences[key]}'.encode()).hexdigest()[:20]
         node = {
-            'id': f'section-{len(nodes) + 1:04d}',
+            'id': f'section-{digest}',
             'parent_id': stack[-1]['id'] if stack else None,
             'level': level,
-            'title': _visible(heading.group(2)),
+            'title': title,
             'line': line_number,
+            'line_end': None,
+            'direct_line_end': None,
+            'direct_page_end': None,
             'page_start': page,
             'page_end': page,
             'context': [ancestor['title'] for ancestor in stack],
         }
         nodes.append(node)
         stack.append(node)
+    for node in stack:
+        node['line_end'] = len(lines)
+    for node in nodes:
+        if node['direct_line_end'] is None:
+            node['direct_line_end'] = node['line_end']
+            node['direct_page_end'] = node['page_end']
     return nodes

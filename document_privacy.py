@@ -86,6 +86,27 @@ class IdentificationPlan:
         if page_number in self._rectangles:
             self.guarded_pages += 1
 
+    @property
+    def has_identification(self) -> bool:
+        return bool(self._rectangles)
+
+    def redact_working_document(self, document) -> None:
+        """Apaga marcas reconhecidas antes de renderizar/OCR/exportar imagens.
+
+        Altera somente o documento aberto em memória; nunca salva sobre a fonte.
+        A redação textual posterior continua protegendo mensagens e checkpoints.
+        """
+        if not isinstance(document, pymupdf.Document):
+            return
+        try:
+            for number, rectangles in self._rectangles.items():
+                page = document[number - 1]
+                for rectangle in rectangles:
+                    page.add_redact_annot(pymupdf.Rect(rectangle) + (-1, -1, 1, 1), fill=(1, 1, 1))
+                page.apply_redactions(images=2, graphics=2)
+        except Exception:
+            raise PrivacyProtectionError('Não foi possível proteger as imagens da fonte; conversão interrompida.') from None
+
     def clean_text(self, text: str) -> str:
         if not self._fields:
             return text

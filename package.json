@@ -2,13 +2,17 @@
   "name": "nexojuris-conversor-web",
   "private": true,
   "scripts": {
-    "build:web": "node scripts/build-web-assets.js && tailwindcss -c tailwind.config.js -i web/tailwind.input.css -o web/tailwind.css --minify"
+    "build:web": "node scripts/build-web-assets.js && tailwindcss -i web/tailwind.input.css -o web/tailwind.css --minify"
+  },
+  "overrides": {
+    "@parcel/watcher": "2.6.0"
   },
   "devDependencies": {
     "@fontsource-variable/cinzel": "5.2.8",
     "@fontsource-variable/inter": "5.2.8",
     "@fontsource-variable/jetbrains-mono": "5.2.8",
     "@fontsource-variable/plus-jakarta-sans": "5.2.8",
+    "@tailwindcss/cli": "4.3.3",
     "dompurify": "3.4.16",
     "jsdom": "26.1.0",
     "marked": "15.0.12",

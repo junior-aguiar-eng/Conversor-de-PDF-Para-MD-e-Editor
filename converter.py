@@ -214,7 +214,7 @@ def _honor_conversion_control(checkpoint_dir: Path | None, page_number: int) -> 
 def _checkpoint_signature(source: Path, selected: tuple[int, ...]) -> dict[str, object]:
     stat = source.stat()
     return {
-        "version": 1,
+        "version": 2,
         "privacy_policy_version": PRIVACY_POLICY_VERSION,
         "source": str(source),
         "source_size": stat.st_size,
@@ -266,6 +266,8 @@ def _save_page_checkpoint(
         "warning": coverage.warning,
         "fidelity_score": coverage.fidelity_score,
         "fidelity_issues": list(coverage.fidelity_issues),
+        "content_kind": coverage.content_kind,
+        "visual_status": coverage.visual_status,
     }
     _atomic_write_text(
         checkpoint_dir / "state.json",
@@ -299,7 +301,9 @@ def _read_checkpoint_page(
             else ()
         )
         rendered_text = checkpoint_page.read_text(encoding="utf-8")
-        coverage = PageCoverage(page_number, status, warning, fidelity_score, fidelity_issues)
+        coverage = PageCoverage(page_number, status, warning, fidelity_score, fidelity_issues,
+                                str(checkpoint_entry.get("content_kind", "unclassified")),
+                                str(checkpoint_entry.get("visual_status", "not_checked")))
         return rendered_text, coverage
     return None
 
@@ -378,13 +382,22 @@ class PdfMarkdownConverter:
             warning = self._safe_warning(error)
             if privacy is not None:
                 warning = privacy.clean_text(warning)
-            page_coverage = PageCoverage(page_number, "failed", warning)
+            page_coverage = PageCoverage(page_number, "failed", warning, content_kind="extraction_failure")
             rendered_page = self._format_page(page_number, "failed", "", warning)
             return rendered_page, page_coverage
 
         detection_warning = ""
+        direct = self._direct_text(page)
+        clean_direct = privacy.clean_text(direct) if privacy is not None else direct
+        sparse_visual = len(clean_direct.strip()) < 40 and self._has_images(page)
+        if sparse_visual and privacy is not None and privacy.has_identification:
+            warning = ("Conteúdo visual com possível texto em imagem não convertido: privacidade do raster "
+                       "não verificada. OCR e exportação de imagem omitidos; conferir a fonte local.")
+            return self._format_page(page_number, "fallback", clean_direct, warning), PageCoverage(
+                page_number, "fallback", warning, content_kind="image_text_unverified", visual_status="omitted_privacy",
+            )
         try:
-            scanned = is_scanned_page(page)
+            scanned = sparse_visual or is_scanned_page(page)
         except Exception as error:
             scanned = False
             detection_warning = f"Detecção de página digitalizada falhou: {self._safe_warning(error)}"
@@ -408,6 +421,10 @@ class PdfMarkdownConverter:
             combined_warning,
             fidelity.score,
             fidelity.issues,
+            "blank" if status == "empty" else (
+                "extraction_failure" if status == "failed" else "image_text" if status == "ocr" else "native_text"
+            ),
+            "ocr_review_required" if status == "ocr" else "not_converted" if sparse_visual else "not_applicable",
         )
         if fidelity.issues:
             fidelity_warning = "Fidelidade textual: " + "; ".join(fidelity.issues) + "."
@@ -425,7 +442,7 @@ class PdfMarkdownConverter:
         output_dir: Path,
         split_output: bool,
         max_chunk_characters: int,
-        heading_profile: HeadingProfile = "jurisprudencia",
+        heading_profile: HeadingProfile = "auto",
         reservation: OutputReservation | None = None,
         split_mode: SplitMode = "semantic",
         page_numbers: tuple[int, ...] | None = None,
@@ -449,7 +466,7 @@ class PdfMarkdownConverter:
         temporary_assets_dir: Path | None = None
         checkpoint_state: dict[str, object] | None = None
         context_token = None
-        editorial_context_token = _COURSE_EDITORIAL_CONTEXT.set(heading_profile == "curso")
+        editorial_context_token = _COURSE_EDITORIAL_CONTEXT.set(heading_profile in {"curso", "auto"})
         privacy_context_token = None
         privacy = IdentificationPlan()
         try:
@@ -463,6 +480,7 @@ class PdfMarkdownConverter:
                 if not selected or any(number < 1 or number > page_count for number in selected):
                     raise ValueError("A seleção de páginas para conversão é inválida.")
                 privacy = plan_from_document(document)
+                privacy.redact_working_document(document)
                 privacy_context_token = _PRIVACY_CONTEXT.set(privacy)
 
                 if checkpoint_dir is not None:
@@ -634,6 +652,8 @@ class PdfMarkdownConverter:
     @staticmethod
     def _has_images(page: object) -> bool:
         try:
+            if hasattr(page, "get_image_info"):
+                return bool(page.get_image_info())
             return bool(page.get_images())
         except Exception:
             return True
@@ -681,6 +701,10 @@ class PdfMarkdownConverter:
                 errors.append(f"OCR: {self._safe_warning(error)}")
 
         if not self._has_images(page) and not self._direct_text(page):
+            import pymupdf
+
+            if isinstance(page, pymupdf.Page) and page.get_drawings():
+                return "", "failed", "; ".join(errors) or "Conteúdo visual vetorial não convertido; extração/OCR sem texto."
             return "", "empty", "; ".join(errors)
         return "", "failed", "; ".join(errors) or "Nenhum método recuperou conteúdo da página."
 
@@ -716,7 +740,7 @@ def convert_worker(
     output_dir: Path,
     split_output: bool,
     max_chunk_characters: int,
-    heading_profile: HeadingProfile = "jurisprudencia",
+    heading_profile: HeadingProfile = "auto",
     reservation: OutputReservation | None = None,
     split_mode: SplitMode = "semantic",
     page_numbers: tuple[int, ...] | None = None,

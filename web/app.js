@@ -10,7 +10,7 @@ const state = {
   outputDirId: "",
   defaultOutputDir: "",
   defaultOutputDirId: "",
-  selectedProfile: "jurisprudencia", // "jurisprudencia" | "curso"
+  selectedProfile: "auto", // "auto" | "jurisprudencia" | "curso"
   splitOutput: false,
   splitMode: "semantic",
   maxChunkCharacters: 60000,
@@ -708,21 +708,13 @@ function selectProfile(profile) {
   playBeep("click");
   state.selectedProfile = profile;
 
-  const cardJur = document.getElementById("profileCardJurisprudencia");
-  const cardCur = document.getElementById("profileCardCurso");
-  const dotJur = document.getElementById("dotJurisprudencia");
-  const dotCur = document.getElementById("dotCurso");
-
-  if (profile === "jurisprudencia") {
-    cardJur.className = "p-3 rounded-2xl border cursor-pointer transition-all bg-sky-50/80 border-sky-400 shadow-sm space-y-1";
-    dotJur.className = "w-2 h-2 rounded-full bg-sky-600";
-    cardCur.className = "p-3 rounded-2xl border cursor-pointer transition-all bg-white/70 border-sky-100 hover:bg-white space-y-1";
-    dotCur.className = "w-2 h-2 rounded-full bg-slate-300";
-  } else {
-    cardCur.className = "p-3 rounded-2xl border cursor-pointer transition-all bg-sky-50/80 border-sky-400 shadow-sm space-y-1";
-    dotCur.className = "w-2 h-2 rounded-full bg-sky-600";
-    cardJur.className = "p-3 rounded-2xl border cursor-pointer transition-all bg-white/70 border-sky-100 hover:bg-white space-y-1";
-    dotJur.className = "w-2 h-2 rounded-full bg-slate-300";
+  for (const [value, suffix] of [["auto", "Auto"], ["jurisprudencia", "Jurisprudencia"], ["curso", "Curso"]]) {
+    const card = document.getElementById(`profileCard${suffix}`);
+    const dot = document.getElementById(`dot${suffix}`);
+    if (!card || !dot) continue;
+    card.className = "p-3 rounded-2xl border cursor-pointer transition-all space-y-1 " + (profile === value
+      ? "bg-sky-50/80 border-sky-400 shadow-sm" : "bg-white/70 border-sky-100 hover:bg-white");
+    dot.className = "w-2 h-2 rounded-full " + (profile === value ? "bg-sky-600" : "bg-slate-300");
   }
 }
 
@@ -760,7 +752,7 @@ async function offerInterruptedConversion() {
   state.splitOutput = !!recovery.split_output;
   state.splitMode = recovery.split_mode || "semantic";
   state.maxChunkCharacters = recovery.max_chunk_characters || 60000;
-  state.selectedProfile = recovery.heading_profile || "jurisprudencia";
+  state.selectedProfile = recovery.heading_profile || "auto";
   document.getElementById("inputOutputDir").value = state.outputDir;
   document.getElementById("chkSplitOutput").checked = state.splitOutput;
   document.getElementById("selectSplitMode").value = state.splitMode;
@@ -4818,14 +4810,14 @@ class WelcomeManager {
       const content = document.getElementById(`welcomeTabContent${i}`);
       if (i === tabNum) {
         if (btn) {
-          btn.className = "flex-1 pb-2.5 text-center border-b-2 border-sky-600 text-sky-600 transition-all focus:outline-none font-bold";
+          btn.className = "flex-1 pb-2.5 text-center border-b-2 border-sky-600 text-sky-600 transition-all focus:outline-hidden font-bold";
         }
         if (content) {
           content.classList.remove("hidden");
         }
       } else {
         if (btn) {
-          btn.className = "flex-1 pb-2.5 text-center border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition-all focus:outline-none";
+          btn.className = "flex-1 pb-2.5 text-center border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition-all focus:outline-hidden";
         }
         if (content) {
           content.classList.add("hidden");

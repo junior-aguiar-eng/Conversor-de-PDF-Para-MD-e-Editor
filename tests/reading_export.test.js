@@ -81,4 +81,22 @@ const empty = render({ source_file: "simples.pdf", markdown_file: "simples.md", 
 assert.match(empty.window.document.getElementById("toc").textContent, /não possui títulos/);
 assert.equal(empty.window.document.getElementById("document-warning").hidden, true);
 empty.window.close();
+
+const mismatch = render({
+  source_file: "test.pdf", markdown_file: "test.md", heading_profile: "curso",
+  markdown: "<h2>Intruso</h2>\n\n# Capítulo\n\n## Detalhe\n",
+  sections: [
+    { id: "chapter", line: 3, level: 1, title: "Capítulo" },
+    { id: "detail", line: 5, level: 2, title: "Detalhe" },
+  ],
+});
+assert.equal(mismatch.window.document.getElementById("chapter").textContent, "Capítulo");
+assert.equal(mismatch.window.document.getElementById("detail").textContent, "Detalhe");
+assert.notEqual(mismatch.window.document.querySelector("#content h2").id, "chapter");
+mismatch.window.close();
+const stale = render({source_file: "test.pdf", markdown_file: "test.md", markdown: "# Novo\n",
+  sections: [{id: "old", line: 1, level: 1, title: "Antigo"}]});
+assert.equal(stale.window.document.getElementById("old"), null);
+assert.match(stale.window.document.getElementById("document-warning").textContent, /âncora|índice/i);
+stale.window.close();
 console.log("READING_EXPORT_OK: offline rendering, navigation, tables, warnings, print and sanitization");
