@@ -31,6 +31,8 @@ class PageCoverage:
     warning: str = ""
     fidelity_score: float | None = None
     fidelity_issues: tuple[str, ...] = ()
+    content_kind: str = "unclassified"
+    visual_status: str = "not_checked"
 
 
 def format_duration(seconds: float) -> str:

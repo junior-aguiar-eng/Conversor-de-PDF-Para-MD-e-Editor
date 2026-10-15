@@ -677,7 +677,7 @@ class ConverterTests(unittest.TestCase):
                     output,
                     False,
                     1000,
-                    "jurisprudencia",
+                    "auto",
                     None,
                     "semantic",
                     None,

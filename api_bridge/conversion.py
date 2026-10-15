@@ -260,7 +260,7 @@ class ConversionMixin:
                 "split_output": bool(payload.get("split_output", False)),
                 "split_mode": payload.get("split_mode", "semantic"),
                 "max_chunk_characters": payload.get("max_chunk_characters", DEFAULT_MAX_CHUNK_CHARACTERS),
-                "heading_profile": payload.get("heading_profile", "jurisprudencia"),
+                "heading_profile": payload.get("heading_profile", "auto"),
                 "max_workers": payload.get("max_workers"),
             }
             self._recovery_token = token
@@ -338,8 +338,8 @@ class ConversionMixin:
             max_chunk_characters = int(payload.get("max_chunk_characters", DEFAULT_MAX_CHUNK_CHARACTERS))
         except (TypeError, ValueError):
             return {"started": False, "error": "O limite de caracteres deve ser um número inteiro."}
-        heading_profile: HeadingProfile = payload.get("heading_profile", "jurisprudencia")
-        if heading_profile not in {"jurisprudencia", "curso"}:
+        heading_profile: HeadingProfile = payload.get("heading_profile", "auto")
+        if heading_profile not in {"auto", "jurisprudencia", "curso"}:
             return {"started": False, "error": "Perfil de títulos inválido."}
         requested_workers = payload.get("max_workers")
         if requested_workers is not None:
@@ -457,7 +457,7 @@ class ConversionMixin:
                 "split_output": bool(payload.get("split_output", False)),
                 "split_mode": payload.get("split_mode", "semantic"),
                 "max_chunk_characters": payload.get("max_chunk_characters", DEFAULT_MAX_CHUNK_CHARACTERS),
-                "heading_profile": payload.get("heading_profile", "jurisprudencia"),
+                "heading_profile": payload.get("heading_profile", "auto"),
                 "max_workers": payload.get("max_workers"),
             }
         )
