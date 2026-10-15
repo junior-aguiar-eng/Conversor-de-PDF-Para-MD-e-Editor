@@ -24,6 +24,7 @@ from constants import (
     MAX_PDF_FILE_SIZE_BYTES,
     MIN_FREE_DISK_BYTES,
 )
+from document_privacy import PRIVACY_POLICY_VERSION, IdentificationPlan, plan_from_document
 from licensing import require_software_activation
 from markdown_utils import HeadingProfile, SplitMode, finalize_markdown, reserve_batch_output_paths
 from models import ConversionFailure, ConversionResult, OutputReservation, PageCoverage
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 _IMAGE_OUTPUT_CONTEXT: ContextVar[tuple[Path, Path] | None] = ContextVar("nexojuris_image_output", default=None)
 _COURSE_EDITORIAL_CONTEXT: ContextVar[bool] = ContextVar("nexojuris_course_editorial", default=False)
+_PRIVACY_CONTEXT: ContextVar[IdentificationPlan | None] = ContextVar("nexojuris_privacy", default=None)
 
 
 class ResourceBudgetExceeded(RuntimeError):
@@ -213,6 +215,7 @@ def _checkpoint_signature(source: Path, selected: tuple[int, ...]) -> dict[str, 
     stat = source.stat()
     return {
         "version": 1,
+        "privacy_policy_version": PRIVACY_POLICY_VERSION,
         "source": str(source),
         "source_size": stat.st_size,
         "source_mtime_ns": stat.st_mtime_ns,
@@ -368,10 +371,13 @@ class PdfMarkdownConverter:
         temporary_assets_dir: Path,
     ) -> tuple[str, PageCoverage]:
         page_index = page_number - 1
+        privacy = _PRIVACY_CONTEXT.get()
         try:
             page = document.load_page(page_index)
         except Exception as error:
             warning = self._safe_warning(error)
+            if privacy is not None:
+                warning = privacy.clean_text(warning)
             page_coverage = PageCoverage(page_number, "failed", warning)
             rendered_page = self._format_page(page_number, "failed", "", warning)
             return rendered_page, page_coverage
@@ -389,6 +395,11 @@ class PdfMarkdownConverter:
             scanned,
             str(temporary_assets_dir),
         )
+        if privacy is not None:
+            text = privacy.clean_text(text)
+            privacy.note_guarded_page(page_number)
+            detection_warning = privacy.clean_text(detection_warning)
+            warning = privacy.clean_text(warning)
         combined_warning = "; ".join(item for item in (detection_warning, warning) if item)
         fidelity = assess_page_fidelity(page, text, status)
         page_coverage = PageCoverage(
@@ -439,6 +450,8 @@ class PdfMarkdownConverter:
         checkpoint_state: dict[str, object] | None = None
         context_token = None
         editorial_context_token = _COURSE_EDITORIAL_CONTEXT.set(heading_profile == "curso")
+        privacy_context_token = None
+        privacy = IdentificationPlan()
         try:
             with self._pymupdf.open(source) as document:
                 page_count = document.page_count
@@ -449,6 +462,8 @@ class PdfMarkdownConverter:
                 selected = tuple(range(1, page_count + 1)) if page_numbers is None else tuple(dict.fromkeys(page_numbers))
                 if not selected or any(number < 1 or number > page_count for number in selected):
                     raise ValueError("A seleção de páginas para conversão é inválida.")
+                privacy = plan_from_document(document)
+                privacy_context_token = _PRIVACY_CONTEXT.set(privacy)
 
                 if checkpoint_dir is not None:
                     checkpoint_dir = checkpoint_dir.resolve()
@@ -518,6 +533,8 @@ class PdfMarkdownConverter:
                 shutil.rmtree(temporary_assets_dir, ignore_errors=True)
             raise
         finally:
+            if privacy_context_token is not None:
+                _PRIVACY_CONTEXT.reset(privacy_context_token)
             if context_token is not None:
                 _IMAGE_OUTPUT_CONTEXT.reset(context_token)
             _COURSE_EDITORIAL_CONTEXT.reset(editorial_context_token)
@@ -547,6 +564,7 @@ class PdfMarkdownConverter:
                 tuple(coverage),
                 reservation,
                 finalization_assets_dir,
+                privacy_plan=privacy,
             )
         except Exception:
             if checkpoint_dir is None:

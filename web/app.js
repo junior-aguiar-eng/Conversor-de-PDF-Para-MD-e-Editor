@@ -1087,6 +1087,9 @@ window.onBackendEvent = function (eventName, data) {
     if (data.editorial_issues?.length) {
       appendLog("INFO", `Conferência editorial de ${data.name}: ${data.editorial_issues.join("; ")}`);
     }
+    if (data.privacy_stats?.source_identification_marks) {
+      appendLog("INFO", `Proteção de privacidade aplicada a ${data.name}: marcas de identificação da fonte tratadas.`);
+    }
     if (data.index_status === "failed") {
       appendLog("ERRO", `Índice não atualizado para ${data.name}: ${data.index_error || "falha não detalhada"}`);
       showToast("Markdown convertido, mas a indexação falhou. Reconstrua o índice do acervo.", "error");

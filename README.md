@@ -118,6 +118,27 @@ deixar companheiros órfãos, que serão preservados e não sobrescritos na reto
 A divisão opcional continua gerando as partes em Markdown; JSON e HTML representam
 o documento completo, inclusive em reprocessamento de páginas selecionadas.
 
+### Proteção de identificação pessoal na fonte
+
+Disponível a partir da versão **1.6.1**. Consulte as
+[notas da versão](docs/RELEASE_NOTES-v1.6.1.md).
+
+A proteção textual atua nos dois perfis, antes de gravar checkpoints e depois
+da preparação editorial. O conversor identifica campos de cadastro nas margens
+do PDF (por exemplo, CPF, nome, e-mail e telefone), usando repetição e agrupamento
+de identificação para distinguir marcas pessoais de contatos editoriais isolados.
+Remove os campos reconhecidos do Markdown, das partes, do JSON e do conteúdo
+incorporado ao HTML. O JSON registra somente contagens em `privacy`, sem os valores.
+Nomes e números distintos nos exemplos jurídicos são preservados.
+
+O PDF original permanece intacto. Se a inspeção textual falhar, a conversão é
+interrompida com erro genérico. Checkpoints anteriores à política são recalculados;
+exportações antigas precisam ser convertidas novamente. Esta proteção é voltada
+a marcas textuais reconhecidas: não é anonimização geral de documentos, imagens
+ou dados presentes apenas em digitalizações. Confira o resultado antes de compartilhar.
+
+Regressões: `python -m unittest discover -s tests -p test_document_privacy.py`.
+
 Para manter a extração editorial consistente, páginas de um mesmo PDF são
 processadas sequencialmente: PyMuPDF não suporta extração simultânea em threads.
 O parâmetro Python legado `page_workers` permanece aceito por compatibilidade,

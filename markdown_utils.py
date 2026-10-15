@@ -7,10 +7,12 @@ import re
 import shutil
 import unicodedata
 import uuid
+from dataclasses import replace
 from hashlib import sha1
 from pathlib import Path
 from typing import Literal
 
+from document_privacy import IdentificationPlan, plan_from_source
 from models import ConversionResult, OutputReservation, PageCoverage
 
 HeadingProfile = Literal["jurisprudencia", "curso"]
@@ -612,6 +614,7 @@ def finalize_markdown(
     page_coverage: tuple[PageCoverage, ...] = (),
     reservation: OutputReservation | None = None,
     temporary_assets_dir: Path | None = None,
+    privacy_plan: IdentificationPlan | None = None,
 ) -> ConversionResult:
     # Reclassifica os níveis de título por conteúdo antes de qualquer outra
     # função consumir o texto: o corte em partes deve ver a hierarquia
@@ -621,6 +624,8 @@ def finalize_markdown(
     # há detecção automática por enquanto, o chamador decide.
     editorial_stats: tuple[tuple[str, int], ...] = ()
     editorial_issues: tuple[str, ...] = ()
+    privacy = privacy_plan if privacy_plan is not None else plan_from_source(source)
+    markdown = privacy.clean_text(markdown)
     if heading_profile == "curso":
         from course_editorial import prepare_course_markdown
 
@@ -632,6 +637,13 @@ def finalize_markdown(
             asset_count = sum(1 for item in temporary_assets_dir.rglob("*") if item.is_file())
     else:
         markdown = normalize_heading_levels(markdown)
+    markdown = privacy.clean_text(markdown)
+    page_coverage = tuple(replace(
+        item, warning=privacy.clean_text(item.warning),
+        fidelity_issues=tuple(privacy.clean_text(issue) for issue in item.fidelity_issues),
+    ) for item in page_coverage)
+    editorial_issues = tuple(privacy.clean_text(issue) for issue in editorial_issues)
+    privacy_stats = tuple(privacy.stats.items())
     chunks = split_markdown(markdown, max_chunk_characters, split_mode) if split_output else []
     target = reservation or OutputReservation(
         markdown_path,
@@ -652,6 +664,7 @@ def finalize_markdown(
 
         structure, html = build_document_exports(
             markdown, target.markdown_path, source, heading_profile, page_coverage, editorial_stats, editorial_issues,
+            privacy_stats=privacy_stats,
         )
         # Bytes UTF-8 idênticos em todos os SOs: o hash do JSON referencia o MD gravado.
         for temporary, content in zip(document_temps, (structure, html, markdown), strict=True):
@@ -691,4 +704,5 @@ def finalize_markdown(
         source, target.markdown_path, asset_count, len(chunks), extraction_seconds, page_coverage,
         editorial_stats, editorial_issues,
         structure_path=target.structure_path, html_path=target.html_path,
+        privacy_stats=privacy_stats,
     )

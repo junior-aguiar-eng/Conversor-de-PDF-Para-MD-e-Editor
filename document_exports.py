@@ -21,6 +21,7 @@ def build_document_exports(
     page_coverage: tuple[PageCoverage, ...],
     editorial_stats: tuple[tuple[str, int], ...],
     editorial_issues: tuple[str, ...],
+    privacy_stats: tuple[tuple[str, int], ...] = (),
 ) -> tuple[str, str]:
     """Deriva ambos os formatos do mesmo conteúdo, sem alterar o Markdown.
 
@@ -43,6 +44,8 @@ def build_document_exports(
         "page_coverage": [asdict(item) for item in page_coverage],
         "editorial_stats": dict(editorial_stats),
         "editorial_issues": list(editorial_issues),
+        "privacy": dict(privacy_stats),
+        "privacy_scope": "Marcas textuais de identificação pessoal nas margens da fonte; não é anonimização geral do conteúdo.",
         "provenance": "page_start/page_end são páginas físicas do PDF; null significa origem não identificada.",
     }
     web = resource_root() / "web"

@@ -44,6 +44,7 @@ PYINSTALLER_HIDDEN_IMPORTS = (
     "ocr_engine",
     "course_editorial",
     "document_exports",
+    "document_privacy",
     "library_db",
     "api_bridge",
     "api_bridge.common",

@@ -917,6 +917,7 @@ class ConversionMixin:
                 "output_directory_id": output_directory["directory_id"],
                 "asset_count": result.asset_count,
                 "editorial_stats": dict(result.editorial_stats),
+                "privacy_stats": dict(result.privacy_stats),
                 "editorial_issues": list(result.editorial_issues),
                 "chunk_count": result.chunk_count,
                 "duration_formatted": format_duration(result.extraction_seconds),

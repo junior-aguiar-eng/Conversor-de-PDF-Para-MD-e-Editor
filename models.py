@@ -53,6 +53,7 @@ class ConversionResult:
     editorial_issues: tuple[str, ...] = ()
     structure_path: Path | None = None
     html_path: Path | None = None
+    privacy_stats: tuple[tuple[str, int], ...] = ()
 
     @property
     def failed_pages(self) -> tuple[int, ...]:

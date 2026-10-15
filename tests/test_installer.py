@@ -27,6 +27,7 @@ class InstallerManifestTests(unittest.TestCase):
             "converter.py",
             "course_editorial.py",
             "document_exports.py",
+            "document_privacy.py",
             "file_authorization.py",
             "library_db.py",
             "license_key_config.py",
