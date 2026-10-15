@@ -8,12 +8,10 @@ import logging
 import os
 import shutil
 import tempfile
-import threading
 import time
 import traceback
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextvars import ContextVar, copy_context
+from contextvars import ContextVar
 from pathlib import Path
 
 from constants import (
@@ -35,6 +33,7 @@ from text_fidelity import assess_page_fidelity
 logger = logging.getLogger(__name__)
 
 _IMAGE_OUTPUT_CONTEXT: ContextVar[tuple[Path, Path] | None] = ContextVar("nexojuris_image_output", default=None)
+_COURSE_EDITORIAL_CONTEXT: ContextVar[bool] = ContextVar("nexojuris_course_editorial", default=False)
 
 
 class ResourceBudgetExceeded(RuntimeError):
@@ -439,6 +438,7 @@ class PdfMarkdownConverter:
         temporary_assets_dir: Path | None = None
         checkpoint_state: dict[str, object] | None = None
         context_token = None
+        editorial_context_token = _COURSE_EDITORIAL_CONTEXT.set(heading_profile == "curso")
         try:
             with self._pymupdf.open(source) as document:
                 page_count = document.page_count
@@ -478,103 +478,35 @@ class PdfMarkdownConverter:
                     else:
                         pages_to_process.append(page_number)
 
-                total_pending = len(pages_to_process)
-                if page_workers is not None:
-                    effective_page_workers = max(1, min(int(page_workers), total_pending or 1))
-                elif total_pending <= 3:
-                    effective_page_workers = 1
-                else:
-                    effective_page_workers = min(os.cpu_count() or 1, 4, total_pending)
-
-                checkpoint_lock = threading.Lock()
-
-                if effective_page_workers <= 1 or not pages_to_process:
-                    for page_number in pages_to_process:
-                        self._check_resource_budget(output_dir, source_size, deadline)
-                        rendered_page, page_coverage = self._process_page(document, page_number, temporary_assets_dir)
-                        results[page_number] = (rendered_page, page_coverage)
-                        if checkpoint_dir is not None and checkpoint_state is not None:
-                            _save_page_checkpoint(
-                                checkpoint_dir,
-                                checkpoint_state,
-                                page_number,
-                                rendered_page,
-                                page_coverage,
-                            )
-                        asset_count, asset_bytes = _directory_usage(temporary_assets_dir)
-                        if asset_count > MAX_IMAGES_PER_DOCUMENT:
-                            formatted_max = f"{MAX_IMAGES_PER_DOCUMENT:,}".replace(",", ".")
-                            raise ResourceBudgetExceeded(
-                                f"A extração excedeu o limite de {formatted_max} arquivos de imagem."
-                            )
-                        if asset_bytes > MAX_EXTRACTED_ASSET_BYTES:
-                            raise ResourceBudgetExceeded(
-                                f"As imagens extraídas excederam {MAX_EXTRACTED_ASSET_BYTES // (1024 * 1024)} MB."
-                            )
-                        self._check_resource_budget(output_dir, source_size, deadline)
-                        deadline += _honor_conversion_control(checkpoint_dir, page_number)
-                        if page_number % 25 == 0 or (current_process_rss_bytes() or 0) > 250 * 1024 * 1024:
-                            gc.collect()
-                else:
-                    thread_local = threading.local()
-                    opened_docs: list[object] = []
-                    docs_lock = threading.Lock()
-
-                    def _worker_extract(p_num: int) -> tuple[int, str, PageCoverage]:
-                        doc = getattr(thread_local, "doc", None)
-                        if doc is None or getattr(doc, "is_closed", False):
-                            doc = self._pymupdf.open(source)
-                            thread_local.doc = doc
-                            with docs_lock:
-                                opened_docs.append(doc)
-                        rendered, cov = self._process_page(doc, p_num, temporary_assets_dir)
-                        return p_num, rendered, cov
-
-                    with ThreadPoolExecutor(max_workers=effective_page_workers) as executor:
-                        future_to_page = {
-                            executor.submit(copy_context().run, _worker_extract, p_num): p_num
-                            for p_num in pages_to_process
-                        }
-                        try:
-                            for future in as_completed(future_to_page):
-                                p_num = future_to_page[future]
-                                _, rendered_page, page_coverage = future.result()
-                                results[p_num] = (rendered_page, page_coverage)
-                                if checkpoint_dir is not None and checkpoint_state is not None:
-                                    with checkpoint_lock:
-                                        _save_page_checkpoint(
-                                            checkpoint_dir,
-                                            checkpoint_state,
-                                            p_num,
-                                            rendered_page,
-                                            page_coverage,
-                                        )
-                                asset_count, asset_bytes = _directory_usage(temporary_assets_dir)
-                                if asset_count > MAX_IMAGES_PER_DOCUMENT:
-                                    formatted_max = f"{MAX_IMAGES_PER_DOCUMENT:,}".replace(",", ".")
-                                    raise ResourceBudgetExceeded(
-                                        f"A extração excedeu o limite de {formatted_max} arquivos de imagem."
-                                    )
-                                if asset_bytes > MAX_EXTRACTED_ASSET_BYTES:
-                                    raise ResourceBudgetExceeded(
-                                        f"As imagens extraídas excederam {MAX_EXTRACTED_ASSET_BYTES // (1024 * 1024)} MB."
-                                    )
-                                self._check_resource_budget(output_dir, source_size, deadline)
-                                deadline += _honor_conversion_control(checkpoint_dir, p_num)
-                                if len(results) % 25 == 0 or (current_process_rss_bytes() or 0) > 250 * 1024 * 1024:
-                                    gc.collect()
-                        except Exception:
-                            for f in future_to_page:
-                                f.cancel()
-                            raise
-                        finally:
-                            with docs_lock:
-                                for doc_handle in opened_docs:
-                                    try:
-                                        doc_handle.close()
-                                    except Exception:
-                                        pass
-                                opened_docs.clear()
+                # PyMuPDF não suporta extração simultânea por threads.
+                # page_workers permanece aceito por compatibilidade; as páginas
+                # são sequenciais. O lote mantém processos isolados por PDF.
+                for page_number in pages_to_process:
+                    self._check_resource_budget(output_dir, source_size, deadline)
+                    rendered_page, page_coverage = self._process_page(document, page_number, temporary_assets_dir)
+                    results[page_number] = (rendered_page, page_coverage)
+                    if checkpoint_dir is not None and checkpoint_state is not None:
+                        _save_page_checkpoint(
+                            checkpoint_dir,
+                            checkpoint_state,
+                            page_number,
+                            rendered_page,
+                            page_coverage,
+                        )
+                    asset_count, asset_bytes = _directory_usage(temporary_assets_dir)
+                    if asset_count > MAX_IMAGES_PER_DOCUMENT:
+                        formatted_max = f"{MAX_IMAGES_PER_DOCUMENT:,}".replace(",", ".")
+                        raise ResourceBudgetExceeded(
+                            f"A extração excedeu o limite de {formatted_max} arquivos de imagem."
+                        )
+                    if asset_bytes > MAX_EXTRACTED_ASSET_BYTES:
+                        raise ResourceBudgetExceeded(
+                            f"As imagens extraídas excederam {MAX_EXTRACTED_ASSET_BYTES // (1024 * 1024)} MB."
+                        )
+                    self._check_resource_budget(output_dir, source_size, deadline)
+                    deadline += _honor_conversion_control(checkpoint_dir, page_number)
+                    if page_number % 25 == 0 or (current_process_rss_bytes() or 0) > 250 * 1024 * 1024:
+                        gc.collect()
 
                 rendered_pages = [results[page_number][0] for page_number in selected]
                 coverage = [results[page_number][1] for page_number in selected]
@@ -588,6 +520,7 @@ class PdfMarkdownConverter:
         finally:
             if context_token is not None:
                 _IMAGE_OUTPUT_CONTEXT.reset(context_token)
+            _COURSE_EDITORIAL_CONTEXT.reset(editorial_context_token)
 
         if temporary_assets_dir is None:
             raise RuntimeError("Diretório temporário da conversão não foi inicializado.")
@@ -650,8 +583,9 @@ class PdfMarkdownConverter:
         return str(error).replace("\r", " ").replace("\n", " ").replace("<", "&lt;").replace(">", "&gt;")[:300]
 
     def _native_markdown(self, document: object, page_index: int, image_path: str) -> str:
-        return str(
-            self._to_markdown(
+        course_profile = _COURSE_EDITORIAL_CONTEXT.get()
+        kwargs = {"page_chunks": True} if course_profile else {}
+        extracted = self._to_markdown(
                 document,
                 pages=[page_index],
                 use_ocr=False,
@@ -660,9 +594,17 @@ class PdfMarkdownConverter:
                 image_path=image_path,
                 header=False,
                 footer=False,
+                **kwargs,
             )
-            or ""
-        ).strip()
+        if isinstance(extracted, list):
+            from course_editorial import filter_margin_images
+
+            page = document.load_page(page_index)
+            return "\n\n".join(
+                filter_margin_images(chunk, width=page.rect.width, height=page.rect.height, assets_dir=Path(image_path))
+                for chunk in extracted
+            ).strip()
+        return str(extracted or "").strip()
 
     @staticmethod
     def _direct_text(page: object) -> str:

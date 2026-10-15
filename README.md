@@ -40,6 +40,93 @@ Para reconstruir o ambiente e remover dependências antigas, com o aplicativo fe
 - **Fidelidade verificável**: cada página recebe comparação conservadora com o mapa textual do PDF para detectar possível omissão, inversão de leitura e caracteres Unicode inválidos. Resultados de OCR são sempre marcados para conferência visual. O gate `python fidelity_corpus.py` converte um corpus versionado de documentos oficiais do STF, STJ e CNJ, além de uma digitalização inclinada, e valida hashes, páginas, âncoras semânticas ordenadas, método de extração e scores.
 - **Diagnóstico de Produção e Telemetria Corporativa**: inclusive no executável `--windowed`, o aplicativo mantém logs UTF-8 persistentes em `%LOCALAPPDATA%\NexoJuris\Conversor\diagnostics`, com rotação de cinco arquivos de 2 MB e registro separado de falhas nativas. O sistema inclui rastreador de telemetria thread-safe (`TelemetryTracker`) que consolida vazão (páginas por segundo), distribuição de métodos (nativo/OCR/fallback), picos de RSS e distribuição de fidelidade em tempo de execução. Em **Manual & Central de Ajuda → Diagnóstico**, o usuário pode exportar um relatório textual sanitizado com versões, armazenamento, disco, serviços online, categorias de falha, métricas de telemetria e logs recentes, com garantia absoluta de privacidade (sem conteúdo dos PDFs, senhas ou chaves de licença).
 
+## Preparação editorial de material de curso
+
+O perfil **Material de curso** aplica uma etapa editorial determinística depois
+da extração e antes da divisão em partes. O perfil de boletim de jurisprudência
+mantém seu fluxo próprio. A preparação não resume, atualiza ou completa o Direito
+exposto pelo autor, nem depende de serviços de IA.
+
+- **Hierarquia:** mantém a numeração de assuntos e subassuntos. Quando o PDF não
+  contém um título geral, as seções numéricas principais tornam-se raízes H1;
+  não é criada uma capa ou atribuição bibliográfica presumida. Parágrafos em
+  prosa com números e rótulos seguidos de explicações não viram títulos.
+- **Destaques locais:** `ATENÇÃO!` é um bloco de nota, sem abrir outro capítulo.
+  A extensão de notas com vários parágrafos não é presumida: os parágrafos
+  seguintes continuam no assunto original.
+- **Jurisprudência:** separa rótulos tipográficos de súmulas que ficaram colados
+  à tese anterior; organiza coleções por tribunal, teses de repercussão geral,
+  súmulas e temas. Referências a súmulas dentro de frases e tabelas são mantidas.
+- **Continuidade:** une fragmentos entre páginas consecutivas recuperadas por
+  texto nativo ou fallback quando há sinal de continuação. Preserva os comentários
+  `NEXOJURIS_PAGE` e acrescenta `NEXOJURIS_CONTINUATION pages=N,M` em cada junção.
+  Uma palavra repartida é completada antes do marcador da nova página; a anotação
+  de continuação registra que a palavra pertence às duas páginas. Páginas ausentes,
+  falhas, OCR, títulos e novas listas impedem a junção automática.
+- **Palavras e tabelas:** a correção de hifenização usa as quebras do mapa textual
+  do PDF, inclusive quando o Markdown interrompe a palavra com estilos ou `<br>`.
+  Hífens de compostos e pronomes são preservados por evidência textual e regras
+  conservadoras. Quebras ambíguas não são resolvidas por adivinhação. Células e
+  quebras de linha que não interrompem palavras são preservadas.
+- **Imagens:** o mapa de layout e os pixels identificam recortes quase vazios
+  na margem direita. Não se remove uma figura apenas por seu tamanho. Fórmulas,
+  figuras no corpo, diagramas e referências remotas são preservados.
+- **Conferência:** `ConversionResult.editorial_stats` informa as operações e
+  `editorial_issues` registra possíveis fragmentações restantes; a API envia
+  ambos e a interface apresenta os avisos no log. Isso complementa a comparação
+  textual por página, que não constitui certificação de fidelidade jurídica.
+
+`course_editorial.build_section_index(markdown)` fornece uma árvore de seções
+com identificador, pai, título, contexto ancestral, linha e páginas de início e
+fim. Ela pode ser usada para chunking por assunto sem duplicar o conteúdo ou
+alterar referências. Comentários de proveniência devem ser tratados como
+metadados pelo consumidor de IA. Sublinhado e marca-texto usam HTML inline, que
+depende do suporte do leitor Markdown. Código cercado por fences e código inline
+não recebem alterações editoriais.
+
+Regressões sintéticas: `python -m unittest discover -s tests -p test_course_editorial.py`.
+Uma aprovação dos testes não substitui inspeção do documento convertido.
+
+## Exportação automática: Markdown, estrutura e leitura
+
+Disponível a partir da versão **1.6.0**. Consulte as
+[notas da versão](docs/RELEASE_NOTES-v1.6.0.md).
+
+Toda conversão concluída, nos dois perfis de títulos, gera na mesma pasta:
+
+- `documento.md`: conteúdo integral, com a hierarquia e a proveniência de páginas.
+- `documento.json`: índice de seções com IDs, pais, títulos, contexto ancestral,
+  linhas e intervalos de páginas físicas, além da cobertura da extração, alertas
+  editoriais e hashes SHA-256 do PDF e do Markdown final. Não duplica o texto.
+- `documento.html`: leitura offline com índice lateral, tabelas, notas, destaques,
+  layout adaptável e impressão. O conteúdo, Marked, DOMPurify e suas licenças
+  ficam incorporados ao arquivo; não precisa de servidor nem do JSON para abrir.
+  Quando houver imagens, mantenha a pasta `images/` junto dos arquivos exportados.
+
+O HTML é uma fotografia da conversão. Alterações manuais posteriores no Markdown
+não atualizam seus companheiros; o hash do JSON permite detectar essa divergência.
+O nome vem do arquivo de origem, sem presumir capa, autoria ou título editorial.
+Os formatos compartilham o conteúdo final e os IDs da árvore, preservando os
+avisos de páginas não recuperadas ou que precisam de conferência. Imagens remotas,
+scripts e links locais externos encontrados no conteúdo não são executados no leitor.
+
+O conversor reserva o conjunto completo, acrescentando `(2)`, `(3)` etc. caso
+qualquer companheiro já exista. Prepara todos os formatos antes de promovê-los e
+publica o Markdown por último como marcador de conclusão. Erros controlados
+removem os artefatos da tentativa; uma interrupção abrupta entre renomeações pode
+deixar companheiros órfãos, que serão preservados e não sobrescritos na retomada.
+A divisão opcional continua gerando as partes em Markdown; JSON e HTML representam
+o documento completo, inclusive em reprocessamento de páginas selecionadas.
+
+Para manter a extração editorial consistente, páginas de um mesmo PDF são
+processadas sequencialmente: PyMuPDF não suporta extração simultânea em threads.
+O parâmetro Python legado `page_workers` permanece aceito por compatibilidade,
+sem habilitar threads. O paralelismo de documentos em processos isolados permanece.
+
+Testes dos novos formatos:
+`python -m unittest discover -s tests -p test_document_exports.py` e
+`node tests/reading_export.test.js`.
+
 ## Release Windows
 
 Para criar a versão executável autônoma em pasta, execute `.\build_release.ps1`. Esse é o fluxo oficial: ele chama o wrapper compatível `build_app.py`, reutiliza a implementação única em `build_support.py` e executa o PyInstaller fixado pelo lock com `uv --frozen`. O comando funciona mesmo quando chamado a partir de outro diretório.

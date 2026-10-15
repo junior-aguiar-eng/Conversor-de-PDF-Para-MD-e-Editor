@@ -42,6 +42,8 @@ PYINSTALLER_HIDDEN_IMPORTS = (
     "winreg",
     "licensing",
     "ocr_engine",
+    "course_editorial",
+    "document_exports",
     "library_db",
     "api_bridge",
     "api_bridge.common",

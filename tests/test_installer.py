@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import re
+import tomllib
 import unittest
 from pathlib import Path
+
+from constants import APP_VERSION
 
 
 class InstallerManifestTests(unittest.TestCase):
@@ -22,6 +25,8 @@ class InstallerManifestTests(unittest.TestCase):
             "app_storage.py",
             "constants.py",
             "converter.py",
+            "course_editorial.py",
+            "document_exports.py",
             "file_authorization.py",
             "library_db.py",
             "license_key_config.py",
@@ -42,6 +47,17 @@ class InstallerManifestTests(unittest.TestCase):
         for package in ("license_core", "api_bridge"):
             self.assertIn(f'Join-Path $origem "{package}"', script)
             self.assertTrue((project_root / package / "__init__.py").is_file(), package)
+
+    def test_release_versions_agree_across_runtime_lock_and_installers(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        project = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
+        lock = tomllib.loads((root / "uv.lock").read_text("utf-8"))
+        self.assertEqual(project["project"]["version"], APP_VERSION)
+        package = next(item for item in lock["package"] if item["name"] == project["project"]["name"])
+        self.assertEqual(package["version"], APP_VERSION)
+        for filename in ("NexoJuris-Conversor.iss", "NexoJuris-Licencas-Admin.iss"):
+            manifest = (root / "installer" / filename).read_text("utf-8-sig")
+            self.assertIn(f'#define MyAppVersion "{APP_VERSION}"', manifest)
 
 
 if __name__ == "__main__":

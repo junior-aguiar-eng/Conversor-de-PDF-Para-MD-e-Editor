@@ -552,7 +552,7 @@ def available_output_path(output_dir: Path, stem: str) -> Path:
     """Retorna um caminho livre, sem substituir uma conversão já existente."""
     candidate = output_dir / f"{stem}.md"
     index = 2
-    while candidate.exists():
+    while any(candidate.with_suffix(suffix).exists() for suffix in (".md", ".json", ".html")):
         candidate = output_dir / f"{stem} ({index}).md"
         index += 1
     return candidate
@@ -590,7 +590,8 @@ def reserve_batch_output_paths(
             assets_dir = output_dir / "images" / asset_directory_name(candidate_stem)
             chunks_dir = output_dir / f"{candidate_stem}_partes"
             key = str(markdown_path).casefold()
-            if key not in reserved and not markdown_path.exists() and not assets_dir.exists() and not chunks_dir.exists():
+            companions_exist = any(markdown_path.with_suffix(suffix).exists() for suffix in (".md", ".json", ".html"))
+            if key not in reserved and not companions_exist and not assets_dir.exists() and not chunks_dir.exists():
                 reserved.add(key)
                 reservations.append(OutputReservation(markdown_path, assets_dir, chunks_dir))
                 break
@@ -618,8 +619,17 @@ def finalize_markdown(
     # heading_profile escolhe a heurística de conteúdo (boletim de
     # jurisprudência vs. material de curso com numeração hierárquica) — não
     # há detecção automática por enquanto, o chamador decide.
+    editorial_stats: tuple[tuple[str, int], ...] = ()
+    editorial_issues: tuple[str, ...] = ()
     if heading_profile == "curso":
-        markdown = normalize_course_heading_levels(markdown)
+        from course_editorial import prepare_course_markdown
+
+        editorial = prepare_course_markdown(markdown, source=source, assets_dir=temporary_assets_dir)
+        markdown = editorial.markdown
+        editorial_stats = tuple(editorial.stats.items())
+        editorial_issues = editorial.issues
+        if temporary_assets_dir is not None:
+            asset_count = sum(1 for item in temporary_assets_dir.rglob("*") if item.is_file())
     else:
         markdown = normalize_heading_levels(markdown)
     chunks = split_markdown(markdown, max_chunk_characters, split_mode) if split_output else []
@@ -629,15 +639,23 @@ def finalize_markdown(
         markdown_path.parent / f"{markdown_path.stem}_partes",
     )
     token = uuid.uuid4().hex
-    markdown_temp = target.markdown_path.with_name(f".{target.markdown_path.name}.{token}.tmp")
     chunks_temp = target.chunks_dir.with_name(f".{target.chunks_dir.name}.{token}.tmp")
     promoted_assets = False
     promoted_chunks = False
-    promoted_markdown = False
+    documents = (target.structure_path, target.html_path, target.markdown_path)
+    document_temps = [path.with_name(f".{path.name}.{token}.tmp") for path in documents]
+    promoted_documents: list[Path] = []
     try:
-        if target.markdown_path.exists() or target.assets_dir.exists() or target.chunks_dir.exists():
+        if any(path.exists() for path in documents) or target.assets_dir.exists() or target.chunks_dir.exists():
             raise FileExistsError(f"Destino reservado deixou de estar disponível: {target.markdown_path}")
-        markdown_temp.write_text(markdown, encoding="utf-8")
+        from document_exports import build_document_exports
+
+        structure, html = build_document_exports(
+            markdown, target.markdown_path, source, heading_profile, page_coverage, editorial_stats, editorial_issues,
+        )
+        # Bytes UTF-8 idênticos em todos os SOs: o hash do JSON referencia o MD gravado.
+        for temporary, content in zip(document_temps, (structure, html, markdown), strict=True):
+            temporary.write_bytes(content.encode("utf-8"))
         if chunks:
             chunks_temp.mkdir(parents=True, exist_ok=False)
             for index, chunk in enumerate(chunks, start=1):
@@ -652,18 +670,25 @@ def finalize_markdown(
         if chunks:
             os.replace(chunks_temp, target.chunks_dir)
             promoted_chunks = True
-        os.replace(markdown_temp, target.markdown_path)
-        promoted_markdown = True
+        # MD por último: sua presença continua sendo o marcador de conclusão.
+        for temporary, destination in zip(document_temps, documents, strict=True):
+            os.replace(temporary, destination)
+            promoted_documents.append(destination)
     except Exception:
-        markdown_temp.unlink(missing_ok=True)
+        for temporary in document_temps:
+            temporary.unlink(missing_ok=True)
         shutil.rmtree(chunks_temp, ignore_errors=True)
         if temporary_assets_dir is not None:
             shutil.rmtree(temporary_assets_dir, ignore_errors=True)
-        if promoted_markdown:
-            target.markdown_path.unlink(missing_ok=True)
+        for document in promoted_documents:
+            document.unlink(missing_ok=True)
         if promoted_chunks:
             shutil.rmtree(target.chunks_dir, ignore_errors=True)
         if promoted_assets:
             shutil.rmtree(target.assets_dir, ignore_errors=True)
         raise
-    return ConversionResult(source, target.markdown_path, asset_count, len(chunks), extraction_seconds, page_coverage)
+    return ConversionResult(
+        source, target.markdown_path, asset_count, len(chunks), extraction_seconds, page_coverage,
+        editorial_stats, editorial_issues,
+        structure_path=target.structure_path, html_path=target.html_path,
+    )

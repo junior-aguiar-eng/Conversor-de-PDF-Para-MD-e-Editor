@@ -21,6 +21,8 @@ $arquivosDoAplicativo = @(
     "app_storage.py",
     "constants.py",
     "converter.py",
+    "course_editorial.py",
+    "document_exports.py",
     "file_authorization.py",
     "library_db.py",
     "license_key_config.py",

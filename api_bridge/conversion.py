@@ -857,6 +857,8 @@ class ConversionMixin:
     def _cleanup_conversion_temps(reservation: OutputReservation) -> None:
         patterns = (
             (reservation.markdown_path.parent, f".{reservation.markdown_path.name}.*.tmp"),
+            (reservation.structure_path.parent, f".{reservation.structure_path.name}.*.tmp"),
+            (reservation.html_path.parent, f".{reservation.html_path.name}.*.tmp"),
             (reservation.assets_dir.parent, f".{reservation.assets_dir.name}.*"),
             (reservation.chunks_dir.parent, f".{reservation.chunks_dir.name}.*.tmp"),
         )
@@ -909,9 +911,13 @@ class ConversionMixin:
                 "source": str(result.source),
                 "name": result.source.name,
                 "markdown_path": str(result.markdown_path),
+                "structure_path": str(result.structure_path) if result.structure_path else None,
+                "html_path": str(result.html_path) if result.html_path else None,
                 "markdown_id": markdown["markdown_id"],
                 "output_directory_id": output_directory["directory_id"],
                 "asset_count": result.asset_count,
+                "editorial_stats": dict(result.editorial_stats),
+                "editorial_issues": list(result.editorial_issues),
                 "chunk_count": result.chunk_count,
                 "duration_formatted": format_duration(result.extraction_seconds),
                 "extraction_seconds": result.extraction_seconds,

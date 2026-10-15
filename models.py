@@ -15,6 +15,14 @@ class OutputReservation:
     assets_dir: Path
     chunks_dir: Path
 
+    @property
+    def structure_path(self) -> Path:
+        return self.markdown_path.with_suffix(".json")
+
+    @property
+    def html_path(self) -> Path:
+        return self.markdown_path.with_suffix(".html")
+
 
 @dataclass(frozen=True)
 class PageCoverage:
@@ -41,6 +49,10 @@ class ConversionResult:
     chunk_count: int
     extraction_seconds: float = 0.0
     page_coverage: tuple[PageCoverage, ...] = ()
+    editorial_stats: tuple[tuple[str, int], ...] = ()
+    editorial_issues: tuple[str, ...] = ()
+    structure_path: Path | None = None
+    html_path: Path | None = None
 
     @property
     def failed_pages(self) -> tuple[int, ...]:
@@ -97,6 +109,12 @@ def build_summary_message(
                 for result in fidelity_alerts
             )
             message.extend(["", f"Páginas que exigem conferência de fidelidade:\n{fidelity_lines}"])
+        editorial_alerts = [result for result in summary.successes if result.editorial_issues]
+        if editorial_alerts:
+            details = "\n".join(
+                f"- {result.source.name}: {'; '.join(result.editorial_issues)}" for result in editorial_alerts
+            )
+            message.extend(["", f"Conferência editorial:\n{details}"])
     if summary.failures:
         failed_names = "\n".join(f"- {failure.source.name}" for failure in summary.failures[:10])
         message.extend(["", f"Falhas nesta execução:\n{failed_names}"])

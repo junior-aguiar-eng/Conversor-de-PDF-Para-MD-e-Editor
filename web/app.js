@@ -1057,6 +1057,8 @@ window.onBackendEvent = function (eventName, data) {
     if (file) {
       file.status = "success";
       file.markdown_path = data.markdown_path;
+      file.structure_path = data.structure_path;
+      file.html_path = data.html_path;
       file.markdown_id = data.markdown_id;
       file.duration = data.duration_formatted;
       file.asset_count = data.asset_count;
@@ -1079,6 +1081,12 @@ window.onBackendEvent = function (eventName, data) {
       : "";
     const pageWarning = `${failedWarning}${fidelityWarning}`;
     appendLog("OK", `${data.name} -> ${data.markdown_path} (${data.asset_count} imgs, ${data.duration_formatted}${pageWarning})`);
+    if (data.structure_path && data.html_path) {
+      appendLog("OK", `Estrutura para IA: ${data.structure_path} | Leitura HTML: ${data.html_path}`);
+    }
+    if (data.editorial_issues?.length) {
+      appendLog("INFO", `Conferência editorial de ${data.name}: ${data.editorial_issues.join("; ")}`);
+    }
     if (data.index_status === "failed") {
       appendLog("ERRO", `Índice não atualizado para ${data.name}: ${data.index_error || "falha não detalhada"}`);
       showToast("Markdown convertido, mas a indexação falhou. Reconstrua o índice do acervo.", "error");
