@@ -1,5 +1,14 @@
 # Correção de estrutura documental
 
+**Situação:** execução concluída e integrada à `main` pela PR #4. A versão 1.6.2
+foi preparada no commit `d20bcbc` e publicada com instalador validado.
+Veja o [relatório de fechamento](RELATORIO_CORRECAO_ESTRUTURAL.md) e o
+[guia de distribuição](DISTRIBUICAO_WINDOWS.md).
+
+A sequência e o escopo abaixo registram o plano original. A geração e a
+publicação da release foram autorizadas posteriormente e estão documentadas
+no fechamento; não são tarefas ainda pendentes deste plano.
+
 Base: `d7eee7b2c6e792790c139d683a829dc5f295f478` (main, v1.6.1).
 
 1. Reproduzir a conversão original e manter a referência local, sem versionar

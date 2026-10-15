@@ -1,10 +1,34 @@
 # NexoJuris - Conversor
 
-Aplicativo local para converter PDFs em arquivos `.md` estruturados, com interface gráfica moderna baseada em Chromium (Microsoft Edge WebView2) e suporte a conversão rápida pelo menu de contexto do Windows. Não monitora diretórios, não agenda tarefas e não altera os PDFs originais.
+Aplicativo local para converter PDFs em Markdown, JSON estrutural e HTML offline,
+com leitor e editor de PDF baseados em Microsoft Edge WebView2. A conversão
+preserva o PDF original; o editor só o substitui quando o usuário escolhe essa
+opção, com backup e validação. O aplicativo não monitora diretórios nem agenda tarefas.
 
 Esta pasta é a base oficial do projeto. O executável Windows deve ser gerado a partir daqui.
 
-## Instalação no disco D
+## Instalar a versão 1.6.2
+
+Baixe e execute o
+[instalador Windows](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/download/v1.6.2/NexoJuris-Conversor-Setup-v1.6.2.exe).
+Ele inclui o runtime Python e instala o conversor por usuário, por padrão em
+`%LOCALAPPDATA%\Programs\NexoJuris Conversor`. Não exige instalar Python ou Node.js
+para usar o programa. A interface utiliza o Microsoft Edge WebView2.
+
+A [release v1.6.2](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/tag/v1.6.2)
+contém o SHA-256 e o relatório público de validação. O instalador não tem assinatura
+Authenticode e pode provocar aviso de editor desconhecido no Windows. A ativação
+ACT4 por arquivo `.nxjlic` continua necessária para os recursos protegidos.
+
+**Compatibilidade:** o JSON passou para `schema_version: 2`. Consumidores que
+persistem IDs antigos precisam reindexar. Consulte o
+[contrato v2](docs/CONTRATO_ESTRUTURAL_V2.md).
+
+Instruções e evidências: [distribuição Windows](docs/DISTRIBUICAO_WINDOWS.md),
+[notas da versão](docs/RELEASE_NOTES-v1.6.2.md) e
+[índice da documentação](docs/README.md).
+
+## Instalação a partir do código no disco D
 
 1. Tenha o [uv](https://docs.astral.sh/uv/) e o Python 3.14 disponíveis. Se necessário, execute `uv python install 3.14`.
 2. Abra o PowerShell na pasta deste projeto e execute:
@@ -17,7 +41,9 @@ Esta pasta é a base oficial do projeto. O executável Windows deve ser gerado a
    Para usar outra pasta no D, informe-a: `.\instalar_no_d.ps1 -Destino "D:\NexoJuris Conversor"`.
 3. Abra `D:\NexoJuris Conversor\iniciar.vbs`. Ele inicia a interface gráfica nativa em Chromium sem abrir janelas de console.
 
-O instalador cria um ambiente Python 3.14 isolado em `D:\NexoJuris Conversor\.venv` e instala dependências com versões travadas a partir de `requirements.lock.txt`. Não há download de modelos de IA, Docker, PyTorch ou uso de GPU.
+Esse script cria um ambiente Python 3.14 isolado em `D:\NexoJuris Conversor\.venv`
+e instala dependências travadas de `requirements.lock.txt`. É um fluxo a partir
+do código, separado do instalador `.exe`. Não exige Docker, PyTorch ou GPU.
 
 Para reconstruir o ambiente e remover dependências antigas, com o aplicativo fechado, execute `.\instalar_no_d.ps1 -RecriarAmbiente`.
 
@@ -36,12 +62,12 @@ Para reconstruir o ambiente e remover dependências antigas, com o aplicativo fe
     - **Boletim de jurisprudência (STJ/STF)**: reconhece ramos do direito como `#1`, rótulo "COMENTÁRIO" como `#2` e dispositivos legais como `#3`.
     - **Material de curso**: preserva numeração hierárquica (`1.`, `1.1.`, `A.`, `a)`, `i)`...) e rebaixa falsos títulos em corpo de texto.
 - **Arquitetura Modular da API Bridge**: A interface Python-JavaScript foi modularizada no pacote `api_bridge/`, decompondo a camada em sete mixins especializados (`ConversionMixin`, `EditorMixin`, `LibraryMixin`, `OnlineMixin`, `ReaderMixin`, `ResourceHelperMixin` e `SystemMixin`), com orquestração central transparente via `BridgeApi` em `web_api.py`.
-- **Controle de Fila e Warm Worker Pool**: **Pausar** suspende a fila antes do próximo PDF; **Parar** encerra imediatamente os processos isolados ativos. No Windows, a conversão em lote utiliza um pool aquecido de workers (`idle_pools`), reaproveitando instâncias de processos isolados e poupando de 60% a 80% do overhead de chamadas repetidas a `CreateProcessW`.
+- **Controle de Fila e Warm Worker Pool**: **Pausar** solicita pausa antes da próxima página e suspende novas submissões; **Parar** encerra os processos isolados ativos. No Windows, a conversão em lote utiliza um pool aquecido de workers (`idle_pools`), reaproveitando instâncias de processos isolados e evitando criar um novo processo para cada documento quando um worker pode ser reutilizado.
 - **Encerramento e retomada**: ao fechar durante conversão ou indexação, o aplicativo pede confirmação, encerra coordenadamente os workers e preserva um journal atômico. A conversão grava checkpoint por página e oferece retomar a fila na próxima abertura sem repetir as páginas já concluídas.
-- **Limites de Proteção e Resiliência de Memória**: por PDF, até 1.000 páginas, 512 MB de entrada, 5.000 imagens, 512 MB de imagens extraídas, 1,5 GB de memória e 30 minutos. A engine executa limpeza proativa de estruturas C do PyMuPDF (`fitz.Pixmap` e buffers de imagem no OCR) e desreferenciação com coleta de lixo periódica por página, evitando estouros e falsos positivos do watchdog de processo. A fila também valida o espaço livre do destino e reduz automaticamente a concorrência conforme a memória disponível.
+- **Limites de Proteção e Resiliência de Memória**: por PDF, até 1.000 páginas, 512 MB de entrada, 25.000 imagens efetivamente extraídas, 512 MB de imagens extraídas, 1,5 GB de memória e 30 minutos. A engine executa limpeza proativa de estruturas C do PyMuPDF (`fitz.Pixmap` e buffers de imagem no OCR) e desreferenciação com coleta de lixo periódica por página, evitando estouros e falsos positivos do watchdog de processo. A fila também valida o espaço livre do destino e reduz automaticamente a concorrência conforme a memória disponível.
 - **Acervo resiliente**: banco, aceite de termos, licença e journal de retomada ficam no perfil gravável do usuário (`%LOCALAPPDATA%\NexoJuris\Conversor\data` no Windows), sem depender da pasta do executável. A inicialização executa `PRAGMA integrity_check`, mantém até cinco backups SQLite consistentes com rotação diária, restaura automaticamente a cópia válida mais recente e preserva bancos corrompidos em quarentena antes de reconstruir. Dados de instalações legadas são copiados sem apagar a origem; se o perfil persistente estiver indisponível, a interface abre em modo temporário identificado no diagnóstico da API. Em instalações somente leitura, a pasta de saída padrão também recua para o perfil do usuário.
 - **Fidelidade verificável**: cada página recebe comparação conservadora com o mapa textual do PDF para detectar possível omissão, inversão de leitura e caracteres Unicode inválidos. Resultados de OCR são sempre marcados para conferência visual. O gate `python fidelity_corpus.py` converte um corpus versionado de documentos oficiais do STF, STJ e CNJ, além de uma digitalização inclinada, e valida hashes, páginas, âncoras semânticas ordenadas, método de extração e scores.
-- **Diagnóstico de Produção e Telemetria Corporativa**: inclusive no executável `--windowed`, o aplicativo mantém logs UTF-8 persistentes em `%LOCALAPPDATA%\NexoJuris\Conversor\diagnostics`, com rotação de cinco arquivos de 2 MB e registro separado de falhas nativas. O sistema inclui rastreador de telemetria thread-safe (`TelemetryTracker`) que consolida vazão (páginas por segundo), distribuição de métodos (nativo/OCR/fallback), picos de RSS e distribuição de fidelidade em tempo de execução. Em **Manual & Central de Ajuda → Diagnóstico**, o usuário pode exportar um relatório textual sanitizado com versões, armazenamento, disco, serviços online, categorias de falha, métricas de telemetria e logs recentes, com garantia absoluta de privacidade (sem conteúdo dos PDFs, senhas ou chaves de licença).
+- **Diagnóstico de Produção e Telemetria Corporativa**: inclusive no executável `--windowed`, o aplicativo mantém logs UTF-8 persistentes em `%LOCALAPPDATA%\NexoJuris\Conversor\diagnostics`, com rotação de cinco arquivos de 2 MB e registro separado de falhas nativas. O sistema inclui rastreador de telemetria thread-safe (`TelemetryTracker`) que consolida vazão (páginas por segundo), distribuição de métodos (nativo/OCR/fallback), picos de RSS e distribuição de fidelidade em tempo de execução. Em **Manual & Central de Ajuda → Diagnóstico**, o usuário pode exportar um relatório textual sanitizado com versões, armazenamento, disco, serviços online, categorias de falha, métricas de telemetria e logs recentes, com sanitização de caminhos e segredos. Os contadores não incluem conteúdo dos PDFs; confira o relatório antes de compartilhá-lo.
 
 ## Preparação editorial de material de curso
 
@@ -98,13 +124,16 @@ Uma aprovação dos testes não substitui inspeção do documento convertido.
 
 Disponível a partir da versão **1.6.0**. Consulte as
 [notas da versão](docs/RELEASE_NOTES-v1.6.0.md).
+Na versão 1.6.2, o contrato do JSON é v2.
 
 Toda conversão concluída, nos dois perfis de títulos, gera na mesma pasta:
 
 - `documento.md`: conteúdo integral, com a hierarquia e a proveniência de páginas.
 - `documento.json`: índice de seções com IDs, pais, títulos, contexto ancestral,
   linhas e intervalos de páginas físicas, além da cobertura da extração, alertas
-  editoriais e hashes SHA-256 do PDF e do Markdown final. Não duplica o texto.
+  editoriais e hashes SHA-256 do PDF e do Markdown final. O índice não duplica o
+  corpo das seções; as extensões `questions` e `answers` transcrevem os trechos
+  reconhecidos de enunciados, alternativas e comentários, com ambiguidades explícitas.
 - `documento.html`: leitura offline com índice lateral, tabelas, notas, destaques,
   layout adaptável e impressão. O conteúdo, Marked, DOMPurify e suas licenças
   ficam incorporados ao arquivo; não precisa de servidor nem do JSON para abrir.
@@ -138,6 +167,14 @@ Remove os campos reconhecidos do Markdown, das partes, do JSON e do conteúdo
 incorporado ao HTML. O JSON registra somente contagens em `privacy`, sem os valores.
 Nomes e números distintos nos exemplos jurídicos são preservados.
 
+Na versão 1.6.2, as marcas reconhecidas também são redigidas no PDF aberto em
+memória antes de extrair imagens ou executar OCR, sem salvar sobre a fonte.
+Páginas com pouco texto nativo, imagem e identificação conhecida no documento
+podem ter pixels/OCR omitidos por privacidade. Os campos `content_kind` e
+`visual_status`, acompanhados de aviso, distinguem essa limitação de uma página
+vazia ou de uma falha de extração. Isso não verifica dados pessoais existentes
+somente dentro das imagens.
+
 O PDF original permanece intacto. Se a inspeção textual falhar, a conversão é
 interrompida com erro genérico. Checkpoints anteriores à política são recalculados;
 exportações antigas precisam ser convertidas novamente. Esta proteção é voltada
@@ -170,6 +207,12 @@ O CI executa esse build em Linux e Windows antes dos testes.
 
 ## Release Windows
 
+O fluxo de compilação, os comandos do Inno Setup, os dois gates e a publicação
+estão em [Distribuição Windows](docs/DISTRIBUICAO_WINDOWS.md). Na versão 1.6.2,
+338 testes Python, os testes JavaScript e os gates de pacote e instalador foram
+aprovados. Esses resultados se referem ao commit de release `d20bcbc`, não a
+alterações posteriores na `main`.
+
 Para criar a versão executável autônoma em pasta, execute `.\build_release.ps1`. Esse é o fluxo oficial: ele chama o wrapper compatível `build_app.py`, reutiliza a implementação única em `build_support.py` e executa o PyInstaller fixado pelo lock com `uv --frozen`. O comando funciona mesmo quando chamado a partir de outro diretório.
 
 O resultado contém duas distribuições separadas: o Conversor em
@@ -177,7 +220,7 @@ O resultado contém duas distribuições separadas: o Conversor em
 `release/dist/NexoJuris Licenças Admin/`. Nenhuma chave privada é incorporada
 ao pacote administrativo.
 
-- **Compilação Nativa e Isolamento de Artefatos**: O script `compile_native.py` compila os módulos sensíveis em extensões C (`.pyd`) via Cython isolando artefatos intermediários em `build/native` e na pasta de release, com suporte à opção `--clean` para expurgar resíduos e garantir que nenhum binário de desenvolvimento permaneça na raiz do projeto. O pipeline de build (`build_support.py`) orquestra a compilação, ofuscação do frontend e empacotamento com validação rigorosa.
+- **Compilação Nativa e Isolamento de Artefatos**: O script `compile_native.py` compila módulos em extensões C (`.pyd`) via Cython. A compilação usa `build/` e copia extensões para os módulos de origem; `build_support.py` executa a limpeza ao terminar. Se a etapa opcional Cython falhar, o build pode recorrer ao empacotamento Python previsto pelo projeto. O pipeline de build (`build_support.py`) orquestra a compilação, ofuscação do frontend e empacotamento com validação rigorosa.
 
 O CI possui um job em `windows-2025` que recompila o artefato e executa `scripts/windows_release_gate.ps1`. O gate roda o executável empacotado, valida runtime/WebView2 e `multiprocessing` com `spawn`, mantém a interface ativa por 60 segundos, verifica memória, bloqueio do executável em uso e arquivo NTFS somente leitura, e simula instalação limpa, atualização e desinstalação preservando os dados do perfil. O relatório JSON e a release aprovada são publicados como artefatos. A assinatura Authenticode é sempre inspecionada; para torná-la impeditiva, configure os secrets `WINDOWS_SIGNING_REQUIRED=true`, `WINDOWS_SIGNING_CERTIFICATE_BASE64` e `WINDOWS_SIGNING_CERTIFICATE_PASSWORD`. Esse gate cobre a distribuição PyInstaller atual; o futuro pacote MSIX/Microsoft Store deverá ter um gate próprio.
 

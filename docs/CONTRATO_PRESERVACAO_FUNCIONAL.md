@@ -1,5 +1,12 @@
 # Contrato de preservação funcional
 
+Este documento registra o contrato e a baseline das fases iniciadas em
+28/08/2026. A classificação inicial, a matriz e seus defeitos reproduzidos são
+históricos, não uma lista de pendências da v1.6.2. Consulte o
+[índice atual](README.md), o [contrato estrutural v2](CONTRATO_ESTRUTURAL_V2.md)
+e o [relatório de fechamento](RELATORIO_CORRECAO_ESTRUTURAL.md) para o estado
+publicado e as decisões posteriores de compatibilidade e privacidade.
+
 Este contrato é vinculante para as fases de correção. Nenhuma capacidade listada abaixo pode ser removida, desabilitada, limitada ou tornada inacessível como forma de corrigir defeitos sem decisão específica de produto. Correções de segurança, integridade e desempenho devem substituir o mecanismo interno e preservar o comportamento legítimo.
 
 ## Capacidades protegidas

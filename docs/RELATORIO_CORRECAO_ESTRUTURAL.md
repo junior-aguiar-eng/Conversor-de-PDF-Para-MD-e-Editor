@@ -2,9 +2,13 @@
 
 ## Base e método
 
-Repositório conectado ao remoto solicitado em `origin`; base `main`, commit
-`d7eee7b2c6e792790c139d683a829dc5f295f478`. Alterações locais na branch
-`codex/corrigir-estrutura-conversao`.
+Base da reprodução: `main`, commit `d7eee7b2c6e792790c139d683a829dc5f295f478`.
+As correções foram integradas pela
+[PR #4](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/pull/4),
+merge `86bc46c`. A preparação da versão 1.6.2 está no commit
+`d20bcbc2086dffe45a1262fd924d3cf5dd657f17` da `main`.
+A [release publicada](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/tag/v1.6.2)
+contém instalador, SHA-256 e relatório sanitizado dos gates.
 
 PDF privado de 94 páginas, SHA-256
 `3ae41fb4b6e47faa0be98ed858ac162805adf2b8e0d81f24329e64d976cef31d`.
@@ -53,7 +57,7 @@ Na pasta `PDFs Convertidos/entrega/`:
 - `direito_constitucional5.html`
 - `verificacao.json`, com o resumo dos invariantes examinados
 
-## Validação executada
+## Validação executada e consolidada na v1.6.2
 
 - `uv sync --frozen`: ambiente Python 3.14 com o lockfile existente.
 - `python -m unittest discover -s tests -v`: **338 testes aprovados**.
@@ -87,7 +91,28 @@ acompanham as alterações. O CI agora executa o build em Linux e Windows.
 
 O override de `@parcel/watcher` 2.6.0 remove a cadeia vulnerável de dependências
 de build da versão 2.5.1 fixada pelo CLI. `npm audit`: zero vulnerabilidades
-reportadas na execução local. Não foi gerado nem instalado um novo executável Windows.
+reportadas na execução local de preparação.
+
+## Distribuição Windows publicada
+
+O instalador `NexoJuris-Conversor-Setup-v1.6.2.exe` foi compilado localmente a
+partir da `main` e publicado com 139.070.844 bytes. Seu digest no GitHub coincide
+com o SHA-256 local. O CI do commit `d20bcbc` aprovou os jobs Linux e Windows.
+
+O gate do pacote aprovou runtime, importação WebView2, spawn, interface por
+60 segundos, verificações NTFS, atualização, remoção e preservação dos dados
+de teste. O gate Inno Setup aprovou instalação limpa, probe interno, registro do
+desinstalador, atualização, remoção e dados preservados. Esse segundo gate foi
+local; não é uma etapa do CI.
+
+A preparação também corrigiu uma fixture de OCR que usava pixels não
+inicializados e podia ser detectada como vazia antes do OCR simulado. As imagens
+de teste passaram a ser inicializadas e seu cache foi isolado; o comportamento
+de OCR em produção não foi alterado por essa correção de teste.
+
+O aplicativo de uso diário não foi instalado nem ativado por esses ensaios.
+O instalador permanece sem assinatura Authenticode. Links, hash, comandos e
+limites estão em [Distribuição Windows](DISTRIBUICAO_WINDOWS.md).
 
 ## Limites preservados
 
