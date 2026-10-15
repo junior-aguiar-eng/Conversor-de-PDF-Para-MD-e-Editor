@@ -9,7 +9,7 @@ import fitz
 
 from converter import PdfMarkdownConverter
 from library_db import LibraryDatabase
-from ocr_engine import is_scanned_page, ocr_pixmap
+from ocr_engine import clear_ocr_cache, is_scanned_page, ocr_pixmap
 from web_api import BridgeApi
 
 
@@ -17,6 +17,11 @@ class OcrEngineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.storage_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.storage_dir.cleanup)
+        cache_root = patch('ocr_engine.user_data_root', return_value=Path(self.storage_dir.name))
+        cache_root.start()
+        self.addCleanup(cache_root.stop)
+        clear_ocr_cache(memory_only=True)
+        self.addCleanup(clear_ocr_cache, memory_only=True)
         activation_patcher = patch("ocr_engine.require_software_activation", return_value="NXJ-TEST")
         activation_patcher.start()
         self.addCleanup(activation_patcher.stop)
@@ -46,6 +51,8 @@ class OcrEngineTests(unittest.TestCase):
 
     def test_ocr_pixmap_mocked(self) -> None:
         pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 100, 100), 0)
+        pix.clear_with(255)
+        pix.set_rect(fitz.IRect(10, 10, 60, 60), (0, 0, 0))
         with patch("ocr_engine.get_ocr_engine") as mock_get_engine:
             mock_engine = mock_get_engine.return_value
             # Formato do RapidOCR: ( [ [box, text, score], ... ], elapse )
@@ -63,6 +70,8 @@ class OcrEngineTests(unittest.TestCase):
 
     def test_ocr_applies_heading_marker_once_to_consolidated_line(self) -> None:
         pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 200, 200), 0)
+        pix.clear_with(255)
+        pix.set_rect(fitz.IRect(10, 10, 60, 60), (0, 0, 0))
         with patch("ocr_engine.get_ocr_engine") as mock_get_engine:
             mock_get_engine.return_value.return_value = (
                 [

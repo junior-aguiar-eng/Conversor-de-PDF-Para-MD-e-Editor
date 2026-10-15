@@ -33,6 +33,9 @@ $installRoot = Join-Path $testRoot "app"
 $userDataRoot = Join-Path $testRoot "user-data"
 $reportDestination = [IO.Path]::GetFullPath($ReportPath)
 $registryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{D3EFD865-4B37-41DB-97FB-A0DB6607E863}_is1"
+if (Test-Path -LiteralPath $registryPath) {
+    throw "Já existe uma instalação registrada. Execute o gate em um perfil isolado para preservar a instalação existente."
+}
 $results = [ordered]@{
     ok = $false
     generated_at = [DateTime]::UtcNow.ToString("o")
@@ -59,6 +62,8 @@ try {
         "/SUPPRESSMSGBOXES",
         "/NORESTART",
         "/SP-",
+        "/NOICONS",
+        '/TASKS=""',
         ('/DIR="' + $installRoot + '"')
     )
     Invoke-Silent -FilePath $resolvedInstaller -Arguments $installArguments
