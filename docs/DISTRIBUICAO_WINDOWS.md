@@ -1,23 +1,23 @@
-# Distribuição Windows — v1.6.2
+# Distribuição Windows — v1.6.3
 
 ## Download e proveniência
 
-[Baixar o instalador Windows](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/download/v1.6.2/NexoJuris-Conversor-Setup-v1.6.2.exe).
+[Baixar o instalador Windows](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/download/v1.6.3/NexoJuris-Conversor-Setup-v1.6.3.exe).
 Para uso normal, basta esse `.exe`; não é necessário baixar o Admin ou instalar
 Python/Node.js. A interface usa Microsoft Edge WebView2 disponível no Windows.
 
 | Campo | Valor |
 |---|---|
-| Release | [v1.6.2](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/tag/v1.6.2) |
-| Commit de origem na `main` | `d20bcbc2086dffe45a1262fd924d3cf5dd657f17` |
-| Instalador | `NexoJuris-Conversor-Setup-v1.6.2.exe` |
-| Tamanho | 139.070.844 bytes |
-| SHA-256 | `3cf27ebeff22db5410d733d6fb619b5ff177389d252d233dffdc4cbd5418f016` |
+| Release | [v1.6.3](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/tag/v1.6.3) |
+| Commit de origem na `main` | `d4fe197ad0bba59578044bcb6c659ebd95045536` |
+| Instalador | `NexoJuris-Conversor-Setup-v1.6.3.exe` |
+| Tamanho | 139.093.703 bytes |
+| SHA-256 | `7e42100ceaffb644dd8c46b1be29319e760dfe825cbf9656f50fa06443c67a37` |
 | Authenticode | `NotSigned` |
 
 Anexos públicos:
-[SHA256SUMS.txt](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/download/v1.6.2/SHA256SUMS.txt) e
-[release-validation-v1.6.2.json](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/download/v1.6.2/release-validation-v1.6.2.json).
+[SHA256SUMS.txt](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/download/v1.6.3/SHA256SUMS.txt) e
+[release-validation-v1.6.3.json](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/download/v1.6.3/release-validation-v1.6.3.json).
 O digest informado pelo GitHub foi comparado com o hash do instalador local.
 A tag permanece vinculada ao commit acima; um commit documental posterior não
 recompila nem substitui esse arquivo.
@@ -25,7 +25,7 @@ recompila nem substitui esse arquivo.
 Para conferir um download no PowerShell:
 
 ```powershell
-Get-FileHash -LiteralPath '.\NexoJuris-Conversor-Setup-v1.6.2.exe' -Algorithm SHA256
+Get-FileHash -LiteralPath '.\NexoJuris-Conversor-Setup-v1.6.3.exe' -Algorithm SHA256
 ```
 
 O instalador não tem assinatura digital. O Windows pode mostrar um aviso de
@@ -49,7 +49,7 @@ uso diário e os documentos reais do usuário não foram atualizados pelos teste
 
 ## Reproduzir o build
 
-Em um checkout limpo da tag `v1.6.2`, use Windows com Python 3.14, uv, Node.js/npm,
+Em um checkout limpo da tag `v1.6.3`, use Windows com Python 3.14, uv, Node.js/npm,
 WebView2 e Inno Setup 6 disponíveis. A etapa opcional Cython usa um compilador C
 compatível; a build local publicada conseguiu compilar os módulos nativos.
 
@@ -79,7 +79,7 @@ $isccPath = Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Falha na compilação do instalador.' }
 ```
 
-Saída: `release/packages/NexoJuris-Conversor-Setup-v1.6.2.exe`.
+Saída: `release/packages/NexoJuris-Conversor-Setup-v1.6.3.exe`.
 O manifesto do cliente inclui somente sua distribuição; o Admin não faz parte
 desse instalador. Não inclua chaves privadas, PDFs, conversões ou logs brutos
 como anexos públicos.
@@ -91,12 +91,12 @@ Execute os gates em um perfil de teste, com o build correspondente:
 ```powershell
 .\scripts\windows_release_gate.ps1 `
   -ReleaseRoot 'release/dist/NexoJuris Conversor' `
-  -ReportPath 'release/windows-release-gate-v1.6.2.json' `
+  -ReportPath 'release/windows-release-gate-v1.6.3.json' `
   -SoakSeconds 60
 
 .\scripts\windows_installer_gate.ps1 `
-  -Installer 'release/packages/NexoJuris-Conversor-Setup-v1.6.2.exe' `
-  -ReportPath 'release/windows-installer-gate-v1.6.2.json'
+  -Installer 'release/packages/NexoJuris-Conversor-Setup-v1.6.3.exe' `
+  -ReportPath 'release/windows-installer-gate-v1.6.3.json'
 ```
 
 O gate do instalador interrompe a execução se já houver uma instalação com seu
@@ -104,13 +104,13 @@ AppId registrada no perfil. Ele desabilita atalhos durante o teste e valida o
 registro temporário do desinstalador; não remova a instalação diária para fazê-lo
 passar. Use um perfil ou máquina de teste sem esse registro.
 
-| Evidência da v1.6.2 | Resultado confirmado |
+| Evidência da v1.6.3 | Resultado confirmado |
 |---|---|
-| Suíte Python | 338 testes aprovados |
-| JavaScript | Seis arquivos de testes aprovados |
+| Suíte Python | 390 testes aprovados na execução local com o corpus privado |
+| JavaScript | 11 testes aprovados |
 | Build web, Ruff, recursos web | Aprovados |
 | Auditoria npm local na preparação | Zero vulnerabilidades reportadas naquela execução |
-| [CI da `main`](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/actions/runs/38764637256) | Linux e Windows aprovados no commit da release |
+| [CI da `main`](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/actions/runs/38922654955) | Linux e Windows aprovados no commit da release |
 | Gate do pacote PyInstaller | Runtime, importação WebView2, spawn, interface ativa por 60 s, NTFS, atualização, remoção e dados preservados |
 | Gate do instalador Inno Setup | Instalação limpa, probe, registro do desinstalador, atualização, remoção e dados preservados |
 
@@ -121,5 +121,9 @@ público resume ambos os gates sem publicar caminhos pessoais dos logs locais.
 O aviso do GitHub sobre Dependabot da branch padrão é uma fonte distinta do
 `npm audit` local e não deve ser declarado encerrado apenas com esse resultado.
 Os gates não comprovam assinatura Authenticode, compatibilidade com toda máquina
-Windows ou qualidade jurídica de toda conversão. A verificação da apostila está
-no [relatório estrutural](RELATORIO_CORRECAO_ESTRUTURAL.md).
+Windows ou qualidade jurídica de toda conversão. A inspeção das 241 páginas dos dois materiais de referência está
+no [relatório consolidado](RELATORIO_CORRECAO_CONSOLIDADA_5_6.md).
+
+Na preparação da v1.6.3, o Dependabot manteve quatro alertas preexistentes em
+`urllib3` e `multidict` (dois altos e dois médios). As dependências não foram
+alteradas nesta correção editorial. O CI público não executa o corpus privado.

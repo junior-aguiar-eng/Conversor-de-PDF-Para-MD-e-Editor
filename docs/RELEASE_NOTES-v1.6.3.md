@@ -28,3 +28,21 @@ O SHA-256 e o relatório público de validação acompanham os arquivos da relea
 Referências: [contrato da revisão 3](CONTRATO_ESTRUTURAL_REVISAO_3.md),
 [correção consolidada](RELATORIO_CORRECAO_CONSOLIDADA_5_6.md) e
 [distribuição Windows](DISTRIBUICAO_WINDOWS.md).
+
+
+## Distribuição e validação
+
+[Release v1.6.3](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/tag/v1.6.3), gerada do commit
+`d4fe197ad0bba59578044bcb6c659ebd95045536` da `main`.
+
+- [Instalador Windows](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/download/v1.6.3/NexoJuris-Conversor-Setup-v1.6.3.exe), com 139.093.703 bytes.
+- [SHA-256](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/download/v1.6.3/SHA256SUMS.txt) e [relatório público de validação](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/download/v1.6.3/release-validation-v1.6.3.json).
+- 390 testes Python aprovados, sem testes ignorados na execução local com os materiais de referência; 11 testes JavaScript, Ruff, build web e recursos web aprovados.
+- [CI Linux e Windows](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/actions/runs/38922654955) aprovado no commit da release. As verificações do corpus privado não são executadas no CI público.
+- Gate local do pacote aprovado, incluindo runtime, WebView2 ativo por 60 segundos, spawn, NTFS, atualização, remoção e dados de teste preservados.
+- Gate local do instalador aprovado: instalação limpa, probe, registro do desinstalador, atualização, remoção e dados de teste preservados.
+
+A assinatura Authenticode permanece `NotSigned`. A consulta ao Dependabot na
+preparação encontrou quatro alertas preexistentes em `urllib3` e `multidict`
+(dois altos e dois médios); esta versão não altera essas dependências nem encerra
+os alertas. A geração e os testes não atualizaram a instalação de uso diário.

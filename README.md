@@ -7,25 +7,27 @@ opção, com backup e validação. O aplicativo não monitora diretórios nem ag
 
 Esta pasta é a base oficial do projeto. O executável Windows deve ser gerado a partir daqui.
 
-## Instalar a versão 1.6.2
+## Instalar a versão 1.6.3
 
 Baixe e execute o
-[instalador Windows](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/download/v1.6.2/NexoJuris-Conversor-Setup-v1.6.2.exe).
+[instalador Windows](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/download/v1.6.3/NexoJuris-Conversor-Setup-v1.6.3.exe).
 Ele inclui o runtime Python e instala o conversor por usuário, por padrão em
 `%LOCALAPPDATA%\Programs\NexoJuris Conversor`. Não exige instalar Python ou Node.js
 para usar o programa. A interface utiliza o Microsoft Edge WebView2.
 
-A [release v1.6.2](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/tag/v1.6.2)
+A [release v1.6.3](https://github.com/junior-aguiar-eng/Conversor-de-PDF-Para-MD-e-Editor/releases/tag/v1.6.3)
 contém o SHA-256 e o relatório público de validação. O instalador não tem assinatura
 Authenticode e pode provocar aviso de editor desconhecido no Windows. A ativação
 ACT4 por arquivo `.nxjlic` continua necessária para os recursos protegidos.
 
 **Compatibilidade:** o JSON passou para `schema_version: 2`. Consumidores que
 persistem IDs antigos precisam reindexar. Consulte o
-[contrato v2](docs/CONTRATO_ESTRUTURAL_V2.md).
+[contrato v2](docs/CONTRATO_ESTRUTURAL_V2.md) e a
+[revisão estrutural 3](docs/CONTRATO_ESTRUTURAL_REVISAO_3.md). Reconversões podem
+alterar IDs estruturais e exigem reindexação dos documentos reconvertidos.
 
 Instruções e evidências: [distribuição Windows](docs/DISTRIBUICAO_WINDOWS.md),
-[notas da versão](docs/RELEASE_NOTES-v1.6.2.md) e
+[notas da versão](docs/RELEASE_NOTES-v1.6.3.md) e
 [índice da documentação](docs/README.md).
 
 ## Instalação a partir do código no disco D
@@ -124,7 +126,7 @@ Uma aprovação dos testes não substitui inspeção do documento convertido.
 
 Disponível a partir da versão **1.6.0**. Consulte as
 [notas da versão](docs/RELEASE_NOTES-v1.6.0.md).
-Na versão 1.6.2, o contrato do JSON é v2.
+Na versão 1.6.3, o contrato do JSON é v2.
 
 Toda conversão concluída, nos dois perfis de títulos, gera na mesma pasta:
 
@@ -167,7 +169,7 @@ Remove os campos reconhecidos do Markdown, das partes, do JSON e do conteúdo
 incorporado ao HTML. O JSON registra somente contagens em `privacy`, sem os valores.
 Nomes e números distintos nos exemplos jurídicos são preservados.
 
-Na versão 1.6.2, as marcas reconhecidas também são redigidas no PDF aberto em
+Na versão 1.6.3, as marcas reconhecidas também são redigidas no PDF aberto em
 memória antes de extrair imagens ou executar OCR, sem salvar sobre a fonte.
 Páginas com pouco texto nativo, imagem e identificação conhecida no documento
 podem ter pixels/OCR omitidos por privacidade. Os campos `content_kind` e
@@ -208,9 +210,9 @@ O CI executa esse build em Linux e Windows antes dos testes.
 ## Release Windows
 
 O fluxo de compilação, os comandos do Inno Setup, os dois gates e a publicação
-estão em [Distribuição Windows](docs/DISTRIBUICAO_WINDOWS.md). Na versão 1.6.2,
-338 testes Python, os testes JavaScript e os gates de pacote e instalador foram
-aprovados. Esses resultados se referem ao commit de release `d20bcbc`, não a
+estão em [Distribuição Windows](docs/DISTRIBUICAO_WINDOWS.md). Na versão 1.6.3,
+390 testes Python, 11 testes JavaScript e os gates de pacote e instalador foram
+aprovados. Esses resultados se referem ao commit de release `d4fe197`, não a
 alterações posteriores na `main`.
 
 Para criar a versão executável autônoma em pasta, execute `.\build_release.ps1`. Esse é o fluxo oficial: ele chama o wrapper compatível `build_app.py`, reutiliza a implementação única em `build_support.py` e executa o PyInstaller fixado pelo lock com `uv --frozen`. O comando funciona mesmo quando chamado a partir de outro diretório.
