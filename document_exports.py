@@ -10,6 +10,8 @@ from pathlib import Path
 
 from constants import resource_root
 from course_editorial import build_section_index
+from document_blocks import build_blocks, validate_structure
+from document_review import apply_editorial_review
 from document_structure import exam_index, toc_diagnostics
 from models import PageCoverage
 
@@ -24,6 +26,7 @@ def build_document_exports(
     editorial_issues: tuple[str, ...],
     privacy_stats: tuple[tuple[str, int], ...] = (),
     requested_heading_profile: str | None = None,
+    editorial_review: dict | None = None,
 ) -> tuple[str, str]:
     """Deriva ambos os formatos do mesmo conteúdo, sem alterar o Markdown.
 
@@ -38,7 +41,13 @@ def build_document_exports(
     sections = build_section_index(markdown)
     questions, answers = exam_index(markdown, sections)
     toc_entries, discrepancies = toc_diagnostics(markdown, sections)
+    blocks = build_blocks(markdown, sections, questions, answers)
+    review_result = (apply_editorial_review(blocks, editorial_review, markdown, source_hash)
+                     if editorial_review is not None else {'status': 'not_run'})
+    validation = validate_structure(sections, questions, blocks)
     issues = list(editorial_issues)
+    issues.extend(f"Fonte: {item['code']} — páginas {item.get('pages', [])}. {item.get('reason', '')}"
+                  for item in review_result.get('source_issues', []))
     issues.extend(
         f"Sumário da fonte (página {entry['toc_page']}): {entry['title']} anuncia {entry['announced_page']}; "
         f"localização física {entry['actual_page']}. Transcrição preservada."
@@ -46,8 +55,16 @@ def build_document_exports(
     )
     issues.extend(f"Questão {q['number']} (página {q['page_start']}): {', '.join(q['ambiguities'])}"
                   for q in questions if q['ambiguities'])
+    unresolved_toc = [entry for entry in toc_entries if entry['status'] in {'unresolved', 'ambiguous'}]
+    issues.extend(f"Sumário (página {entry['toc_page']}): {entry['title']}: {entry['status']}."
+                  for entry in unresolved_toc)
+    issues.extend(f"Estrutura: {item['code']} (página {item.get('page')}, linha {item.get('line')})."
+                  for item in validation['diagnostics'] if item.get('block_id'))
     structure = {
         "schema_version": 2,
+        "structure_revision": 3,
+        "document_identity": {"document_id": source_hash, "version_id": hashlib.sha256(markdown.encode('utf-8')).hexdigest(),
+                              "id_scope": "document_local", "global_key": "document_id + local_id"},
         "markdown_file": markdown_path.name,
         "markdown_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
         "source_file": source.name,
@@ -59,14 +76,22 @@ def build_document_exports(
         "sections": sections,
         "questions": questions,
         "answers": answers,
+        "blocks": blocks,
+        "structural_validation": validation,
+        "editorial_review": review_result,
         "toc_entries": toc_entries,
         "toc_discrepancies": discrepancies,
+        "toc_validation": {"status": "not_run" if not toc_entries else "inconclusive" if unresolved_toc else
+                           "failed" if discrepancies else "passed",
+                           "matched": sum(e['status'] == 'matched' for e in toc_entries),
+                           "source_discrepancies": len(discrepancies), "unresolved_or_ambiguous": len(unresolved_toc)},
         "page_coverage": [asdict(item) for item in page_coverage],
         "editorial_stats": {**dict(editorial_stats), "section_count": len(sections),
                             "question_count": len(questions), "answer_count": len(answers),
                             "toc_discrepancy_count": len(discrepancies)},
         "editorial_issues": issues,
         "checks": {"section_index": "executed", "question_detection": "executed",
+                   "structural_invariants": validation['status'],
                    "source_toc_comparison": "executed" if toc_entries else "not_run",
                    "course_editorial": "executed" if heading_profile == "curso" else "not_run",
                    "visual_fidelity": "not_run", "legal_accuracy": "not_run"},

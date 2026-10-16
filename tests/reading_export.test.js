@@ -53,6 +53,12 @@ const dom = render({
 `,
 });
 const document = dom.window.document;
+const printRules = [...document.styleSheets].flatMap((sheet) => [...sheet.cssRules])
+  .filter((rule) => rule.conditionText === 'print').flatMap((rule) => [...rule.cssRules]);
+for (const tag of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) {
+  assert.ok(printRules.some((rule) => rule.selectorText?.split(',').map((s) => s.trim()).includes(tag)
+    && rule.style.getPropertyValue('break-after') === 'avoid'), `${tag}: keep the heading with its text in print`);
+}
 assert.equal(document.querySelectorAll("#toc a").length, 3);
 assert.equal(document.querySelector("#toc a").textContent, "Capítulo principal");
 for (const anchor of document.querySelectorAll("#toc a")) {
@@ -99,4 +105,12 @@ const stale = render({source_file: "test.pdf", markdown_file: "test.md", markdow
 assert.equal(stale.window.document.getElementById("old"), null);
 assert.match(stale.window.document.getElementById("document-warning").textContent, /âncora|índice/i);
 stale.window.close();
+const bodyOnlyTable = render({
+  source_file: "generic.pdf", markdown_file: "generic.md", sections: [], page_coverage: [], editorial_issues: [],
+  markdown: "| | |\n|---|---|\n| <strong>Modelo</strong> | Texto <em>variável</em>. |",
+});
+assert.equal(bodyOnlyTable.window.document.querySelector("#content table thead"), null);
+assert.equal(bodyOnlyTable.window.document.querySelectorAll("#content table tbody tr").length, 1);
+assert.equal(bodyOnlyTable.window.document.querySelector("#content table em").textContent, "variável");
+bodyOnlyTable.window.close();
 console.log("READING_EXPORT_OK: offline rendering, navigation, tables, warnings, print and sanitization");

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,8 @@ _SUBCOLLECTION = re.compile(r"^(?:TESES DE REPERCUSSÃO GERAL|JURISPRUDÊNCIA EM
 _DECISION = re.compile(r"^(?:SÚMULA(?: VINCULANTE)?\s+N[º°o.]?\s*\d+|TEMA\s+\d+(?:\s+E\s+\d+)*)$", re.I)
 _ENCLITICS = frozenset({"se", "me", "te", "nos", "vos", "lhe", "lhes", "lo", "la", "los", "las"})
 _COMPOUND_PREFIXES = frozenset({'ex', 'vice', 'pós', 'pré', 'pró', 'recém', 'além', 'aquém', 'sem', 'não'})
+_CALLOUT = re.compile(
+    r'^(?:ATENÇÃO\s*!|OBSERVAÇÃO\s*:|OBS\.|IMPORTANTE\s*:|NOTA\s*:|CUIDADO\s*[!:]|DICA\s*:|LEMBRE-SE\s*[!:])', re.I)
 
 
 @dataclass
@@ -32,6 +35,13 @@ class SourceEvidence:
     fused_words: set[str] = field(default_factory=set)
     heading_suffixes: set[str] = field(default_factory=set)
     separated_forms: set[tuple[str, str]] = field(default_factory=set)
+    editorial_labels: set[str] = field(default_factory=set)
+    layout_headings: set[str] = field(default_factory=set)
+    line_adjacencies: set[tuple[str, str]] = field(default_factory=set)
+    note_boxes: dict[int, list[str]] = field(default_factory=dict)
+    note_box_ends: dict[tuple[int, str], int] = field(default_factory=dict)
+    page_texts: dict[int, str] = field(default_factory=dict)
+    page_passages: dict[int, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -115,6 +125,35 @@ def _split_visible(text: str, offset: int) -> tuple[str, str]:
     )
 
 
+def _source_box_rectangles(page) -> list[tuple[float, float, float, float]]:
+    """Bordas fechadas, inclusive as quatro faixas que alguns PDFs desenham."""
+    horizontal, vertical, boxes = [], [], set()
+    for drawing in page.get_drawings():
+        for item in drawing['items']:
+            if item[0] == 're':
+                rect = item[1]
+                if rect.width > 60 and rect.height > 15:
+                    boxes.add(tuple(rect))
+                elif rect.width > 60 and rect.height <= 2:
+                    horizontal.append((rect.x0, rect.x1, (rect.y0 + rect.y1) / 2))
+                elif rect.height > 15 and rect.width <= 2:
+                    vertical.append(((rect.x0 + rect.x1) / 2, rect.y0, rect.y1))
+            elif item[0] == 'l':
+                a, b = item[1:3]
+                if abs(a.y - b.y) <= 1 and abs(a.x - b.x) > 60:
+                    horizontal.append((min(a.x, b.x), max(a.x, b.x), (a.y + b.y) / 2))
+                elif abs(a.x - b.x) <= 1 and abs(a.y - b.y) > 15:
+                    vertical.append(((a.x + b.x) / 2, min(a.y, b.y), max(a.y, b.y)))
+    for x0, y0, y1 in vertical:
+        for x1, top, bottom in vertical:
+            if x1 - x0 <= 60 or abs(top - y0) > 2 or abs(bottom - y1) > 2:
+                continue
+            if all(any(abs(y - edge) <= 2 and left <= x0 + 2 and right >= x1 - 2
+                       for left, right, y in horizontal) for edge in (y0, y1)):
+                boxes.add((x0, y0, x1, y1))
+    return sorted(boxes)
+
+
 def read_source_evidence(source: Path | None) -> SourceEvidence:
     """Usa quebras reais do PDF; não consulta dicionários nem altera vocabulário."""
     evidence = SourceEvidence()
@@ -122,13 +161,45 @@ def read_source_evidence(source: Path | None) -> SourceEvidence:
         return evidence
     import pymupdf
 
-    with pymupdf.open(source) as document:
+    try:
+        document = pymupdf.open(source)
+    except (pymupdf.FileDataError, pymupdf.EmptyFileError):
+        # Evidência opcional: preserve a extração já existente quando a fonte
+        # não puder ser lida; nunca invente geometria ou fronteiras lexicais.
+        return evidence
+    with document:
+        if document.needs_pass:
+            return evidence
+        from document_privacy import plan_from_source
+
+        # Capture somente geometria antes da proteção: a redação pode remover
+        # caminhos vetoriais compartilhados com o rodapé. Leia texto só depois.
+        page_boxes = [_source_box_rectangles(page) for page in document]
+        plan_from_source(source).redact_working_document(document)
         pages: list[list[str]] = []
         block_pairs: list[tuple[str, str]] = []
         vocabulary: set[str] = set()
-        for page in document:
+        layout_candidates = []
+        callouts = []
+        all_boxes = []
+        body_lines = {}
+        trailing_labels = []
+        heading_styles: Counter = Counter()
+        for page_number, page in enumerate(document, 1):
             lines = []
             blocks = page.get_text('dict', flags=pymupdf.TEXTFLAGS_DICT & ~pymupdf.TEXT_PRESERVE_IMAGES)['blocks']
+            for coordinates in page_boxes[page_number - 1]:
+                box = pymupdf.Rect(coordinates) + (-1, -1, 1, 1)
+                boxed = sorted((line for block in blocks for line in block.get('lines', [])
+                                if box.contains(pymupdf.Rect(line['bbox']))
+                                and any(s['text'].strip() for s in line['spans'])),
+                               key=lambda line: (line['bbox'][1], line['bbox'][0]))
+                content = [''.join(s['text'] for s in line['spans']).strip() for line in boxed]
+                if content:
+                    entry = (page_number, coordinates, page.rect.height, ' '.join(content))
+                    all_boxes.append(entry)
+                    if _CALLOUT.match(content[0]):
+                        callouts.append(entry)
             for block in blocks:
                 block_lines = []
                 previous_hyphen = False
@@ -144,7 +215,7 @@ def read_source_evidence(source: Path | None) -> SourceEvidence:
                     lines.append((y0, x0, text))
                     block_lines.append(text)
                     # Não considere o fragmento hifenizado final uma palavra completa.
-                    complete = re.sub(rf'{_LETTER}+-$', '', text)
+                    complete = re.sub(rf'{_LETTER}+[-‐‑]$', '', text)
                     if previous_hyphen:
                         complete = re.sub(rf'^{_LETTER}+\b', '', complete)
                     vocabulary.update(re.findall(rf'{_LETTER}+(?:-{_LETTER}+)*', complete))
@@ -154,8 +225,20 @@ def read_source_evidence(source: Path | None) -> SourceEvidence:
                         span.get('flags', 0) & 16 for span in line['spans'] if span['text'].strip()
                     ):
                         evidence.heading_suffixes.add(text)
-                    previous_hyphen = text.endswith('-')
+                    previous_hyphen = text.endswith(('-', '‐', '‑'))
                     spans = line['spans']
+                    nonempty = [span for span in spans if span['text'].strip()]
+                    if nonempty and nonempty[0].get('flags', 0) & 16:
+                        label = ''.join(s['text'] for s in nonempty[:1]).strip().rstrip(' –—-').strip()
+                        numbered = bool(re.match(r'^(?:\d+(?:\.\d+)*\.?|[A-Z][.)])\s+', label))
+                        style = (round(nonempty[0]['size'], 1), nonempty[0]['font'])
+                        if numbered:
+                            heading_styles[style] += 1
+                            if len(label) < 120:
+                                evidence.editorial_labels.add(label)
+                        if (all(s.get('flags', 0) & 16 for s in nonempty) and text.isupper()
+                                and len(text) < 100 and not re.search(r'[.;:!?]$', text)):
+                            layout_candidates.append((text, style))
                     for left_span, right_span in zip(spans, spans[1:], strict=False):
                         first, second = left_span['text'], right_span['text']
                         if not (first.endswith(' ') or second.startswith(' ')):
@@ -166,7 +249,39 @@ def read_source_evidence(source: Path | None) -> SourceEvidence:
                             a, b = left_word.group(1), right_word.group(1)
                             evidence.word_spacing[a + b] = (a, b)
                 block_pairs.extend(zip(block_lines, block_lines[1:], strict=False))
-            pages.append([item[2] for item in sorted(lines)])
+                if block_lines:
+                    evidence.page_passages.setdefault(page_number, []).append('\n'.join(block_lines))
+                if (block_lines and _CALLOUT.match(block_lines[0]) and block['bbox'][1] > page.rect.height * .82
+                        and not any(pymupdf.Rect(box).contains(pymupdf.Rect(block['bbox']))
+                                    for box in page_boxes[page_number - 1])):
+                    trailing_labels.append((page_number, block['bbox'], page.rect.height, ' '.join(block_lines)))
+            ordered = [item[2] for item in sorted(lines)]
+            body_lines[page_number] = lines
+            pages.append(ordered)
+            evidence.page_texts[page_number] = '\n'.join(ordered)
+        for number, bbox, height, label in trailing_labels:
+            next_boxes = [b for b in all_boxes if b[0] == number + 1 and b[1][1] <= b[2] * .18
+                          and b[1][2] - b[1][0] >= (bbox[2] - bbox[0]) * .95
+                          and b[1][0] <= bbox[0] + 3 and b[1][2] >= bbox[2] - 3
+                          and not _CALLOUT.match(b[3])]
+            if len(next_boxes) == 1 and not any(y > bbox[3] + 2 for y, _, _ in body_lines[number]):
+                edge = next_boxes[0][1]
+                callouts.append((number, (edge[0], bbox[1], edge[2], height), height, label))
+        for number, rect, height, content in callouts:
+            end = number
+            while rect[3] >= height * .85:
+                if any(y > rect[3] + 2 for y, _, _ in body_lines[end]):
+                    break
+                following = [b for b in all_boxes if b[0] == end + 1 and b[1][1] <= b[2] * .18
+                             and abs(b[1][0] - rect[0]) <= 2 and abs(b[1][2] - rect[2]) <= 2
+                             and not _CALLOUT.match(b[3])
+                             and not any(y < b[1][1] - 2 for y, _, _ in body_lines[b[0]])]
+                if len(following) != 1:
+                    break
+                end, rect, height, continuation = following[0]
+                content += ' ' + continuation
+            evidence.note_boxes.setdefault(number, []).append(content)
+            evidence.note_box_ends[(number, content)] = end
         for lines in pages:
             for first, second in zip(lines, lines[1:], strict=False):
                 _record_hyphenation(first, second, vocabulary, evidence)
@@ -174,15 +289,21 @@ def read_source_evidence(source: Path | None) -> SourceEvidence:
         # As linhas do mesmo bloco preservam a continuidade interna dessas regiões.
         for first, second in block_pairs:
             _record_hyphenation(first, second, vocabulary, evidence)
+            left = re.search(rf'({_LETTER}+)\s*$', first)
+            right = re.match(rf'^\s*({_LETTER}+)', second)
+            if left and right:
+                evidence.line_adjacencies.add((left[1], right[1]))
         for first, second in zip(pages, pages[1:], strict=False):
             if first and second:
                 _record_hyphenation(first[-1], second[0], vocabulary, evidence)
         evidence.word_spacing = {word: pair for word, pair in evidence.word_spacing.items() if word not in vocabulary}
+        evidence.layout_headings = {text for text, style in layout_candidates if heading_styles[style] >= 2}
         evidence.has_source = True
     return evidence
 
 
 def _record_hyphenation(first: str, second: str, vocabulary: set[str], evidence: SourceEvidence) -> None:
+    first = first.replace('‐', '-').replace('‑', '-')
     left = re.search(rf'({_LETTER}+)-$', first)
     right = re.match(rf'({_LETTER}+)', second)
     if not left or not right:
@@ -191,11 +312,15 @@ def _record_hyphenation(first: str, second: str, vocabulary: set[str], evidence:
     joined, compound = a + b, a + '-' + b
     right_form = re.match(rf'{_LETTER}+(?:-{_LETTER}+)*', second).group()
     joined_form = a + right_form
-    if compound in vocabulary or b.lower() in _ENCLITICS:
+    def folded_word(word):
+        return ''.join(c for c in unicodedata.normalize('NFD', word.casefold()) if not unicodedata.combining(c))
+
+    folded = {folded_word(word) for word in vocabulary}
+    if folded_word(compound) in folded or b.lower() in _ENCLITICS:
         separator = '-'
-    elif joined in vocabulary or joined_form in vocabulary:
+    elif folded_word(joined) in folded or folded_word(joined_form) in folded:
         separator = ''
-    elif a.lower() in _COMPOUND_PREFIXES or (
+    elif (a.lower() in _COMPOUND_PREFIXES and (not a.isupper() or folded_word(b) in folded)) or (
         b.lower() == 'feira' and a.lower() in {'segunda', 'terça', 'quarta', 'quinta', 'sexta'}
     ):
         separator = '-'
@@ -283,6 +408,111 @@ def _repair_style_fragments(text: str, evidence: SourceEvidence, stats: Counter)
             deletions.update(range(start, end))
             stats['style_fragments_repaired'] += 1
     return ''.join(char for index, char in enumerate(text) if index not in deletions)
+
+
+def _repair_contextual_separators(text: str, evidence: SourceEvidence, stats: Counter) -> str:
+    """Alinha fronteiras de letras por contexto único na mesma página protegida.
+
+    Não troca letras, números ou pontuação substantiva. Fronteiras de parágrafo,
+    código e células ficam protegidas; estilos são mantidos pelo mapa reversível.
+    """
+    if not evidence.page_texts:
+        return text
+    def unit(char):
+        lower = char.lower()
+        return lower if len(lower) == 1 else char
+
+    source_pages = {}
+    for page, value in evidence.page_texts.items():
+        # A leitura por bloco mantém colunas; a leitura global mantém a prosa.
+        # O sentinela impede correspondências que atravessem passagens distintas.
+        value = '\x00'.join([value, *evidence.page_passages.get(page, [])])
+        # Só hifenações reconhecidas são resolvidas; uma forma ambígua mantém o
+        # hífen da fonte. URLs mantêm seu caminho literal, inclusive o hífen final.
+        def join(match, original=value):
+            a, hyphen, b = match[1], match[2], match[3]
+            start = original.rfind('\n', 0, match.start()) + 1
+            url = re.search(r'https?://\S*$', original[start:match.start()])
+            separator = '-' if url else evidence.hyphenations.get((a, b), hyphen)
+            return a + separator + b
+
+        value = re.sub(rf'({_LETTER}+)([-‐‑])\s*\n\s*({_LETTER}+)', join, value)
+        positions = [i for i, c in enumerate(value) if c.isalnum() or c == '\x00']
+        skeleton = ''.join(unit(value[i]) for i in positions)
+        source_pages[page] = (value, positions, skeleton)
+    plain, mapping = _project(text)
+    positions = [i for i, c in enumerate(plain) if c.isalnum()]
+    skeleton = ''.join(unit(plain[i]) for i in positions)
+    urls = [m.span() for m in re.finditer(r'https?://[^\s<>)]+', plain)]
+    edits = []
+    markers = list(_PAGE.finditer(text))
+    limits = {}
+    page, marker_index = 1, 0
+    for index, position in enumerate(positions):
+        raw_position = mapping[position][0]
+        while marker_index < len(markers) and markers[marker_index].start() <= raw_position:
+            page = int(markers[marker_index][1])
+            marker_index += 1
+        limits.setdefault(page, [index, index + 1])[1] = index + 1
+    page, marker_index = 1, 0
+    for k in range(1, len(positions)):
+        left, right = positions[k - 1], positions[k]
+        raw_position = mapping[left][0]
+        while marker_index < len(markers) and markers[marker_index].start() <= raw_position:
+            page = int(markers[marker_index][1])
+            marker_index += 1
+        gap = plain[left + 1:right]
+        if (not plain[left].isalpha() or not plain[right].isalpha()
+                or not re.fullmatch(r'[ \t\n\-‐‑]*', gap) or '\n\n' in gap):
+            continue
+        source = source_pages.get(page)
+        if source is None or k >= limits[page][1]:
+            continue
+        value, source_positions, source_skeleton = source
+        expected = None
+        for radius in (18, 36, 72, 144):
+            first, last = limits[page]
+            a, b = max(first, k - radius), min(last, k + radius)
+            context = skeleton[a:b]
+            candidate = source_skeleton.find(context) if len(context) >= 20 else -1
+            separators = set()
+            while candidate >= 0:
+                boundary = candidate + k - a
+                if 0 < boundary < len(source_positions):
+                    separators.add(value[source_positions[boundary - 1] + 1:source_positions[boundary]])
+                candidate = source_skeleton.find(context, candidate + 1)
+            if len(separators) == 1:
+                expected = separators.pop()
+                break
+        if expected is None:
+            continue
+        if not re.fullmatch(r'[ \t\n\-‐‑]*', expected):
+            continue
+        # Preserve espaços/hífens que já existem na mesma linha da fonte.
+        expected = re.sub(r'\s+', ' ', expected)
+        if gap == expected:
+            continue
+        if any(a <= left < right < b for a, b in urls) and not (gap == '' and expected == '-'):
+            # Reconstitua somente o hífen literal comprovado de um caminho;
+            # quebras físicas de URL não autorizam inserir espaços no endereço.
+            continue
+        start, end = mapping[left][1], mapping[right][0]
+        between = text[start:end]
+        # Não remova comentários de proveniência nem quebras explícitas.
+        if '<!--' in between or re.search(r'<br\b', between, re.I):
+            continue
+        raw_plain, local_map = _project(between)
+        remove = {j for i, c in enumerate(raw_plain) if c.isspace() or c in '-‐‑'
+                  for j in range(*local_map[i])}
+        styles = ''.join(c for i, c in enumerate(between) if i not in remove)
+        # O separador fica antes de tags de abertura, após fechamentos adjacentes.
+        closing = re.match(r'^(?:</[^>]+>)+', styles)
+        cut = closing.end() if closing else 0
+        edits.append((start, end, styles[:cut] + expected + styles[cut:]))
+    for start, end, value in reversed(edits):
+        text = text[:start] + value + text[end:]
+    stats['contextual_separators_repaired'] += len(edits)
+    return _clean_styles(text)
 
 
 def _split_embedded_headings(text: str, evidence: SourceEvidence, stats: Counter) -> str:
@@ -394,12 +624,21 @@ def _join_pages(text: str, evidence: SourceEvidence, stats: Counter) -> str:
         if index + 1 < len(matches):
             body = re.sub(r'\n\s*---\s*$', '', body)
         bodies.append(body.strip())
-    output = text[:matches[0].start()] + matches[0].group() + '\n\n' + bodies[0]
+    def in_table(match):
+        return text[text.rfind('\n', 0, match.start()) + 1:match.start()].lstrip().startswith('|')
+
+    output = text[:matches[0].start()] + matches[0].group() + (' ' if in_table(matches[0]) else '\n\n') + bodies[0]
     previous_number = int(matches[0].group(1))
     previous_status = matches[0].group(2)
     for index, match in enumerate(matches[1:], 1):
         next_body = bodies[index]
         number, status = int(match.group(1)), match.group(2)
+        if in_table(match):
+            # A reconstrução de células já preservou a proveniência inline.
+            # Separar este marcador em parágrafos quebraria a linha da tabela.
+            output += ' ' + match.group() + ' ' + next_body
+            previous_number, previous_status = number, status
+            continue
         if re.search(rf'<!-- NEXOJURIS_CONTINUATION pages={previous_number},{number} -->\s*$', output):
             output += ' ' + match.group() + ' ' + next_body.lstrip()
             previous_number, previous_status = number, status
@@ -484,7 +723,65 @@ def _is_prose_heading(text: str) -> bool:
     return False
 
 
-def _structure(text: str, stats: Counter) -> str:
+def _symmetric_enumerations(text: str, stats: Counter) -> str:
+    """Uma enumeração local usa a mesma categoria para todos os seus itens.
+
+    Parágrafos entre marcadores são permitidos; capítulos e reinícios fecham
+    o conjunto. Não usa vocabulário nem números de páginas.
+    """
+    lines = text.splitlines()
+    groups: list[list[tuple[int, str, str, str]]] = []
+    group: list[tuple[int, str, str, str]] = []
+    for index, line in enumerate(lines):
+        heading = _HEADING.match(line)
+        content = heading[2] if heading else re.sub(r'^[-*+]\s+', '', line)
+        plain = _visible(content)
+        marker = re.match(r'^([A-Za-z])([.)])\s+', plain)
+        if marker:
+            item = (index, marker[1], marker[2], 'heading' if heading else 'list' if content != line else 'prose')
+            if group and (ord(marker[1]) != ord(group[-1][1]) + 1 or marker[2] != group[-1][2]):
+                groups.append(group)
+                group = []
+            group.append(item)
+        elif heading:
+            if group:
+                groups.append(group)
+                group = []
+    if group:
+        groups.append(group)
+    for group in groups:
+        kinds = {item[3] for item in group}
+        if len(group) < 2 or 'heading' not in kinds or kinds == {'heading'}:
+            continue
+        for index, _, _, kind in group:
+            if kind == 'heading':
+                lines[index] = ('- ' if 'list' in kinds and 'prose' not in kinds else '') + _HEADING.match(lines[index])[2]
+                stats['enumeration_peers_aligned'] += 1
+    return '\n'.join(lines)
+
+
+def _layout_labels(text: str, evidence: SourceEvidence, stats: Counter) -> str:
+    """Separa rótulo destacado e explicação mediante confirmação na fonte."""
+    output = []
+    for line in text.splitlines():
+        heading = _HEADING.match(line)
+        content = heading[2] if heading else line
+        plain = _visible(content)
+        if not content.startswith(('**', '__')):
+            output.append(line)
+            continue
+        for label in sorted(evidence.editorial_labels, key=len, reverse=True):
+            if plain.startswith(label) and re.match(r'^\s*[–—:-]\s+', plain[len(label):]):
+                first, rest = _split_visible(content, len(label))
+                output.extend([(heading[1] if heading else '###') + ' ' + first, '', rest])
+                stats['source_labels_separated'] += 1
+                break
+        else:
+            output.append(line)
+    return '\n'.join(output)
+
+
+def _structure(text: str, stats: Counter, evidence: SourceEvidence) -> str:
     # Importação local evita dependência circular na integração de finalize_markdown.
     from markdown_utils import normalize_course_heading_levels
 
@@ -495,8 +792,10 @@ def _structure(text: str, stats: Counter) -> str:
         if match and _is_prose_heading(content):
             line = content
             stats['false_headings_demoted'] += 1
+        if not match and _visible(line) in evidence.layout_headings:
+            line = '### ' + line
         lines.extend(_split_decision_labels(line))
-    text = normalize_course_heading_levels('\n'.join(lines))
+    text = normalize_course_heading_levels('\n'.join(lines), source_headings=evidence.layout_headings)
     output: list[str] = []
     collection_level = 2
     decision_level = 4
@@ -522,6 +821,68 @@ def _structure(text: str, stats: Counter) -> str:
     return '\n'.join(output)
 
 
+def _group_source_notes(text: str, evidence: SourceEvidence, stats: Counter) -> str:
+    """Agrupa caixas completas e continuações cuja geometria foi comprovada."""
+    def key(value: str) -> str:
+        value = re.sub(r'\[!NOTE\]', '', value)
+        return ''.join(c for c in _visible(value).casefold() if c.isalnum())
+
+    def unquote(value: str) -> str:
+        value = re.sub(r'(?m)^\s*>[ \t]?', '', value.strip())
+        value = re.sub(r'^\[!NOTE\]\s*', '', value)
+        return re.sub(r'(?m)^#{1,6}\s+', '', value).strip()
+
+    parts = re.split(r'(\n[ \t]*\n)', text)
+    page = 1
+    part_pages = {}
+    for start in range(0, len(parts), 2):
+        markers = list(_PAGE.finditer(parts[start]))
+        begins_at_marker = markers and not key(parts[start][:markers[0].start()])
+        part_pages[start] = int(markers[0][1]) if begins_at_marker else page
+        if markers:
+            page = int(markers[-1][1])
+    for start in range(0, len(parts), 2):
+        page = part_pages[start]
+        label = unquote(parts[start])
+        if not _CALLOUT.match(_visible(label)):
+            continue
+        for source_text in evidence.note_boxes.get(page, []):
+            expected, actual = key(source_text), key(label)
+            prefix = actual[:80]
+            end = start
+            last_page = evidence.note_box_ends.get((page, source_text), page)
+            contains_table = False
+            while actual != expected and len(actual) < len(expected) and end + 2 < len(parts):
+                following = parts[end + 2]
+                pages = list(_PAGE.finditer(following))
+                if (any(int(m[1]) > last_page for m in pages)
+                        or following.lstrip().startswith('\x00NXJCODE')):
+                    break
+                contains_table |= following.lstrip().startswith('|')
+                if not expected.startswith(actual) and not contains_table:
+                    break
+                actual += key(following)
+                end += 2
+            # Células são lidas por coluna; a extração vetorial pode intercalar
+            # linhas de colunas vizinhas. Exija todo o conteúdo e o mesmo início.
+            table_match = (contains_table and expected.startswith(prefix)
+                           and Counter(actual) == Counter(expected))
+            if actual != expected and not table_match:
+                continue
+            paragraphs = [label, *(unquote(p) for p in parts[start + 2:end + 1:2])]
+            replacement = '> [!NOTE]\n' + '\n>\n'.join(
+                '\n'.join('> ' + line if line.strip() else '>' for line in paragraph.strip().splitlines())
+                for paragraph in paragraphs)
+            if parts[start].strip() == replacement and end == start:
+                continue
+            parts[start] = replacement
+            for index in range(start + 1, end + 1):
+                parts[index] = ''
+            stats['source_note_boxes_grouped'] += 1
+            break
+    return ''.join(parts)
+
+
 def _protect_code(text: str) -> tuple[str, list[str]]:
     protected: list[str] = []
 
@@ -532,6 +893,35 @@ def _protect_code(text: str) -> tuple[str, list[str]]:
     text = re.sub(r'(?ms)^(`{3,}|~{3,})[^\n]*\n.*?^\1[^\n]*$', replace, text)
     text = re.sub(r'(`+)[^\n]*?\1', replace, text)
     return text, protected
+
+
+def _join_sentence_tails(text: str, evidence: SourceEvidence, stats: Counter) -> str:
+    parts = re.split(r'(\n[ \t]*\n)', text)
+    for index in range(2, len(parts), 2):
+        tail = parts[index]
+        previous = parts[index - 2]
+        plain = _visible(tail)
+        left = re.search(rf'({_LETTER}+)\s*$', _visible(previous))
+        right = re.fullmatch(rf'({_LETTER}+)[.!?]', plain)
+        if (left and right and plain[0].islower() and tail.startswith(('**', '__', '<'))
+                and not previous.lstrip().startswith(('#', '|', '>', '!', '<!--'))
+                and (left[1], right[1]) in evidence.line_adjacencies):
+            parts[index - 2] = previous.rstrip() + ' ' + tail.strip()
+            parts[index - 1] = parts[index] = ''
+            stats['sentence_tails_joined'] += 1
+    return ''.join(parts)
+
+
+def prepare_source_formatting(markdown: str, source: Path) -> EditorialResult:
+    """Formatação comprovada pela fonte, sem impor hierarquia de curso."""
+    text, protected = _protect_code(markdown)
+    evidence = read_source_evidence(source)
+    stats = Counter()
+    text = _repair_contextual_separators(text, evidence, stats)
+    text = _group_source_notes(text, evidence, stats)
+    for index, code in enumerate(protected):
+        text = text.replace(f'\x00NXJCODE{index}\x00', code)
+    return EditorialResult(text, dict(stats))
 
 
 def prepare_course_markdown(
@@ -555,12 +945,15 @@ def prepare_course_markdown(
     text = _repair_hyphenation(text, evidence, stats)
     text = _repair_style_spacing(text, evidence, stats)
     text = _repair_style_fragments(text, evidence, stats)
+    text = _repair_contextual_separators(text, evidence, stats)
     # Espaço espúrio em sufixos de dispositivos: § 4º- B -> § 4º-B.
     text = re.sub(r'(§\s*\d+[º°o]?|\b[Aa]rt\.\s*\d+)-[ \t]+([A-Z])\b', r'\1-\2', text)
     text = re.sub(r'(?<=[\w*>_)])[ \t]+([,.;:!?])', r'\1', text)
     text = _normalize_emphasis(text, stats)
     text = _split_embedded_headings(text, evidence, stats)
-    text = _structure(text, stats)
+    text = _layout_labels(text, evidence, stats)
+    text = _symmetric_enumerations(text, stats)
+    text = _structure(text, stats, evidence)
     from document_structure import normalize_exam_collections
 
     text = normalize_exam_collections(text, stats)
@@ -572,6 +965,8 @@ def prepare_course_markdown(
         # Sem um título da obra no PDF, as seções numéricas são as raízes reais.
         # Remova o nível vazio reservado ao ramo do Direito, sem inventar uma capa.
         text = re.sub(r'(?m)^(#{2,6})(?=\s)', lambda m: m.group(1)[1:], text)
+    text = _join_sentence_tails(text, evidence, stats)
+    text = _group_source_notes(text, evidence, stats)
     text = re.sub(r'\n[ \t]*\n(?:[ \t]*\n)+', '\n\n', text).strip() + '\n'
     text = _clean_styles(text)
     plain, mapping = _project(text)

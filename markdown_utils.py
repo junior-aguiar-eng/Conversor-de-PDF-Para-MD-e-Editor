@@ -73,7 +73,7 @@ COURSE_NUMERIC_PREFIX_PATTERN = re.compile(r"^(\d+(?:\.\d+)*)\.?(?:\s+|$)")
 # numeral/letra e ao texto como blocos separados; confirmado em amostra
 # real, ver Ponto 1 CONSTITUCIONAL 2026.2.md, "ii" -- sem essa tolerância
 # o item inteiro falha os 3 padrões de prefixo e é rebaixado por engano).
-COURSE_UPPERCASE_LETTER_PREFIX_PATTERN = re.compile(r"^[A-Z]\s*\.(?:\s+|$)")
+COURSE_UPPERCASE_LETTER_PREFIX_PATTERN = re.compile(r"^[A-Z]\s*[.)](?:\s+|$)")
 # "a)", "b)", "c)" — uma única letra minúscula seguida de parêntese.
 COURSE_LOWERCASE_PAREN_PREFIX_PATTERN = re.compile(r"^[a-z]\s*\)(?:\s+|$)")
 # "i)", "ii)", "iii)", "I.", "II.", "III." — numeral romano (maiúsculo ou
@@ -355,9 +355,11 @@ class _CourseHeadingState:
 
     def __init__(self) -> None:
         self._stack: list[tuple[str, int, int | None]] = []
+        self.last_letter: str | None = None
 
     def register_numeric(self, level: int) -> None:
         self._stack = [("numeric", level, None)]
+        self.last_letter = None
 
     def register_letter_or_roman(self, heading_type: str, roman_value: int | None = None) -> int:
         for index in range(len(self._stack) - 1, -1, -1):
@@ -421,6 +423,10 @@ def _resolve_letter_or_roman_type(letter: str, state: _CourseHeadingState) -> tu
     chegar à regra de romano, e ficaria num tipo diferente de "II."/"III."
     — a causa raiz original do defeito de profundidade artificial crescente
     em listas romanas."""
+    previous = state.last_letter
+    state.last_letter = letter
+    if previous and previous.isupper() == letter.isupper() and ord(letter) == ord(previous) + 1:
+        return ("uppercase" if letter.isupper() else "lowercase"), None
     if letter.upper() not in _ROMAN_AMBIGUOUS_LETTERS:
         return ("uppercase" if letter.isupper() else "lowercase"), None
     if letter.upper() == "I":
@@ -474,7 +480,7 @@ def _prose_list_item_positions(markdown: str) -> frozenset[int]:
     return frozenset(prose_positions)
 
 
-def _classify_course_heading(text: str, state: _CourseHeadingState) -> tuple[int, bool]:
+def _classify_course_heading(text: str, state: _CourseHeadingState, *, alphabetic: bool = False) -> tuple[int, bool]:
     """Classifica um título do perfil de curso, atualizando o estado de
     aninhamento. Retorna (nível, mantém_como_heading) — mantém_como_heading
     é False para o rebaixamento da regra 7 (o nível retornado é ignorado
@@ -494,13 +500,29 @@ def _classify_course_heading(text: str, state: _CourseHeadingState) -> tuple[int
         state.register_numeric(level)
         return level, True
 
+    compound = re.match(r'^([A-Z])\.(\d+(?:\.\d+)*)\.?(?:\s+|$)', canonical)
+    if compound:
+        # Rótulo com explicação continua sendo corpo; numeração não basta.
+        if len(canonical) > 150 or re.match(r'^\*\*[^*]+\*\*\s+\S', text):
+            return 0, False
+        base = state.register_letter_or_roman('uppercase')
+        level = min(base + len(compound[2].split('.')), 6)
+        state._stack.append(('compound', level, None))
+        return level, True
+
     upper_match = COURSE_UPPERCASE_LETTER_PREFIX_PATTERN.match(canonical)
     if upper_match:
+        if alphabetic:
+            state.last_letter = canonical[0]
+            return state.register_letter_or_roman('uppercase'), True
         heading_type, roman_value = _resolve_letter_or_roman_type(canonical[0], state)
         return state.register_letter_or_roman(heading_type, roman_value), True
 
     lower_match = COURSE_LOWERCASE_PAREN_PREFIX_PATTERN.match(canonical)
     if lower_match:
+        if alphabetic:
+            state.last_letter = canonical[0]
+            return state.register_letter_or_roman('lowercase'), True
         heading_type, roman_value = _resolve_letter_or_roman_type(canonical[0], state)
         return state.register_letter_or_roman(heading_type, roman_value), True
 
@@ -515,7 +537,7 @@ def _classify_course_heading(text: str, state: _CourseHeadingState) -> tuple[int
     return 0, False
 
 
-def normalize_course_heading_levels(markdown: str) -> str:
+def normalize_course_heading_levels(markdown: str, *, source_headings: set[str] | frozenset[str] = frozenset()) -> str:
     """Reclassifica o nível de cada título do markdown bruto pelo perfil de
     material de curso (numeração hierárquica "1.", "1.1.", "A.", "a)",
     "i)" etc.), como alternativa a normalize_heading_levels (perfil de
@@ -533,6 +555,13 @@ def normalize_course_heading_levels(markdown: str) -> str:
     """
     state = _CourseHeadingState()
     prose_list_item_positions = _prose_list_item_positions(markdown)
+    matches = list(RAW_HEADING_PATTERN.finditer(markdown))
+    alphabetic_positions = set()
+    for left, right in zip(matches, matches[1:], strict=False):
+        a = re.match(r'^([A-Za-z])[.)]\s+', _canonicalize_heading_text(left[0].lstrip('#').strip()))
+        b = re.match(r'^([A-Za-z])[.)]\s+', _canonicalize_heading_text(right[0].lstrip('#').strip()))
+        if a and b and a[1].isupper() == b[1].isupper() and ord(b[1]) == ord(a[1]) + 1:
+            alphabetic_positions.update((left.start(), right.start()))
 
     def replace(match: re.Match[str]) -> str:
         raw = match.group()
@@ -542,7 +571,12 @@ def normalize_course_heading_levels(markdown: str) -> str:
         text = heading_line[level:].strip()
         if match.start() in prose_list_item_positions:
             return f"{text}{trailing_whitespace}"
-        new_level, keep_as_heading = _classify_course_heading(text, state)
+        new_level, keep_as_heading = _classify_course_heading(text, state, alphabetic=match.start() in alphabetic_positions)
+        from course_editorial import _visible
+
+        if not keep_as_heading and _visible(text) in source_headings:
+            new_level = min((state._stack[0][1] if state._stack else 1) + 1, 6)
+            keep_as_heading = True
         if not keep_as_heading:
             return f"{text}{trailing_whitespace}"
         return f"{'#' * new_level} {text}{trailing_whitespace}"
@@ -627,17 +661,26 @@ def finalize_markdown(
     editorial_issues: tuple[str, ...] = ()
     privacy = privacy_plan if privacy_plan is not None else plan_from_source(source)
     markdown = privacy.clean_text(markdown)
+    from source_table_formatting import repair_pdf_tables
+
+    markdown, table_stats = repair_pdf_tables(markdown, source, privacy)
+    editorial_stats = tuple(table_stats.items())
     if heading_profile == "curso":
         from course_editorial import prepare_course_markdown
 
         editorial = prepare_course_markdown(markdown, source=source, assets_dir=temporary_assets_dir)
         markdown = editorial.markdown
-        editorial_stats = tuple(editorial.stats.items())
+        editorial_stats = tuple({**editorial.stats, **table_stats}.items())
         editorial_issues = editorial.issues
         if temporary_assets_dir is not None:
             asset_count = sum(1 for item in temporary_assets_dir.rglob("*") if item.is_file())
     else:
         markdown = normalize_heading_levels(markdown)
+        from course_editorial import prepare_source_formatting
+
+        editorial = prepare_source_formatting(markdown, source)
+        markdown = editorial.markdown
+        editorial_stats = tuple({**editorial.stats, **table_stats}.items())
     markdown = privacy.clean_text(markdown)
     page_coverage = tuple(replace(
         item, warning=privacy.clean_text(item.warning),

@@ -5,6 +5,32 @@ import re
 import unicodedata
 from collections import Counter
 
+_ALTERNATIVE = re.compile(r'(?<!\S)(?:\(([A-Za-z])\)|([A-Za-z])\))')
+
+
+def alternative_markers(text: str) -> tuple[list[re.Match], list[str]]:
+    """Sequência observada, nunca quantidade presumida nem inferência da resposta.
+
+    Enumerações anteriores a uma nova sequência A/B ficam no enunciado. Uma
+    sequência quebrada após a última A é preservada sem divisão automática.
+    """
+    markers = list(_ALTERNATIVE.finditer(text))
+    starts = [i for i, m in enumerate(markers) if (m[1] or m[2]).upper() == 'A']
+    if not starts:
+        return [], ['alternative_boundaries_uncertain']
+    selected = markers[starts[-1]:]
+    if len(starts) > 1:
+        previous = markers[:starts[-1]]
+        # Uma enumeração interna a)/b) seguida de (A)/(B) tem evidência
+        # tipográfica distinta. Duas sequências equivalentes são ambíguas.
+        if not (all(m[2] and m[2].islower() for m in previous)
+                and all(m[1] and m[1].isupper() for m in selected)):
+            return [], ['multiple_alternative_sequences']
+    labels = [(m[1] or m[2]).upper() for m in selected]
+    if len(labels) < 2 or labels != list('ABCDEFGHIJKLMNOPQRSTUVWXYZ'[:len(labels)]):
+        return [], ['alternative_sequence_inconsistent']
+    return selected, []
+
 
 def canonical(text: str) -> str:
     from course_editorial import _visible
@@ -47,7 +73,7 @@ def normalize_exam_collections(text: str, stats: Counter) -> str:
             output.append(line)
             continue
         question = re.match(r'^(\d+)\.\s*\([^\n)]+\)', plain) if kind == 'questions' else None
-        answer = re.fullmatch(r'(\d+)\.\s*([A-E])\s*', plain) if kind == 'answers' else None
+        answer = re.fullmatch(r'(\d+)\.\s*([A-Z])\s*', plain) if kind == 'answers' else None
         if (question or answer) and (heading or content.lstrip().startswith('**')):
             if question:
                 label, rest = _split_visible(content, question.end())
@@ -57,7 +83,7 @@ def normalize_exam_collections(text: str, stats: Counter) -> str:
             stats['exam_boundaries'] += 1
         elif heading and kind and len(heading[1]) <= level:
             # Comentários, alternativas e dispositivos não criam capítulos.
-            if re.match(r'^(?:\([A-E]\)|§|[Aa]rt\.)', plain):
+            if _ALTERNATIVE.match(plain) or re.match(r'^(?:§|[Aa]rt\.)', plain):
                 output.append(content)
                 stats['false_headings_demoted'] += 1
             else:
@@ -80,12 +106,17 @@ def normalize_exam_collections(text: str, stats: Counter) -> str:
         start, end = section['line'], section['line_end']
         body = '\n'.join(lines[start:end])
         plain = _project(body)[0]
-        markers = list(re.finditer(r'\(([A-E])\)', plain))
-        labels = [match[1] for match in markers]
-        if len(labels) < 2 or labels != list('ABCDE'[:len(labels)]):
+        markers, _ = alternative_markers(plain)
+        if not markers:
             continue
         for match in reversed(markers):
             left, right = _split_visible(body, match.start())
+            # O extrator pode escrever "- (B) ...". Ao separar (B), retire
+            # somente seu prefixo de lista na mesma linha, sem deixar item vazio.
+            # A sequência A/B/... já foi confirmada; outros hífens ficam intactos.
+            if re.search(r'(?m)^[ \t]*-[ \t]+\Z', plain[:match.start()]):
+                left = left.rsplit('\n', 1)[0] if '\n' in left else ''
+                stats['alternative_list_prefixes_removed'] += 1
             body = left.rstrip() + '\n\n' + right.lstrip()
         lines[start:end] = body.splitlines()
     return '\n'.join(lines)
@@ -100,12 +131,18 @@ def _location(lines: list[str], start: int, end: int) -> dict:
         if markers:
             page = int(markers[-1][1])
     first = None
-    last = page
+    last = None
     for line in lines[start:end]:
         markers = list(_PAGE.finditer(line))
-        if markers:
-            page = int(markers[-1][1])
-        if _visible(line) and line.strip() != '---':
+        cursor = 0
+        for marker in markers:
+            if _visible(line[cursor:marker.start()]) and line.strip() != '---':
+                if first is None:
+                    first = page
+                last = page
+            page = int(marker[1])
+            cursor = marker.end()
+        if _visible(line[cursor:]) and line.strip() != '---':
             if first is None:
                 first = page
             last = page
@@ -120,36 +157,37 @@ def exam_index(markdown: str, sections: list[dict]) -> tuple[list[dict], list[di
     for section in sections:
         kinds = [collection_kind(title) for title in section['context']]
         match = re.match(r'^(\d+)\.\s*\(', section['title']) if 'questions' in kinds else None
-        response = re.fullmatch(r'(\d+)\.\s*([A-E])', section['title']) if 'answers' in kinds else None
+        response = re.fullmatch(r'(\d+)\.\s*([A-Z])', section['title']) if 'answers' in kinds else None
         if not (match or response):
             continue
         start, end = section['line'], section['line_end']
         location = {'line_start': section['line'], 'line_end': end,
                     'page_start': section['page_start'], 'page_end': section['page_end']}
         if response:
-            answers.append({'number': int(response[1]), 'label': response[2], 'section_id': section['id'],
+            answers.append({'id': section['id'], 'number': int(response[1]), 'label': response[2], 'section_id': section['id'],
                             'comment': '\n'.join(lines[start:end]).strip(), **location})
             continue
         body = '\n'.join(lines[start:end])
         visible = _visible(body)
         projected, mapping = _project(body)
-        leading = len(projected) - len(projected.lstrip())
-        markers = list(re.finditer(r'\(([A-E])\)', visible))
-        labels = [item[1] for item in markers]
-        safe = len(labels) >= 2 and labels == list('ABCDE'[:len(labels)])
-        ambiguities = [] if safe else ['alternative_boundaries_uncertain']
+        markers, ambiguities = alternative_markers(projected)
+        safe = bool(markers)
         alternatives = []
         if safe:
             for index, marker in enumerate(markers):
-                stop = markers[index + 1].start() if index + 1 < len(markers) else len(visible)
-                raw_start = mapping[leading + marker.start()][0]
-                raw_end = mapping[leading + stop - 1][1]
+                stop = markers[index + 1].start() if index + 1 < len(markers) else len(projected)
+                # Retira o espaço entre irmãs ANTES de calcular o fim inclusivo.
+                trimmed_stop = len(projected[:stop].rstrip())
+                raw_start = mapping[marker.start()][0]
+                raw_end = mapping[trimmed_stop - 1][1]
                 first_line = start + body[:raw_start].count('\n')
                 last_line = start + body[:raw_end].count('\n') + 1
-                alternatives.append({'label': marker[1], 'text': visible[marker.end():stop].strip(),
+                label = (marker[1] or marker[2]).upper()
+                alternatives.append({'id': section['id'] + '-alternative-' + label, 'question_id': section['id'], 'label': label,
+                                     'text': projected[marker.end():stop].strip(),
                                      **_location(lines, first_line, last_line)})
-        questions.append({'number': int(match[1]), 'section_id': section['id'],
-                          'stem': visible[:markers[0].start()].strip() if safe else visible,
+        questions.append({'id': section['id'], 'number': int(match[1]), 'section_id': section['id'],
+                          'stem': projected[:markers[0].start()].strip() if safe else visible,
                           'alternatives': alternatives, 'answer': None, 'ambiguities': ambiguities, **location})
     counts = Counter(item['number'] for item in questions)
     for question in questions:
@@ -178,7 +216,7 @@ def toc_diagnostics(markdown: str, sections: list[dict]) -> tuple[list[dict], li
         if not line.startswith('|'):
             continue
         cell = line.strip('| ').strip()
-        match = re.fullmatch(r'(.+?)\s*\.{3,}\s*(\d+)', cell)
+        match = re.fullmatch(r'(.+?)\s*(?:\.\s*){3,}(\d+)', cell)
         if not match:
             if re.match(r'^\d+(?:\.\d+)*\.', cell) and not re.search(r'\.{3,}', cell):
                 pending = cell
@@ -194,5 +232,8 @@ def toc_diagnostics(markdown: str, sections: list[dict]) -> tuple[list[dict], li
             if target['page_start'] is not None and target['page_start'] != int(match[2]):
                 entry['status'] = 'source_discrepancy'
                 discrepancies.append(dict(entry))
+        elif len(candidates) > 1:
+            entry['status'] = 'ambiguous'
+            entry['candidate_ids'] = [s['id'] for s in candidates]
         entries.append(entry)
     return entries, discrepancies

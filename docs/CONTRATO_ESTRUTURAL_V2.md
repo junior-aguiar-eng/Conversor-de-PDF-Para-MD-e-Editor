@@ -1,5 +1,9 @@
 # Contrato estrutural v2
 
+A [revisão 3](CONTRATO_ESTRUTURAL_REVISAO_3.md) estende este contrato com blocos,
+identidade documental explícita, marcadores de alternativa variados e estados de
+validação. As regras atualizadas dessa revisão prevalecem nos novos artefatos.
+
 O JSON exportado declara `schema_version: 2`. Os campos v1 permanecem disponíveis,
 mas os IDs mudam de política. Consumidores que persistem IDs v1 precisam reindexar
 o documento; não há equivalência posicional garantida. O Markdown incorporado ao

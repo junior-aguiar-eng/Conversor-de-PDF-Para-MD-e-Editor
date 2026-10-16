@@ -84,6 +84,12 @@
       paragraph.firstChild.textContent = paragraph.firstChild.textContent.replace(/^\[!NOTE\]\s*/, "");
     }
   });
+  // Markdown exige uma linha de cabeçalho mesmo em tabelas só de conteúdo.
+  // Remova a linha vazia; o primeiro registro continua sendo uma linha do corpo.
+  content.querySelectorAll("table thead").forEach((head) => {
+    if ([...head.querySelectorAll("th")].every((cell) => !cell.textContent.trim())
+        && !head.querySelector("img,svg")) head.remove();
+  });
   const toc = document.getElementById("toc");
   content.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((heading, index) => {
     const key = heading.getAttribute("data-nxj-heading");

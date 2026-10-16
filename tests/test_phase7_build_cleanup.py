@@ -30,6 +30,8 @@ class Phase7BuildCleanupTests(unittest.TestCase):
         self.assertEqual(Path(arguments[-1]), build_support.APP_ENTRYPOINT)
         for package in ("pymupdf4llm", "rapidocr_onnxruntime", "edge_tts", "deep_translator"):
             self.assertIn(package, arguments)
+        for module in ("document_structure", "document_blocks", "document_review", "source_table_formatting"):
+            self.assertIn(module, arguments)
 
     def test_admin_has_separate_self_contained_build_and_installer(self) -> None:
         arguments = build_support.admin_pyinstaller_arguments(build_support.WORK_DIR / "admin_version_info.txt")
