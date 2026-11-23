@@ -13,7 +13,7 @@
     "@fontsource-variable/jetbrains-mono": "5.2.8",
     "@fontsource-variable/plus-jakarta-sans": "5.2.8",
     "@tailwindcss/cli": "4.3.3",
-    "dompurify": "3.4.16",
+    "dompurify": "3.4.17",
     "jsdom": "26.1.0",
     "marked": "15.0.12",
     "tailwindcss": "4.3.3"
